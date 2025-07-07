@@ -4,3 +4,7 @@ language = "en"
 multilingual = false
 src = "src"
 title = "Native rollups"
+
+[output.html]
+additional-js = ["static/solidity.min.js"]
+default-theme = "ayu"
