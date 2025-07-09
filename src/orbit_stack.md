@@ -93,7 +93,7 @@ function addSequencerL2BatchImpl(
     returns (uint256 seqMessageIndex, bytes32 beforeAcc, bytes32 delayedAcc, bytes32 acc)
 ```
 
-The function, after some checks, calls the `enqueueSequencerMessage` on the bridge, passing the `dataHash`, `afterDelayedMessagesRead`, `prevMessageCount` and `newMessageCount` values.
+The function, after some checks, calls the `enqueueSequencerMessage` on the `Bridge` contract, passing the `dataHash`, `afterDelayedMessagesRead`, `prevMessageCount` and `newMessageCount` values.
 
 The `enqueueSequencerMessage` function is defined as follows:
 
@@ -122,3 +122,32 @@ The function, after some checks, fetches the previous "accumulated" hash and mer
 TODO
 
 ## Proving
+
+State roots are proved using an optimistic proof system involving an interactive bisection protocol and a final onchain one-step execution. In particular, a bisection can conclude with a call to the `confirmEdgeByOneStepProof` function, which ultimately references the inputs that have been posted onchain.
+
+The bisection protocol is divided into 3 "levels", depending on the size of the step: block level, big step level, and small step level. The interaction between these levels is non-trivial and also effects its economic guarantees.
+
+A dedicated smart contract, the `OneStepProofEntry`, manages a set of sub-contracts depending on the type of step that needs to be executed onchain, and finally returns the post-execution state hash to the caller.
+
+The `proveOneStep` function in `OneStepProofEntry` is defined as follows:
+
+```solidity
+function proveOneStep(
+    ExecutionContext calldata execCtx,
+    uint256 machineStep,
+    bytes32 beforeHash,
+    bytes calldata proof
+) external view override returns (bytes32 afterHash)
+```
+
+The `ExecutionContext` struct is defined as follows:
+
+```solidity
+struct ExecutionContext {
+    uint256 maxInboxMessagesRead;
+    IBridge bridge;
+    bytes32 initialWasmModuleRoot;
+}
+```
+
+where the `maxInboxMessagesRead` is set to the `nextInboxPosition` of the previous assertion, which can be seen as the "inbox" target set by the previous assertion to the new assertion. This value should at least be one more than the inbox position covered by the previous assertion, and is set to the current sequencer message count for the next assertion. If an assertion reaches the maximum number of blocks allowed but doesn't reach the `nextInboxPosition`, it is considered an "overflow" assertion which has its own specific checks.
