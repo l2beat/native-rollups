@@ -175,3 +175,43 @@ struct Instruction {
 ```
 
 If the instruction is `READ_INBOX_MESSAGE`, the `executeReadInboxMessage` function is called, which either references the sequencer inbox or the delayed inbox, depending whether the argument is `INBOX_INDEX_SEQUENCER` or `INBOX_INDEX_DELAYED`. The functions compute the appropriate accumulated hash given its inputs, fetched from the `sequencerInboxAccs` or `delayedInboxAccs`, and checks that it matches the expected one.
+
+## L1 to L2 messaging
+
+Different types of messages can be sent from L1 to L2, and each of them is identified by a "kind" value, as follows:
+
+```solidity
+uint8 constant L2_MSG = 3;
+uint8 constant L1MessageType_L2FundedByL1 = 7;
+uint8 constant L1MessageType_submitRetryableTx = 9;
+uint8 constant L1MessageType_ethDeposit = 12;
+uint8 constant L1MessageType_batchPostingReport = 13;
+uint8 constant L2MessageType_unsignedEOATx = 0;
+uint8 constant L2MessageType_unsignedContractTx = 1;
+
+uint8 constant ROLLUP_PROTOCOL_EVENT_TYPE = 8;
+uint8 constant INITIALIZATION_MSG_TYPE = 11;
+```
+
+### Gas token deposit (ETH)
+
+To deposit ETH on the L2 to be used as a gas token, the `depositEth` function on the `Inbox` contract (also called "delayed inbox") is used, which is defined as follows:
+
+```solidity
+function depositEth() public payable whenNotPaused onlyAllowed returns (uint256)
+```
+
+[Here](https://etherscan.io/tx/0x2c447ec2cb6343af140e25c441bcfdb1a67492540fc4074dcfa777c79324b8a4)'s an example transaction.
+
+The `onlyAllowed` modifier checks an "allow list", if enabled. The control passes to the `_deliverMessage` function, which is defined as follows:
+
+```solidity
+function _deliverMessage(
+    uint8 _kind,
+    address _sender,
+    bytes memory _messageData,
+    uint256 amount
+) internal returns (uint256)
+```
+
+The message kind used here is `L1MessageType_ethDeposit`. Ultimately, the `enqueueDelayedMessage` function is called on the `Bridge` contract. The function ultimately pushes an accumulated hash to the `delayedInboxAccs` array.
