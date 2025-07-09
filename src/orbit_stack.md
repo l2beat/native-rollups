@@ -1,5 +1,18 @@
 # Orbit stack
 
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+**Table of Contents**
+
+- [Sequencing](#sequencing)
+  - [Where are these inputs used?](#where-are-these-inputs-used)
+  - [Batch spending report](#batch-spending-report)
+- [Proving](#proving)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
+
+
 ## Sequencing
 
 The main function used to sequence blobs in the orbit stack is the `addSequencerFromBlobsImpl` function, whose interface is as follows:
@@ -151,3 +164,14 @@ struct ExecutionContext {
 ```
 
 where the `maxInboxMessagesRead` is set to the `nextInboxPosition` of the previous assertion, which can be seen as the "inbox" target set by the previous assertion to the new assertion. This value should at least be one more than the inbox position covered by the previous assertion, and is set to the current sequencer message count for the next assertion. If an assertion reaches the maximum number of blocks allowed but doesn't reach the `nextInboxPosition`, it is considered an "overflow" assertion which has its own specific checks.
+
+The `OneStepProofEntry` contract populates the machine value and frame stacks and registries given the `proof`. A machine hash is computed using these values and the `wasmModuleRoot`, which determines the program to execute. Instructions and necessary merkle proofs are deserialized from the proof. Based on the opcode to be executed onchain, a sub-contract is selected to actually execute the step. The ones that require referencing the inbox inputs are the ones that require calling the `OneStepProverHostIo` contract. An `Instruction` is simply defined as:
+
+```solidity
+struct Instruction {
+    uint16 opcode;
+    uint256 argumentData;
+}
+```
+
+If the instruction is `READ_INBOX_MESSAGE`, the `executeReadInboxMessage` function is called, which either references the sequencer inbox or the delayed inbox, depending whether the argument is `INBOX_INDEX_SEQUENCER` or `INBOX_INDEX_DELAYED`. The functions compute the appropriate accumulated hash given its inputs, fetched from the `sequencerInboxAccs` or `delayedInboxAccs`, and checks that it matches the expected one.
