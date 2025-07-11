@@ -176,6 +176,8 @@ struct Instruction {
 
 If the instruction is `READ_INBOX_MESSAGE`, the `executeReadInboxMessage` function is called, which either references the sequencer inbox or the delayed inbox, depending whether the argument is `INBOX_INDEX_SEQUENCER` or `INBOX_INDEX_DELAYED`. The functions compute the appropriate accumulated hash given its inputs, fetched from the `sequencerInboxAccs` or `delayedInboxAccs`, and checks that it matches the expected one.
 
+The `executeReadPreImage` function is instead used to execute a "read" out of either a keccak256 preimage or a blob hash preimage, using the 4844 point evaluation precompile. It is made sure that the correct point is used for the evaluation.
+
 ## L1 to L2 messaging
 
 Different types of messages can be sent from L1 to L2, and each of them is identified by a "kind" value, as follows:
