@@ -15,6 +15,11 @@
 
 ## Sequencing
 
+<figure>
+    <img src="./static/arb_sequencing.svg" alt="Arbitrum sequencing">
+    <figcaption>Arbitrum sequencing data flow.</figcaption>
+</figure>
+
 The main function used to sequence blobs in the orbit stack is the `addSequencerFromBlobsImpl` function, whose interface is as follows:
 
 ```solidity
@@ -217,3 +222,90 @@ function _deliverMessage(
 ```
 
 The message kind used here is `L1MessageType_ethDeposit`. Ultimately, the `enqueueDelayedMessage` function is called on the `Bridge` contract. The function ultimately pushes an accumulated hash to the `delayedInboxAccs` array.
+
+TODO
+
+## Derivation
+
+The derivation logic for Arbitrum and Orbit chains is defined in the [nitro](https://github.com/OffchainLabs/nitro) node.
+
+The L1 node connection is done through the `L1Reader` in the `getL1Reader` function in `arbnode/node.go`. All necessary addresses are fetched from the `/cmd/chaininfo/arbitrum_chain_info.json` file. For example, here's the configuration for Arbitrum One:
+
+```json
+{
+    "chain-name": "arb1",
+    "parent-chain-id": 1,
+    "parent-chain-is-arbitrum": false,
+    "sequencer-url": "https://arb1-sequencer.arbitrum.io/rpc",
+    "secondary-forwarding-target": "https://arb1-sequencer-fallback-1.arbitrum.io/rpc,https://arb1-sequencer-fallback-2.arbitrum.io/rpc,https://arb1-sequencer-fallback-3.arbitrum.io/rpc,https://arb1-sequencer-fallback-4.arbitrum.io/rpc,https://arb1-sequencer-fallback-5.arbitrum.io/rpc",
+    "feed-url": "wss://arb1-feed.arbitrum.io/feed",
+    "secondary-feed-url": "wss://arb1-delayed-feed.arbitrum.io/feed,wss://arb1-feed-fallback-1.arbitrum.io/feed,wss://arb1-feed-fallback-2.arbitrum.io/feed,wss://arb1-feed-fallback-3.arbitrum.io/feed,wss://arb1-feed-fallback-4.arbitrum.io/feed,wss://arb1-feed-fallback-5.arbitrum.io/feed",
+    "has-genesis-state": true,
+    "block-metadata-url": "https://arb1.arbitrum.io/rpc",
+    "track-block-metadata-from": 327000000,
+    "chain-config": {
+      "chainId": 42161,
+      "homesteadBlock": 0,
+      "daoForkBlock": null,
+      "daoForkSupport": true,
+      "eip150Block": 0,
+      "eip150Hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "eip155Block": 0,
+      "eip158Block": 0,
+      "byzantiumBlock": 0,
+      "constantinopleBlock": 0,
+      "petersburgBlock": 0,
+      "istanbulBlock": 0,
+      "muirGlacierBlock": 0,
+      "berlinBlock": 0,
+      "londonBlock": 0,
+      "clique": {
+        "period": 0,
+        "epoch": 0
+      },
+      "arbitrum": {
+        "EnableArbOS": true,
+        "AllowDebugPrecompiles": false,
+        "DataAvailabilityCommittee": false,
+        "InitialArbOSVersion": 6,
+        "InitialChainOwner": "0xd345e41ae2cb00311956aa7109fc801ae8c81a52",
+        "GenesisBlockNum": 0
+      }
+    },
+    "rollup": {
+      "bridge": "0x8315177ab297ba92a06054ce80a67ed4dbd7ed3a",
+      "inbox": "0x4dbd4fc535ac27206064b68ffcf827b0a60bab3f",
+      "rollup": "0x5ef0d09d1e6204141b4d37530808ed19f60fba35",
+      "sequencer-inbox": "0x1c479675ad559dc151f6ec7ed3fbf8cee79582b6",
+      "validator-utils": "0x9e40625f52829cf04bc4839f186d621ee33b0e67",
+      "validator-wallet-creator": "0x960953f7c69cd2bc2322db9223a815c680ccc7ea",
+      "stake-token": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      "deployed-at": 15411056
+    }
+}
+```
+
+Then an `InboxReader` is created using the `NewInboxReader` function in `arbnode/inbox_reader.go`, which, among other things, takes in input the L1 reader, the sequencer inbox address and the delayed inbox address.
+
+Transaction data from the sequencer is fetched using the `LookupBatchesInRange` method on the `SequencerInbox` type, which returns a list of `SequencerInboxBatch` values.
+
+Transaction data from the sequencer inbox is processed using the `getSequencerData` method on the `SequencerInboxBatch` type in `arbnode/sequencer_inbox.go`. The method is called in the `Serialize` method.
+
+The `SequencerInboxBatch` type is defined as follows:
+
+```go
+type SequencerInboxBatch struct {
+	BlockHash              common.Hash
+	ParentChainBlockNumber uint64
+	SequenceNumber         uint64
+	BeforeInboxAcc         common.Hash
+	AfterInboxAcc          common.Hash
+	AfterDelayedAcc        common.Hash
+	AfterDelayedCount      uint64
+	TimeBounds             bridgegen.IBridgeTimeBounds
+	RawLog                 types.Log
+	DataLocation           BatchDataLocation
+	BridgeAddress          common.Address
+	Serialized             []byte // nil if serialization isn't cached yet
+}
+```
