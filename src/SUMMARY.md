@@ -1,6 +1,6 @@
 # Summary
 
-- [Chapter 1](./chapter_1.md)
+- [Introduction](./introduction.md)
 - [Stacks review](./stacks_review.md)
   - [Orbit stack](./orbit_stack.md)
 
