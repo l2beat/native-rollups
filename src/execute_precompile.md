@@ -9,7 +9,6 @@
 - [(WIP) Usage example](#wip-usage-example)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
-
 ## Re-execution vs ZK enforcement
 
 The [original proposal](https://ethresear.ch/t/native-rollups-superpowers-from-l1-execution/21517) for the `EXECUTE` precompile presented two possible enforcement mechanisms: re-execution and ZK proofs. While the latter requires the L1 ZK-EVM upgrade to take place, the former can potentially be implemented beforehand and set the stage for the ZK version, in a similar way that proto-danksharding was first introduced without PeerDAS.
