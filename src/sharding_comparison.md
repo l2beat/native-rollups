@@ -1,0 +1,3 @@
+# NR vs sharding
+
+WIP

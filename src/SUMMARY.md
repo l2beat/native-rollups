@@ -9,5 +9,6 @@
 - [Gas token deposits](./gas_token_deposits.md)
 - [L2 fee market](./l2_fee_market.md)
 - [Customization](./customization.md)
+- [Sharding](./sharding_comparison.md)
 - [Stacks review](./stacks_review.md)
   - [Orbit stack](./orbit_stack.md)
