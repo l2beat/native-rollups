@@ -200,6 +200,23 @@ uint8 constant ROLLUP_PROTOCOL_EVENT_TYPE = 8;
 uint8 constant INITIALIZATION_MSG_TYPE = 11;
 ```
 
+In ArbOS, other message types can be found, whose purpose is TBR (To Be Researched):
+
+```go
+const (
+	L1MessageType_L2Message             = 3
+	L1MessageType_EndOfBlock            = 6
+	L1MessageType_L2FundedByL1          = 7
+	L1MessageType_RollupEvent           = 8
+	L1MessageType_SubmitRetryable       = 9
+	L1MessageType_BatchForGasEstimation = 10 // probably won't use this in practice
+	L1MessageType_Initialize            = 11
+	L1MessageType_EthDeposit            = 12
+	L1MessageType_BatchPostingReport    = 13
+	L1MessageType_Invalid               = 0xFF
+)
+```
+
 ### Gas token deposit (ETH)
 
 To deposit ETH on the L2 to be used as a gas token, the `depositEth` function on the `Inbox` contract (also called "delayed inbox") is used, which is defined as follows:
@@ -309,3 +326,26 @@ type SequencerInboxBatch struct {
 	Serialized             []byte // nil if serialization isn't cached yet
 }
 ```
+
+--- TODO ---
+
+If the segment type is `BatchSegmentKindAdvanceTimestamp` or `BatchSegmentKindAdvanceL1BlockNumber`, the timestamp or the referenced block number is increased accordingly. If the segment type is `BatchSegmentKindL2Message` or `BatchSegmentKindL2MessageBrotli`, a `MessageWithMetadata` is created:
+
+```go
+msg = &arbostypes.MessageWithMetadata{
+    Message: &arbostypes.L1IncomingMessage{
+        Header: &arbostypes.L1IncomingMessageHeader{
+            Kind:        arbostypes.L1MessageType_L2Message,
+            Poster:      l1pricing.BatchPosterAddress,
+            BlockNumber: blockNumber,
+            Timestamp:   timestamp,
+            RequestId:   nil,
+            L1BaseFee:   big.NewInt(0),
+        },
+        L2msg: segment,
+    },
+    DelayedMessagesRead: r.delayedMessagesRead,
+}
+```
+
+Messages are then passed to the `TransactionStreamer` by calling the `AddMesageAndEndBatch` method.
