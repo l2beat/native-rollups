@@ -58,7 +58,7 @@ def execute(evm: Evm) -> None:
     # Handle L1 anchoring
     process_unchecked_system_transaction( # TODO: consider unchecked vs checked
         block_env=block_env,
-        target_address=L1_ANCHOR_ADDRESS, # TBD: exact predeploy address
+        target_address=L1_ANCHOR_ADDRESS, # TBD: exact predeploy address + implementation
         data=l1_anchor # TBD: exact format
     )
 
@@ -107,6 +107,7 @@ contract Rollup {
 	// blob refs store (L2 block number, (L1 block number, blob hash))
 	mapping(uint => (uint, bytes32)) public blocks;
 	
+    // assumes that one blob is one block
 	function sequence(uint blobIndex) public {
 		blocks[nextBlockNumberToSequence] = (block.number, blobhash(blobIndex));
         nextBlockNumberToSequence++;
@@ -116,18 +117,18 @@ contract Rollup {
 		bytes32 _newState,
 		bytes32 _receipts,
 	) public {
-        (uint _l1AnchorBlock, bytes32 _blobHash) = blocks[l2BlockNumber];
+        (uint l1AnchorBlock, _) = blocks[nextBlockNumberToSettle];
 
 		EXECUTE(
 			chainId,
-			_nextBlockNumberToSequence,
-            _l1AnchorBlock,
+			_nextBlockNumberToSettle,
+            l1AnchorBlock,
 			state,
 			_newState,
 			_receipts,
 			gasLimit,
 			msg.sender,
-			blocks[l2BlockNumber] // TBD
+			blocks[l2BlockNumber] // TBD: unclear how to reference past blobs at this point
 		)
 
 		state = _newState;
