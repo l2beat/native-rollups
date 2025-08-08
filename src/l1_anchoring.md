@@ -3,10 +3,13 @@
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
 
-- [L1 Anchoring](#l1-anchoring)
-  - [Overview](#overview)
-  - [Current approaches](#current-approaches)
-    - [OP stack](#op-stack)
+- [Overview](#overview)
+- [Current approaches](#current-approaches)
+  - [OP stack](#op-stack)
+  - [Linea](#linea)
+  - [Taiko](#taiko)
+  - [Orbit stack](#orbit-stack)
+- [Proposed design](#proposed-design)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 ## Overview

@@ -8,11 +8,11 @@
   - [Where are these inputs used?](#where-are-these-inputs-used)
   - [Batch spending report](#batch-spending-report)
 - [Proving](#proving)
+- [L1 to L2 messaging](#l1-to-l2-messaging)
+  - [Gas token deposit (ETH)](#gas-token-deposit-eth)
+- [Derivation](#derivation)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
-
-
-
 ## Sequencing
 
 <figure>

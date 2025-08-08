@@ -8,6 +8,7 @@
 - [L2 to L1 messaging](./l2_l1_messaging.md)
 - [Gas token deposits](./gas_token_deposits.md)
 - [L2 fee market](./l2_fee_market.md)
+- [L1 vs L2 diff](./l1_vs_l2_diff.md)
 - [Customization](./customization.md)
 - [Sharding](./sharding_comparison.md)
 - [Stacks review](./stacks_review.md)

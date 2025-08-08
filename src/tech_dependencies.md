@@ -1,15 +1,14 @@
+## Statelessness (EIP-6800)
 # Tech dependencies
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
 
-- [L1 ZK-EVM](#l1-zk-evm)
-- [Statelessness](#statelessness)
+- [Statelessness (EIP-6800)](#statelessness-eip-6800)
+- [L1 ZK-EVM (EIP-?)](#l1-zk-evm-eip-)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
-## Statelessness (EIP-6800)
-
 L1 validators shouldn't store the state of all rollups, therefore the `EXECUTE` precompile requires its verification to be stateless. The statelessness upgrade is therefore required, with all its associated EIPs.
 
 Some adjacent EIPs that are relevant in this context are:
