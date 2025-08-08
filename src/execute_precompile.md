@@ -34,6 +34,11 @@ def execute(evm: Evm) -> None:
 	block_gas_limit = ... buffer_read(...) # TBD: depends on ZK gas handling
 	coinbase = ... buffer_read(...)
 	transactions = ... buffer_read(...) # TBD: this should be a ref to blobs
+
+    # Disable blob-carrying transactions
+    for tx in map(decode_transaction, transactions):
+        if isinstance(tx, BlobTransaction):
+            raise ExecuteError
 	
 	block_env = vm.BlockEnvironment(
 		chain_id=chain_id,
@@ -48,6 +53,14 @@ def execute(evm: Evm) -> None:
 		excess_blob_gas=evm.message.block_env.excess_blob_gas,
 		parent_beacon_block_root=... # TBD
 	...
+
+    # Handle L1 anchoring
+    process_unchecked_system_transaction( # TODO: consider unchecked vs checked
+        block_env=block_env,
+        target_address=L1_HISTORY_STORAGE_ADDRESS, # TBD: exact predeploy address
+        data=block_env.block_hashes[-1] # TBD: depends how it will look like post-7709
+    )
+
 	# TODO: decide what to do things that are not valid on a rollup, e.g. blobs
 	block_output = apply_body(
 		block_env=block_env,
