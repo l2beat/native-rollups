@@ -34,6 +34,7 @@ def execute(evm: Evm) -> None:
 	block_gas_limit = ... buffer_read(...) # TBD: depends on ZK gas handling
 	coinbase = ... buffer_read(...)
 	transactions = ... buffer_read(...) # TBD: this should be a ref to blobs
+    l1_anchor = ... buffer_read(...) # TBD: arbitrary info that is passed from L1 to L2 storage
 
     # Disable blob-carrying transactions
     for tx in map(decode_transaction, transactions):
@@ -52,13 +53,12 @@ def execute(evm: Evm) -> None:
 		prev_randao=evm.message.block_env.prev_randao,
 		excess_blob_gas=evm.message.block_env.excess_blob_gas,
 		parent_beacon_block_root=... # TBD
-	...
 
-    # Handle L1 anchoring
+    # Handle L1 anchoring. 
     process_unchecked_system_transaction( # TODO: consider unchecked vs checked
         block_env=block_env,
-        target_address=L1_HISTORY_STORAGE_ADDRESS, # TBD: exact predeploy address
-        data=block_env.block_hashes[-1] # TBD: depends how it will look like post-7709
+        target_address=L1_ANCHOR_ADDRESS, # TBD: exact predeploy address
+        data=l1_anchor # TBD: exact format
     )
 
 	# TODO: decide what to do things that are not valid on a rollup, e.g. blobs
@@ -101,7 +101,7 @@ contract Rollup {
 	uint public nextBlockNumber;
 	
 	// blob refs store (L2 block number, (L1 block number, blob hash))
-	mapping(uint => (uint, bytes32) public blocks;
+	mapping(uint => (uint, bytes32)) public blocks;
 	
 	function sequence(uint blobIndex) public {
 		blocks[nextBlockNumber] = (block.number, blobhash(blobIndex));
@@ -112,9 +112,12 @@ contract Rollup {
 		bytes32 _receipts,
 		uint l2BlockNumber
 	) public {
+        (uint _l1AnchorBlock, bytes32 _blobHash) = blocks[l2BlockNumber];
+
 		EXECUTE(
 			chainId,
 			l2BlockNumber,
+            l1AnchorBlock,
 			state,
 			_newState,
 			_receipts,

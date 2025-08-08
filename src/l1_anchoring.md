@@ -14,7 +14,7 @@ To allow messaging from L1 to L2, a rollup needs to be able to obtain some infor
 
 ## Current approaches
 
-We first discuss how existing rollups handle the L1 anchoring problem to better inform the design of the `EXECUTE` precompile.
+We first discuss how some existing rollups handle the L1 anchoring problem to better inform the design of the `EXECUTE` precompile.
 
 ### OP stack
 [[spec](https://specs.optimism.io/protocol/deposits.html#l1-attributes-predeployed-contract)]
@@ -24,5 +24,36 @@ It's important to note that reception of L1 to L2 messages on the L2 side does n
 
 ### Linea
 
-WIP
+Linea, in their `L2MessageService` contract on L2, adds a function that allows a permissioned relayer to send information from L1 to L2:
 
+```solidity
+function anchorL1L2MessageHashes(
+    bytes32[] calldata _messageHashes,
+    uint256 _startingMessageNumber,
+    uint256 _finalMessageNumber,
+    bytes32 _finalRollingHash
+) external whenTypeNotPaused(PauseType.GENERAL) onlyRole(L1_L2_MESSAGE_SETTER_ROLE)
+```
+
+On L1, a wrapper around the STF checks that the "rolling hash" being relayed is correct, otherwise proof verificatoin fails. Since anchoring is done through regular transactions, the function is permissioned, otherwise any user could send a transaction with an invalid rolling hash, which would be accepted by the L2 but rejected during settlement.
+
+### Taiko
+
+An `anchorV3` function is implemented in the `TaikoAnchor` contract which allows a `GOLDEN_TOUCH_ADDRESS` to relay an L1 state root to L2. The private key of the `GOLDEN_TOUCH_ADDRESS` is publicly known, but the node guarantees that the first transaction is always an anchor transaction, and that other transactions present in the block revert.
+
+```solidity
+function anchorV3(
+    uint64 _anchorBlockId,
+    bytes32 _anchorStateRoot,
+    uint32 _parentGasUsed,
+    LibSharedData.BaseFeeConfig calldata _baseFeeConfig,
+    bytes32[] calldata _signalSlots
+)
+    external
+    nonZeroBytes32(_anchorStateRoot)
+    nonZeroValue(_anchorBlockId)
+    nonZeroValue(_baseFeeConfig.gasIssuancePerSecond)
+    nonZeroValue(_baseFeeConfig.adjustmentQuotient)
+    onlyGoldenTouch
+    nonReentrant
+```
