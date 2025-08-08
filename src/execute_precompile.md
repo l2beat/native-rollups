@@ -25,6 +25,7 @@ def execute(evm: Evm) -> None:
 	...
 	charge_gas(...) # TBD
 	...
+
     # Inputs
 	chain_id = ... buffer_read(...) # likely hard-coded in a contract
 	number = ... buffer_read(...)
@@ -51,10 +52,10 @@ def execute(evm: Evm) -> None:
 		base_fee_per_gas=..., # TBD
 		time=..., # TBD: depends if we want to use sequencing or proving time
 		prev_randao=evm.message.block_env.prev_randao,
-		excess_blob_gas=evm.message.block_env.excess_blob_gas,
+		excess_blob_gas=evm.message.block_env.excess_blob_gas, # TODO: study usage for L2 gas pricing
 		parent_beacon_block_root=... # TBD
 
-    # Handle L1 anchoring. 
+    # Handle L1 anchoring
     process_unchecked_system_transaction( # TODO: consider unchecked vs checked
         block_env=block_env,
         target_address=L1_ANCHOR_ADDRESS, # TBD: exact predeploy address
@@ -98,26 +99,29 @@ contract Rollup {
 	bytes32 public receipts;
 	
 	// block number to be sequenced next
-	uint public nextBlockNumber;
+	uint public nextBlockNumberToSequence;
+
+    // block number to be settled next
+    uint public nextBlockNumberToSettle;
 	
 	// blob refs store (L2 block number, (L1 block number, blob hash))
 	mapping(uint => (uint, bytes32)) public blocks;
 	
 	function sequence(uint blobIndex) public {
-		blocks[nextBlockNumber] = (block.number, blobhash(blobIndex));
+		blocks[nextBlockNumberToSequence] = (block.number, blobhash(blobIndex));
+        nextBlockNumberToSequence++;
 	}
 	
 	function settle(
 		bytes32 _newState,
 		bytes32 _receipts,
-		uint l2BlockNumber
 	) public {
         (uint _l1AnchorBlock, bytes32 _blobHash) = blocks[l2BlockNumber];
 
 		EXECUTE(
 			chainId,
-			l2BlockNumber,
-            l1AnchorBlock,
+			_nextBlockNumberToSequence,
+            _l1AnchorBlock,
 			state,
 			_newState,
 			_receipts,
@@ -128,6 +132,7 @@ contract Rollup {
 
 		state = _newState;
 		receipts = _receipts;
+        nextBlockNumberToSettle++;
 	}
 }
 
