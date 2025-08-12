@@ -14,7 +14,7 @@ Since rollups are not (supposed to be) connected to a dedicated consensus layer 
 
 As a consequence, all blocks will simply not contain any blob-carrying transactions, which allows maintaing `BLOBHASH` and point evaluation operations untouched, since they would behave the same as in an L1 block with no blob-carrying transactions.
 
-Since the `EXECUTE` precompile does a recursive call to `apply_body` and not `state_transition`, header checks are skipped, and `block_env` values can either be passed as an input, or re-use the values from L1. Since no blob-carrying transactions are present, the `excess_blob_gas` would default to zero, unless another value is passed from L1.
+Since the `EXECUTE` precompile does a recursive call to `apply_body` and not `state_transition`, header checks are skipped, and `block_env` values can either be passed as an input, or re-use the values from L1. Since no blob-carrying transactions are present, the `excess_blob_gas` would default to zero, unless another value is passed from L1. It's important to note that L1 exposes `block.blobbasefee` and not `excess_blob_gas`, so some translation would be needed to have the proper input for `block_env`.
 
 ## RANDAO
 

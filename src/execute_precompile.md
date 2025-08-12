@@ -91,6 +91,14 @@ The following example shows how an ahead-of-time sequenced rollup can use the `E
 
 ```solidity
 contract Rollup {
+
+    struct L2Block {
+        uint l1AnchorBlock;
+        bytes32 blobHash;
+        bytes32 prevRandao;
+        uint64 excessBlobGas;
+    }
+
 	uint64 public constant chainId = 1234321;
 	uint public gasLimit;
 	
@@ -107,11 +115,16 @@ contract Rollup {
     uint public nextBlockNumberToSettle;
 	
 	// blob refs store (L2 block number, (L1 block number, blob hash))
-	mapping(uint => (uint, bytes32)) public blocks;
+	mapping(uint => L2Block) public blocks;
 	
     // assumes that one blob is one block
 	function sequence(uint blobIndex) public {
-		blocks[nextBlockNumberToSequence] = (block.number, blobhash(blobIndex));
+		blocks[nextBlockNumberToSequence] = L2Block({
+            l1AnchorBlock: block.number,
+            blobHash: blockhash(index),
+            prevRandao: block.prevrandao,
+            excessBlobGas: ... // TBD: L1 only exposes block.blobbasefee, not the excess blob gas
+        });
         nextBlockNumberToSequence++;
 	}
 	
@@ -119,18 +132,20 @@ contract Rollup {
 		bytes32 _newState,
 		bytes32 _receipts,
 	) public {
-        (uint l1AnchorBlock, _) = blocks[nextBlockNumberToSettle];
+        (uint l1AnchorBlock, bytes32 blobHash, bytes32 prev_randao, uint64 excess_blob_gas) = blocks[nextBlockNumberToSettle];
 
 		EXECUTE(
 			chainId,
-			_nextBlockNumberToSettle,
+			nextBlockNumberToSettle,
             l1AnchorBlock,
 			state,
 			_newState,
 			_receipts,
 			gasLimit,
 			msg.sender,
-			blocks[l2BlockNumber] // TBD: unclear how to reference past blobs at this point
+            prev_randao,
+            excess_blob_gas, // TBD
+			(l1AnchorBlock, blobHash) // TBD: unclear how to reference past blobs at this point
 		)
 
 		state = _newState;
