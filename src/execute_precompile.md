@@ -34,6 +34,8 @@ def execute(evm: Evm) -> None:
 	post_receipts = ... buffer_read(...) # TODO: consider for L2->L1 msgs
 	block_gas_limit = ... buffer_read(...) # TBD: depends on ZK gas handling
 	coinbase = ... buffer_read(...)
+    prev_randao = ... buffer_read(...)
+    excess_blob_gas = ... buffer_read(...)
 	transactions = ... buffer_read(...) # TBD: this should be a ref to blobs
     l1_anchor = ... buffer_read(...) # TBD: arbitrary info that is passed from L1 to L2 storage
 
@@ -50,9 +52,9 @@ def execute(evm: Evm) -> None:
 		coinbase=coinbase,
 		number=number, # TBD: they probably need to be strictly sequential
 		base_fee_per_gas=..., # TBD
-		time=..., # TBD: depends if we want to use sequencing or proving time
-		prev_randao=evm.message.block_env.prev_randao,
-		excess_blob_gas=evm.message.block_env.excess_blob_gas, # TODO: study usage for L2 gas pricing
+		time=..., # TBD: depends if we want to use sequencing or proving time 
+		prev_randao=prev_randao # NOTE: assigning `evm.message.block_env.prev_randao` prevents ahead-of-time sequencing
+		excess_blob_gas=excess_blob_gas, # TODO: consider proposals where blob and calldata gas is merged for L2 pricing
 		parent_beacon_block_root=... # TBD
 
     # Handle L1 anchoring
@@ -85,7 +87,7 @@ def execute(evm: Evm) -> None:
 
 ## (WIP) Usage example
 
-The following example shows how an ahead of time sequenced rollup can use the `EXECUTE` precompile to settle blocks.
+The following example shows how an ahead-of-time sequenced rollup can use the `EXECUTE` precompile to settle blocks.
 
 ```solidity
 contract Rollup {
