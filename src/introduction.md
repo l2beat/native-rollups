@@ -19,7 +19,7 @@ A native rollup is a new type of EVM-based rollup that directly makes use of Eth
 
 ## Problem statement
 
-Native rollups aim to solve the main problems that EVM-based rollups ...
+EVM-based rollups that target L1 equivalence must track Ethereum on two axes: governance and implementation. Forks require discretionary upgrades, creating windows of un-equivalence and dependence on exit mechanics. In parallel, custom proving stacks must replicate L1 semanticsm, introducing complexity and bug risk. The sections below detail these two risks and why common mitigations (long exit windows, multiple provers) treat symptoms rather than causes.
 
 ### Governance risk
 
