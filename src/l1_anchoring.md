@@ -13,7 +13,7 @@
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 ## Overview
-To allow messaging from L1 to L2, a rollup needs to be able to obtain some information from the L1 chain, with the most general information being an L1 block hash.
+To allow messaging from L1 to L2, a rollup needs to be able to obtain some information from the L1 chain, with the most general information being an L1 block hash. In practice, projects relay from L1 various types of information depending on their specific needs.
 
 ## Current approaches
 
