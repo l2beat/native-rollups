@@ -4,7 +4,8 @@
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
 
-- [L1 to L2 messaging](#l1-to-l2-messaging)
+- [Current approaches](#current-approaches)
+  - [OP stack](#op-stack)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 

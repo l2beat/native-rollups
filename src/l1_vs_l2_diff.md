@@ -4,8 +4,8 @@
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
 
-- [L1 vs L2 diff](#l1-vs-l2-diff)
-  - [Blob-carrying transactions](#blob-carrying-transactions)
+- [Blob-carrying transactions](#blob-carrying-transactions)
+- [RANDAO](#randao)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 ## Blob-carrying transactions

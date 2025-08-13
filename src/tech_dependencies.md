@@ -5,7 +5,6 @@
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
 
-- [Statelessness (EIP-6800)](#statelessness-eip-6800)
 - [L1 ZK-EVM (EIP-?)](#l1-zk-evm-eip-)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
