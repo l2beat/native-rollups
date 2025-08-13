@@ -41,8 +41,7 @@ function anchorL1L2MessageHashes(
 On L1, a wrapper around the STF checks that the "rolling hash" being relayed is correct, otherwise proof verificatoin fails. Since anchoring is done through regular transactions, the function is permissioned, otherwise any user could send a transaction with an invalid rolling hash, which would be accepted by the L2 but rejected during settlement.
 
 ### Taiko
-[docs](https://github.com/taikoxyz/taiko-mono/blob/a36f99f1e820e52e12f97f804837c2828e941a41/packages/protocol/docs/how_taiko_proves_blocks.md#anchor-transactions)
-An `anchorV3` function is implemented in the `TaikoAnchor` contract which allows a `GOLDEN_TOUCH_ADDRESS` to relay an L1 state root to L2. The private key of the `GOLDEN_TOUCH_ADDRESS` is publicly known, but the node guarantees that the first transaction is always an anchor transaction, and that other transactions present in the block revert.
+[[docs](https://github.com/taikoxyz/taiko-mono/blob/a36f99f1e820e52e12f97f804837c2828e941a41/packages/protocol/docs/how_taiko_proves_blocks.md#anchor-transactions)] An `anchorV3` function is implemented in the `TaikoAnchor` contract which allows a `GOLDEN_TOUCH_ADDRESS` to relay an L1 state root to L2. The private key of the `GOLDEN_TOUCH_ADDRESS` is publicly known, but the node guarantees that the first transaction is always an anchor transaction, and that other transactions present in the block revert.
 
 ```solidity
 function anchorV3(
