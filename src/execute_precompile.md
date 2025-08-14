@@ -53,14 +53,15 @@ def execute(evm: Evm) -> None:
 		number=number, # TBD: they probably need to be strictly sequential
 		base_fee_per_gas=..., # TBD
 		time=..., # TBD: depends if we want to use sequencing or proving time 
-		prev_randao=prev_randao # NOTE: assigning `evm.message.block_env.prev_randao` prevents ahead-of-time sequencing
+		prev_randao=prev_randao, # NOTE: assigning `evm.message.block_env.prev_randao` prevents ahead-of-time sequencing
 		excess_blob_gas=excess_blob_gas, # TODO: consider proposals where blob and calldata gas is merged for L2 pricing
 		parent_beacon_block_root=... # TBD
+    )
 
     # Handle L1 anchoring
     process_unchecked_system_transaction( # TODO: consider unchecked vs checked
         block_env=block_env,
-        target_address=L1_ANCHOR_ADDRESS, # TBD: exact predeploy address + implementation
+        target_address=L1_ANCHOR_ADDRESS, # TBD: exact predeploy address + implementation. Also: does it even need to be a fixed address?
         data=l1_anchor # TBD: exact format
     )
 

@@ -60,6 +60,8 @@ function anchorV3(
     nonReentrant
 ```
 
+The validity of the `_anchorStateRoot` value is [explicitly checked](https://github.com/taikoxyz/taiko-mono/blob/56a28bb5b59510c9b708ed4222d5260f64d346c6/packages/protocol/docs/how_taiko_proves_blocks.md#signal-storage) by Taiko's proof system.
+
 ### Orbit stack
 
 WIP
