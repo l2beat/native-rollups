@@ -115,10 +115,11 @@ contract Rollup {
     // block number to be settled next
     uint public nextBlockNumberToSettle;
 	
-	// blob refs store (L2 block number, (L1 block number, blob hash))
+	// ahead-of-time sequenced blocks
 	mapping(uint => L2Block) public blocks;
 	
     // assumes that one blob is one block
+    // NOTE: if preconfs need to be supported, then it should not use current block info
 	function sequence(uint blobIndex) public {
 		blocks[nextBlockNumberToSequence] = L2Block({
             l1AnchorBlock: block.number,
