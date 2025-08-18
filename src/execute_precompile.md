@@ -35,7 +35,6 @@ def execute(evm: Evm) -> None:
 	block_gas_limit = ... buffer_read(...) # TBD: depends on ZK gas handling
 	coinbase = ... buffer_read(...)
     prev_randao = ... buffer_read(...)
-    excess_blob_gas = ... buffer_read(...)
 	transactions = ... buffer_read(...) # TBD: this should be a ref to blobs
     l1_anchor = ... buffer_read(...) # TBD: arbitrary info that is passed from L1 to L2 storage
 
@@ -54,7 +53,7 @@ def execute(evm: Evm) -> None:
 		base_fee_per_gas=..., # TBD
 		time=..., # TBD: depends if we want to use sequencing or proving time 
 		prev_randao=prev_randao, # NOTE: assigning `evm.message.block_env.prev_randao` prevents ahead-of-time sequencing
-		excess_blob_gas=excess_blob_gas, # TODO: consider proposals where blob and calldata gas is merged for L2 pricing
+		excess_blob_gas=0, # TBD: might be useful for L2 pricing. Ignored for now
 		parent_beacon_block_root=... # TBD
     )
 
@@ -97,7 +96,6 @@ contract Rollup {
         uint l1AnchorBlock;
         bytes32 blobHash;
         bytes32 prevRandao;
-        uint64 excessBlobGas;
     }
 
 	uint64 public constant chainId = 1234321;
@@ -124,8 +122,7 @@ contract Rollup {
 		blocks[nextBlockNumberToSequence] = L2Block({
             l1AnchorBlock: block.number,
             blobHash: blockhash(index),
-            prevRandao: block.prevrandao,
-            excessBlobGas: ... // TBD: L1 only exposes block.blobbasefee, not the excess blob gas
+            prevRandao: block.prevrandao
         });
         nextBlockNumberToSequence++;
 	}
@@ -134,7 +131,7 @@ contract Rollup {
 		bytes32 _newState,
 		bytes32 _receipts,
 	) public {
-        (uint l1AnchorBlock, bytes32 blobHash, bytes32 prev_randao, uint64 excess_blob_gas) = blocks[nextBlockNumberToSettle];
+        (uint l1AnchorBlock, bytes32 blobHash, bytes32 prev_randao) = blocks[nextBlockNumberToSettle];
 
 		EXECUTE(
 			chainId,
@@ -146,7 +143,6 @@ contract Rollup {
 			gasLimit,
 			msg.sender,
             prev_randao,
-            excess_blob_gas, // TBD
 			(l1AnchorBlock, blobHash) // TBD: unclear how to reference past blobs at this point
 		)
 
