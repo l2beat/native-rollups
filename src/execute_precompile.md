@@ -118,10 +118,8 @@ contract Rollup {
 	
     // assumes that one blob is one block
     // NOTE: if preconfs need to be supported, then it should not use current block info
-	function sequence(uint _blobIndex, uint _l2BlockNumber) public {
-        // prevent unexpected reorgs
-        require(_l2BlockNumber == nextBlockNumberToSequence, "Invalid block number to sequence");
-		blocks[_l2BlockNumber] = L2Block({
+	function sequence(uint _blobIndex) public {
+		blocks[nextBlockNumberToSequence] = L2Block({
             blobHash: blobhash(index),
             prevRandao: block.prevrandao,
             anchor: blockhash(block.number - 1)
