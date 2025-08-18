@@ -93,9 +93,9 @@ The following example shows how an ahead-of-time sequenced rollup can use the `E
 contract Rollup {
 
     struct L2Block {
-        uint l1AnchorBlock;
         bytes32 blobHash;
         bytes32 prevRandao;
+        bytes32 anchor;
     }
 
 	uint64 public constant chainId = 1234321;
@@ -122,9 +122,9 @@ contract Rollup {
         // prevent unexpected reorgs
         require(_l2BlockNumber == nextBlockNumberToSequence, "Invalid block number to sequence");
 		blocks[_l2BlockNumber] = L2Block({
-            l1AnchorBlock: block.number,
-            blobHash: blockhash(index),
-            prevRandao: block.prevrandao
+            blobHash: blobhash(index),
+            prevRandao: block.prevrandao,
+            anchor: blockhash(block.number - 1)
         });
         nextBlockNumberToSequence++;
 	}
@@ -133,19 +133,18 @@ contract Rollup {
 		bytes32 _newState,
 		bytes32 _receipts,
 	) public {
-        (uint l1AnchorBlock, bytes32 blobHash, bytes32 prev_randao) = blocks[nextBlockNumberToSettle];
+        (bytes32 blobHash, bytes32 prev_randao, bytes32 anchor) = blocks[nextBlockNumberToSettle];
 
 		EXECUTE(
 			chainId,
 			nextBlockNumberToSettle,
-            l1AnchorBlock,
 			state,
 			_newState,
 			_receipts,
 			gasLimit,
 			msg.sender,
-            prev_randao,
-			(l1AnchorBlock, blobHash) // TBD: unclear how to reference past blobs at this point
+            prev_randao, 
+			blobhash // TBD: this should be a ref to past blobs. Currently a placeholder, assumes blobs are uniquely identified by their blobhash, which is not true today.
 		)
 
 		state = _newState;
