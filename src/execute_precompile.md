@@ -144,7 +144,8 @@ contract Rollup {
 			gasLimit,
 			msg.sender,
             prev_randao, 
-			blobhash // TBD: this should be a ref to past blobs. Currently a placeholder, assumes blobs are uniquely identified by their blobhash, which is not true today.
+			blobhash, // TBD: this should be a ref to past blobs. Currently a placeholder, assumes blobs are uniquely identified by their blobhash, which is not true today.
+            anchor // to be used for anchoring L1 -> L2 msgs on L2
 		)
 
 		state = _newState;
