@@ -35,7 +35,7 @@ EVM-based rollups need to implement complex proof systems just to be able to sup
 
 ## The `EXECUTE` precompile
 
-Native rollups solve these problems by replacing complex proof systems with a call to the `EXECUTE` precompile, which under the hood implements a recursive call to Ethereum's own execution environment. As a consequence, every time Ethereum forks, native rollups automatically adopt the new features without the need for dedicated governance processes. Moreover, the `EXECUTE` precompile is "bug-free" by construction, in the sense that any bug in the precompile is also a bug in Ethereum itself which will always be forked and fixed by the Ethereum community.
+Native rollups solve these problems by replacing complex proof systems with a call to the `EXECUTE` precompile, which under the hood implements a recursive call to Ethereum's own execution environment. As a consequence, every time Ethereum forks, native rollups automatically adopt the new features without the need for dedicated governance processes. Moreover, the `EXECUTE` precompile is "bug-free" by construction, in the sense that any bug in the precompile is also a bug in Ethereum itself which will always be forked and fixed by the Ethereum community. At the same time, the Ethereum community will focus on hardening the guarantees of L1 execution with extensive testing, multiple client implementations and formal verification, and native rollups will be able to benefit from all these benefits automatically.
 
 ## Purpose of this book
 
