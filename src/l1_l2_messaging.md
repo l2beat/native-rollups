@@ -33,6 +33,10 @@ The `sendMessage` function is called on the `LineaRollup` contract on L1, also i
 
 To send a message from L1 to L2, the `sendSignal` function is called on the `SignalService` contract on L1, which stores message hashes in its storage at slots computed based on the message itself. On the L2 side, after [anchoring](l1_anchoring.md#taiko) of the L1 block state root, the `proveSignalReceived` function is called on the `SignalService` L2 contract, with complex merkle proofs that unpack the so-passed state root and gets to the message hashes saved in storage of the L1 `SignalService` contract. A higher-level `Bridge` contract is deployed on L1 that performs the actuall contract call given the informations received by the `SignalService` L2 contract.
 
+### Orbit stack
+
+WIP
+
 ## Proposed design
 
 WIP
