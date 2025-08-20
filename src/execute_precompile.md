@@ -5,6 +5,7 @@
 **Table of Contents**
 
 - [Re-execution vs ZK enforcement](#re-execution-vs-zk-enforcement)
+- [Design principles](#design-principles)
 - [(WIP) Specification](#wip-specification)
 - [(WIP) Usage example](#wip-usage-example)
 
@@ -16,6 +17,10 @@ The [original proposal](https://ethresear.ch/t/native-rollups-superpowers-from-l
 The re-execution variant would only be able to support optimistic rollups with a bisection protocol that goes down to single or few-L2-blocks sized steps, and that are EVM-equivalent. Today there are three stacks with working bisection protocols, namely Orbit stack (Arbitrum), OP stack (Optimism) and Cartesi. Cartesi is built to run a Linux VM so they wouldn't be able to use the precompile, and Orbit supports [Stylus](https://arbitrum.io/stylus) which doesn't make them fully EVM-equivalent, unless a Stylus-less version is implemented, but even in this case it wouldn't be able to support Arbitrum One. OP stack is mostly EVM-equivalent, but still requires heavy modifications to support native execution. It's therefore unclear whether trying to implement the re-execution version of the precompile is worth it, or if it's better to wait for the more powerful ZK version.
 
 While L1 ZK-EVM is not needed for the re-execution version, statelessness is, as we want L1 validators to be able to verify the precompile without having to hold all rollups' state. It's not clear whether the time interval between statelessness and L1 ZK-EVM will be long enough to justify the implementation of the re-execution variant.
+
+## Design principles
+
+The `EXECUTE` precompile should re-use as much as possible the existing STF infrastructure, while also trying to provide the highest possible level of customization. As of the time of writing, the current goal is to to leave untouched the `apply_body` function of the [execution spec](https://ethereum.github.io/execution-specs/src/ethereum/osaka/fork.py.html#ethereum.osaka.fork.apply_body:0), while providing maximum flexibility around it. As a consequence, it's currently not possible to add custom transaction types, custom precompiles, or custom fee markets, as any change would potentially also affect the L1 execution environment, and as the proposal becomes more complex, it also becomes more controversial and with lower chances of being accepted. Any changes to the execution environment should be considered only if they would largely prevent the adoption of the precompile.
 
 ## (WIP) Specification
 
