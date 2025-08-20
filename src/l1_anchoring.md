@@ -64,7 +64,21 @@ The validity of the `_anchorStateRoot` value is [explicitly checked](https://git
 
 ### Orbit stack
 
-WIP
+Orbit stack chains relay information from L1 to L2 per message, similarly to the OP stack. New transaction types without signatures are introduced which are derived and authenticated by L1. In particular, the following types are added:
+
+```go
+ArbitrumDepositTxType         = 0x64
+ArbitrumUnsignedTxType        = 0x65
+ArbitrumContractTxType        = 0x66
+ArbitrumRetryTxType           = 0x68
+ArbitrumSubmitRetryableTxType = 0x69
+ArbitrumInternalTxType        = 0x6A
+ArbitrumLegacyTxType          = 0x78
+```
+
+ArbOS handles the translation from [message types](./orbit_stack.md#l1-to-l2-messaging) to transaction types. For example, a `L1MessageType_L2FundedByL1` message generates two transactions, one with type `ArbitrumDepositTxType` for funding and a `ArbitrumUnsignedTxType` for the actual message.
+
+As opposed to other chains, retryable messages are implemented as a new transaction type instead of being implemented within smart contract logic. There's no higher-level API that is recommended to be used for messaging. 
 
 ## Proposed design
 
