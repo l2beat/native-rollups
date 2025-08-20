@@ -22,7 +22,7 @@ While L1 ZK-EVM is not needed for the re-execution version, statelessness is, as
 
 The `EXECUTE` precompile should re-use as much as possible the existing STF infrastructure, while also trying to provide the highest possible level of customization. As of the time of writing, the current goal is to to leave untouched the `apply_body` function of the [execution spec](https://ethereum.github.io/execution-specs/src/ethereum/osaka/fork.py.html#ethereum.osaka.fork.apply_body:0), while providing maximum flexibility around it. As a consequence, it's currently not possible to add custom transaction types, custom precompiles, or custom fee markets, as any change would potentially also affect the L1 execution environment, and as the proposal becomes more complex, it also becomes more controversial and with lower chances of being accepted. Any changes to the execution environment should be considered only if they would largely prevent the adoption of the precompile.
 
-Significant parts of the design depend on its [tech dependencies](tech_dependencies.md) design, which might still be in development. The specification of the precompile tries to the precompile as if such features were already implemented, without trying to predict exact details. Significant changes are therefore expected once they mature.
+Significant parts of the design depend on its [tech dependencies](tech_dependencies.md) design, which might still be in development. The precompile tries to be specified as if such features were already implemented, without trying to predict exact details. Significant changes are therefore expected once they mature.
 
 ## (WIP) Specification
 
