@@ -8,6 +8,7 @@
   - [OP stack](#op-stack)
   - [Linea](#linea)
   - [Taiko](#taiko)
+  - [Orbit stack](#orbit-stack)
 - [Proposed design](#proposed-design)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
