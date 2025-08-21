@@ -13,7 +13,7 @@
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 ## Overview
-To allow messaging from L1 to L2, a rollup needs to be able to obtain some information from the L1 chain, with the most general information being an L1 block hash. In practice, projects relay from L1 various types of information depending on their specific needs.
+To allow messaging from L1 to L2, a rollup needs to be able to obtain some information from the L1 chain, with the most general information being an L1 block hash. The process of placing a "cross-chain validity reference" is tipically called "anchoring". In practice, projects relay from L1 various types of information depending on their specific needs.
 
 ## Current approaches
 
@@ -38,7 +38,7 @@ function anchorL1L2MessageHashes(
 ) external whenTypeNotPaused(PauseType.GENERAL) onlyRole(L1_L2_MESSAGE_SETTER_ROLE)
 ```
 
-On L1, a wrapper around the STF checks that the "rolling hash" being relayed is correct, otherwise proof verificatoin fails. Since anchoring is done through regular transactions, the function is permissioned, otherwise any user could send a transaction with an invalid rolling hash, which would be accepted by the L2 but rejected during settlement.
+The permissioned relayer is supposed to only relay rolling hashes that are associated with L1 blocks that are finalized. On L1, a wrapper around the STF checks that the "rolling hash" being relayed is correct, otherwise proof verificatoin fails. Since anchoring is done through regular transactions, the function is permissioned, otherwise any user could send a transaction with an invalid rolling hash, which would be accepted by the L2 but rejected during settlement. In other words, blocks containing invalid anchor transactions are not considered no-ops.
 
 ### Taiko
 [[docs](https://github.com/taikoxyz/taiko-mono/blob/a36f99f1e820e52e12f97f804837c2828e941a41/packages/protocol/docs/how_taiko_proves_blocks.md#anchor-transactions)] An `anchorV3` function is implemented in the `TaikoAnchor` contract which allows a `GOLDEN_TOUCH_ADDRESS` to relay an L1 state root to L2. The private key of the `GOLDEN_TOUCH_ADDRESS` is publicly known, but the node guarantees that the first transaction is always an anchor transaction, and that other transactions present in the block revert.
