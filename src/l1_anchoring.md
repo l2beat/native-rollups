@@ -60,6 +60,8 @@ function anchorV3(
     nonReentrant
 ```
 
+Since proposing blocks in Taiko is untrusted, some additional checks are performed on the validity of anchor blocks, which are passed on L1. In particular, it is checked that the anchor block number is not more than 96 blocks in the past, that it is less than current block number, and that it is greater than the latest anchor block.
+
 The validity of the `_anchorStateRoot` value is [explicitly checked](https://github.com/taikoxyz/taiko-mono/blob/56a28bb5b59510c9b708ed4222d5260f64d346c6/packages/protocol/docs/how_taiko_proves_blocks.md#signal-storage) by Taiko's proof system.
 
 ### Orbit stack
