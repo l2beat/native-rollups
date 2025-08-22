@@ -46,4 +46,4 @@ Goals of this book include:
 - Provide in-depth explanations of the inner workings of the `EXECUTE` precompile.
 - Provide technical guidance on how native rollups can be built around the precompile.
 - Educate readers on the benefits of native execution and how the proposal compares to other scalability solutions.
-- Foster a community of like-minded individuals by providing resources, tools and best practices for collaboration.
+- Provide a starting point for community members to discuss and contribute to the design and implementation of native rollups.
