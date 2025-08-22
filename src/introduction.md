@@ -15,7 +15,7 @@
 
 ## What are native rollups?
 
-A native rollup is a new type of EVM-based rollup that directly makes use of Ethereum's execution environment for their own state transitions, removing the need for complex and hard-to-maintain proof systems.
+A native rollup is a new type of EVM-based rollup that directly makes use of Ethereum's execution environment for its own state transitions, removing the need for complex and hard-to-maintain proof systems.
 
 ## Problem statement
 
