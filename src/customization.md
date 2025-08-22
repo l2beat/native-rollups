@@ -6,4 +6,9 @@
 - [Customization](#customization)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
-WIP
+WIP.
+
+To be discussed:
+- custom gas tokens.
+- custom sequencing.
+- custom VMs.

@@ -8,6 +8,7 @@
   - [OP stack](#op-stack)
   - [Linea](#linea)
   - [Taiko](#taiko)
+  - [Orbit stack](#orbit-stack)
 - [Other approaches](#other-approaches)
   - [Manual state manipulation](#manual-state-manipulation)
   - [Beacon chain withdrawals](#beacon-chain-withdrawals)

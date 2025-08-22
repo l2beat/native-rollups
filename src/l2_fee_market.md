@@ -10,8 +10,14 @@
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 ## Pricing
 
-WIP
+WIP.
+
+To be discussed:
+- handling of DA costs in the L2 transactions fee market.
 
 ## Fee collection
 
-WIP
+WIP.
+
+To be discussed:
+- whether there are ways to redirect basefees to custom recipients.
