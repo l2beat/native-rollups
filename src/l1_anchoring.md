@@ -27,7 +27,7 @@ It's important to note that reception of L1 to L2 messages on the L2 side does n
 
 ### Linea
 
-Linea, in their `L2MessageService` contract on L2, adds a function that allows a permissioned relayer to send information from L1 to L2:
+Linea, in the `L2MessageService` contract on L2, adds a function that allows a permissioned relayer to send information from L1 to L2:
 
 ```solidity
 function anchorL1L2MessageHashes(
@@ -38,7 +38,7 @@ function anchorL1L2MessageHashes(
 ) external whenTypeNotPaused(PauseType.GENERAL) onlyRole(L1_L2_MESSAGE_SETTER_ROLE)
 ```
 
-The permissioned relayer is supposed to only relay rolling hashes that are associated with L1 blocks that are finalized. On L1, a wrapper around the STF checks that the "rolling hash" being relayed is correct, otherwise proof verificatoin fails. Since anchoring is done through regular transactions, the function is permissioned, otherwise any user could send a transaction with an invalid rolling hash, which would be accepted by the L2 but rejected during settlement. In other words, blocks containing invalid anchor transactions are not considered no-ops.
+The permissioned relayer is supposed to only relay rolling hashes that are associated with L1 blocks that are finalized. On L1, a wrapper around the STF checks that the "rolling hash" being relayed is correct, otherwise proof verification fails. Since anchoring is done through regular transactions, the function is permissioned, otherwise any user could send a transaction with an invalid rolling hash, which would be accepted by the L2 but rejected during settlement. In other words, blocks containing invalid anchor transactions are not considered no-ops.
 
 ### Taiko
 [[docs](https://github.com/taikoxyz/taiko-mono/blob/a36f99f1e820e52e12f97f804837c2828e941a41/packages/protocol/docs/how_taiko_proves_blocks.md#anchor-transactions)] An `anchorV3` function is implemented in the `TaikoAnchor` contract which allows a `GOLDEN_TOUCH_ADDRESS` to relay an L1 state root to L2. The private key of the `GOLDEN_TOUCH_ADDRESS` is publicly known, but the node guarantees that the first transaction is always an anchor transaction, and that other transactions present in the block revert.
@@ -62,7 +62,7 @@ function anchorV3(
 
 Since proposing blocks in Taiko is untrusted, some additional checks are performed on the validity of anchor blocks, which are passed on L1. In particular, it is checked that the anchor block number is not more than 96 blocks in the past, that it is less than current block number, and that it is greater than the latest anchor block.
 
-The validity of the `_anchorStateRoot` value is [explicitly checked](https://github.com/taikoxyz/taiko-mono/blob/56a28bb5b59510c9b708ed4222d5260f64d346c6/packages/protocol/docs/how_taiko_proves_blocks.md#signal-storage) by Taiko's proof system.
+The validity of the `_anchorStateRoot` value is [explicitly checked](https://github.com/taikoxyz/taiko-mono/blob/56a28bb5b59510c9b708ed4222d5260f64d346c6/packages/protocol/docs/how_taiko_proves_blocks.md#signal-storage) by Taiko's proof system. L2 blocks containing an invalid anchor block are skipped.
 
 ### Orbit stack
 
@@ -80,7 +80,7 @@ ArbitrumLegacyTxType          = 0x78
 
 ArbOS handles the translation from [message types](./orbit_stack.md#l1-to-l2-messaging) to transaction types. For example, a `L1MessageType_L2FundedByL1` message generates two transactions, one with type `ArbitrumDepositTxType` for funding and a `ArbitrumUnsignedTxType` for the actual message.
 
-As opposed to other chains, retryable messages are implemented as a new transaction type instead of being implemented within smart contract logic. There's no higher-level API that is recommended to be used for messaging. 
+As opposed to other chains, retryable messages are implemented as a new transaction type instead of being implemented within smart contract logic.
 
 ## Proposed design
 
