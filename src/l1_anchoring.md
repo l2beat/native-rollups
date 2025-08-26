@@ -85,3 +85,9 @@ As opposed to other chains, retryable messages are implemented as a new transact
 ## Proposed design
 
 An `L1_ANCHOR` system contract is predeployed on L2 that receives an arbitrary `bytes32` value from L1 to be saved in its storage. The contract is intended to be used for L1->L2 messaging without being tied to any specific format, as long it is encoded as a `bytes32` value. Validation of this value is left to the rollup contract on L1. The exact implementation of the contract is TBD, but [EIP-2935](https://eips.ethereum.org/EIPS/eip-2935) can be used as a reference. A messaging system can be implemented on top of this by passing roots and providing proofs of inclusions on the L2. Such mechanisms are better discussed in [L1 to L2 messaging](./l1_l2_messaging.md).
+
+### Other approaches
+
+One approach consists in re-using the `parent_beacon_block_root` field to pass an arbitrary `bytes32` value, which is saved in the `BEACON_ROOTS_ADDRESS` predeploy on L2 as defined in [EIP-4788](https://eips.ethereum.org/EIPS/eip-4788). This would allow not to have an additional system transaction in the `EXECUTE` precompile and an additional predeploy, at the cost of changing the semantics of `parent_beacon_block_root` if data that is not a beacon block root is passed. Some projects might want to both pass the beacon block root and a custom L1 anchor value.
+
+Another [proposed design](https://hackmd.io/@peter-scroll/rJSKJAFnyx) suggest passing arbitrary `bytes` as in-memory context instead of a `bytes32` that gets saved in storage. This requires an additional precompile on L2 to be able to read such context, which would not be usable on L1.
