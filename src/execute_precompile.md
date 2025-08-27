@@ -64,8 +64,9 @@ def execute(evm: Evm) -> None:
 		parent_beacon_block_root=... # TBD
     )
 
-    # Handle L1 anchoring
-    process_unchecked_system_transaction( # TODO: consider unchecked vs checked and gas accounting if the predeploy is custom
+    # Handle L1 anchoring. The system tx is `checked` because we don't have assurance that the predeploy is there and correct.
+    # Consider whether this check is needed at all, or whether it just unnecessarily reduces flexibility.
+    process_checked_system_transaction(
         block_env=block_env,
         target_address=L1_ANCHOR_ADDRESS, # TBD: exact predeploy address + implementation. Also: does it even need to be a fixed address?
         data=l1_anchor # TBD: exact format
