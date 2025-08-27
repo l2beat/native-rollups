@@ -65,7 +65,7 @@ def execute(evm: Evm) -> None:
     )
 
     # Handle L1 anchoring. The system tx is `checked` because we don't have assurance that the predeploy is there and correct.
-    # Consider whether this check is needed at all, or whether it just unnecessarily reduces flexibility.
+    # TODO: Consider whether this check is needed at all, or whether it just unnecessarily reduces flexibility.
     process_checked_system_transaction(
         block_env=block_env,
         target_address=L1_ANCHOR_ADDRESS, # TBD: exact predeploy address + implementation. Also: does it even need to be a fixed address?
