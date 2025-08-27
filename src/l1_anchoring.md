@@ -10,6 +10,7 @@
   - [Taiko](#taiko)
   - [Orbit stack](#orbit-stack)
 - [Proposed design](#proposed-design)
+  - [Other approaches](#other-approaches)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 ## Overview
