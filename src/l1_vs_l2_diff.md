@@ -6,6 +6,7 @@
 
 - [Blob-carrying transactions](#blob-carrying-transactions)
 - [RANDAO](#randao)
+- [Beacon roots storage](#beacon-roots-storage)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 ## Blob-carrying transactions
@@ -21,3 +22,10 @@ Since the `EXECUTE` precompile does a recursive call to `apply_body` and not `st
 The `block.prevrandao` behaviour across existing rollups varies. Orbit stack chains return the constant `1`. OP stack chains return the value from the latest synced L1 block on L2. Linea returns the constant `2`. Scroll returns the constant `0`. ZKsync returns the constant `2500000000000000`.
 
 The current proposal is to leave the field as an input to the `EXECUTE` precompile so that projects can decide by themselves how to handle it.
+
+## Beacon roots storage
+
+Not all projects support [EIP-4788: Beacon block root in the EVM](https://eips.ethereum.org/EIPS/eip-4788) as rollups are not directly connected to the beacon chain. The `EXECUTE` precompile leaves the `parent_beacon_block_root` as an input so that projects can decide by themselves how to handle it.
+
+- Chains with support: [OP stack](https://specs.optimism.io/protocol/exec-engine.html#ecotone-beacon-block-root).
+- Chains without support: [Orbit stack](https://arbiscan.io/address/0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02), [Taiko](https://taikoscan.io/address/0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02), [Linea](https://lineascan.build/address/0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02), [Scroll](https://scrollscan.com/address/0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02), [ZKsync Era](https://era.zksync.network/address/0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02).
