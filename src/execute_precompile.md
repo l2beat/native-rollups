@@ -52,7 +52,7 @@ def execute(evm: Evm) -> None:
 	
 	block_env = vm.BlockEnvironment(
 		chain_id=chain_id,
-		state=pre_state,
+		state=pre_state, # NOTE: this is an L2 state!
 		block_gas_limit=block_gas_limit,
 		block_hashes=..., # TBD: depends how it will look like post-7709
 		coinbase=coinbase,
