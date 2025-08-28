@@ -70,8 +70,7 @@ def execute(evm: Evm) -> None:
         target_address=L1_ANCHOR_ADDRESS, # TBD: exact predeploy address + implementation. Also: does it even need to be a fixed address?
         data=l1_anchor # TBD: exact format
     )
-
-	# TODO: decide what to do things that are not valid on a rollup, e.g. blobs
+	
 	block_output = apply_body(
 		block_env=block_env,
 		transactions=transactions,
