@@ -13,6 +13,7 @@
   - [Manual state manipulation](#manual-state-manipulation)
   - [Beacon chain withdrawals](#beacon-chain-withdrawals)
 - [Proposed design](#proposed-design)
+  - [The first deposit problem](#the-first-deposit-problem)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 ## Overview

@@ -42,7 +42,7 @@ def execute(evm: Evm) -> None:
 	block_gas_limit = ... buffer_read(...) # TBD: depends on ZK gas handling
 	coinbase = ... buffer_read(...)
     prev_randao = ... buffer_read(...)
-	transactions = ... buffer_read(...) # TBD: this should be a ref to blobs
+	transactions = ... buffer_read(...) # TBD: this should be a ref to blobs. TODO: think whether it should also support storage and memory
     l1_anchor = ... buffer_read(...) # TBD: arbitrary info that is passed from L1 to L2 storage
 
     # Disable blob-carrying transactions
