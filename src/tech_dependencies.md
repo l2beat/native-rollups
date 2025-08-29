@@ -18,11 +18,13 @@ Some adjacent EIPs that are relevant in this context are:
 - [EIP-7709](https://eips.ethereum.org/EIPS/eip-7709): Read BLOCKHASH from storage and update cost (SFI in Fusaka).
 
 ## L1 ZK-EVM
-
 The ZK version of the `EXECUTE` precompile requires the L1 ZK-EVM upgrade to take place first and it will influence how exactly the precompile will be implemented:
 
 - Offchain vs onchain proofs: influences whether the precompile needs to take a ZK proof (or multiple proofs) as input.
 - Gas limit handling: influences whether the precompile needs to take a gas limit as an input or not. Some L1 ZK-EVM proposals suggest the complete removal of the gas limit, as long as the block proposer itself is also required to provide the ZK proof (see [Prover Killers Killer: You Build it, You Prove it](https://ethresear.ch/t/prover-killers-killer-you-build-it-you-prove-it/22308)).
+
+## FOCIL (EIP-7805)
+While not strictly required, the addition of [FOCIL](https://eips.ethereum.org/EIPS/eip-7805) would help simplifying the design of forced transaction mechanisms, as described in the FOCIL section of the [Forced transactions](./forced_transactions.md#focil-eip-7805) page.
 
 ## RISC-V (or equivalent)
 
