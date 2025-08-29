@@ -6,6 +6,7 @@
 
 - [Statelessness (EIP-6800)](#statelessness-eip-6800)
 - [L1 ZK-EVM](#l1-zk-evm)
+- [FOCIL (EIP-7805)](#focil-eip-7805)
 - [RISC-V (or equivalent)](#risc-v-or-equivalent)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->

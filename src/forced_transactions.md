@@ -5,7 +5,8 @@
 **Table of Contents**
 
 - [Overview](#overview)
-- [Proposed designs](#proposed-designs)
+- [Brainstorming](#brainstorming)
+- [FOCIL (EIP-7805)](#focil-eip-7805)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 ## Overview
