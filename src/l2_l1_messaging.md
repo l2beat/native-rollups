@@ -6,7 +6,32 @@
 - [L2 to L1 messaging](#l2-to-l1-messaging)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
-WIP.
+## Current approaches
 
-To be discussed:
-- whether the state root is enough to handle messaging passing from L2 to L1, or dedicated roots should be allowed to be used.
+While L2 -> L1 messaging can be built on top of the state root that the `EXECUTE` precompile already exposes, some projects expose a shallower interface to make it easier to provide inclusion proofs. We first discuss how existing projects implement L2 -> L1 messaging, to better understand how similar mechanisms can be implemented in native rollups.
+
+### OP stack
+
+[[spec](https://specs.optimism.io/fault-proof/stage-one/optimism-portal.html#block-output)] The piece of data that is used on the L1 side of the L2->L1 messaging bridge is a "block output root, which is defined as:
+```solidity
+struct BlockOutput {
+  bytes32 version;
+  bytes32 stateRoot;
+  bytes32 messagePasserStorageRoot;
+  bytes32 blockHash;
+}
+```
+
+Inclusion proofs are verified against the `messagePasserStorageRoot` instead of the `stateRoot`, which represents the storage root of the `L2ToL1MessagePasser` contract on L2. On the L2 side, the `L2ToL1MessagePasser` contract takes a message, hashes it, and stores it in a mapping.
+
+### Linea
+
+[[docs](https://github.com/Consensys/linea-monorepo/blob/main/docs/architecture-description.md#l2---l1)] Linea uses a custom merkle tree of messages which is then provided as an input during settlement and verified as part of the validity proof. On the L2 side, an `MessageSent` event from the L2->L1 message.
+
+### Taiko
+
+[[docs](https://github.com/taikoxyz/taiko-mono/blob/56a28bb5b59510c9b708ed4222d5260f64d346c6/packages/protocol/docs/multihop_bridging_deployment.md)] Taiko uses the same mechanism as L1->L2 messaging with a `SignalService`. The protocol is general enough to support both providing proofs againt a contract storage root or against a state root, by also providing an account proof.
+
+## Proposed design
+
+WIP.
