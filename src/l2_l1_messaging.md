@@ -7,7 +7,7 @@
   - [OP stack](#op-stack)
   - [Linea](#linea)
   - [Taiko](#taiko)
-  - [Orbit](#orbit)
+  - [Orbit stack](#orbit-stack)
 - [Proposed design](#proposed-design)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
@@ -37,7 +37,7 @@ Inclusion proofs are verified against the `messagePasserStorageRoot` instead of 
 
 [[docs](https://github.com/taikoxyz/taiko-mono/blob/56a28bb5b59510c9b708ed4222d5260f64d346c6/packages/protocol/docs/multihop_bridging_deployment.md)] Taiko uses the same mechanism as [L1->L2 messaging](./l1_l2_messaging.md#taiko) with a `SignalService`. The protocol is general enough to support both providing proofs againt a contract storage root or against a state root, by also providing an account proof.
 
-### Orbit
+### Orbit stack
 
 WIP.
 
