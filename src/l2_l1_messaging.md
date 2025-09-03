@@ -3,7 +3,12 @@
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
 
-- [L2 to L1 messaging](#l2-to-l1-messaging)
+- [Current approaches](#current-approaches)
+  - [OP stack](#op-stack)
+  - [Linea](#linea)
+  - [Taiko](#taiko)
+  - [Orbit](#orbit)
+- [Proposed design](#proposed-design)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 ## Current approaches
@@ -30,8 +35,16 @@ Inclusion proofs are verified against the `messagePasserStorageRoot` instead of 
 
 ### Taiko
 
-[[docs](https://github.com/taikoxyz/taiko-mono/blob/56a28bb5b59510c9b708ed4222d5260f64d346c6/packages/protocol/docs/multihop_bridging_deployment.md)] Taiko uses the same mechanism as L1->L2 messaging with a `SignalService`. The protocol is general enough to support both providing proofs againt a contract storage root or against a state root, by also providing an account proof.
+[[docs](https://github.com/taikoxyz/taiko-mono/blob/56a28bb5b59510c9b708ed4222d5260f64d346c6/packages/protocol/docs/multihop_bridging_deployment.md)] Taiko uses the same mechanism as [L1->L2 messaging](./l1_l2_messaging.md#taiko) with a `SignalService`. The protocol is general enough to support both providing proofs againt a contract storage root or against a state root, by also providing an account proof.
+
+### Orbit
+
+WIP.
 
 ## Proposed design
 
-WIP.
+At this point it's not clear whether it is possible to easily expose a custom data structure from L2 to L1. The `EXECUTE` precompile naturally exposes the state root, and the `block_output` can also expose the `receipts_trie` in some form, for example by exposing its root.
+
+In principle, [EIP-7685: General purpose execution layer requests](https://eips.ethereum.org/EIPS/eip-7685) could be used, but this requires overloading its semantic from EL->CL to L2->L1 requests, and adding a new type of request that also "pollutes" the L1 execution environment.
+
+On the other hand, it is expected that [statelessness](./tech_dependencies.md#statelessness-eip-6800) will help in reducing the cost of providing inclusion proofs directly against a state root, which might remove the need to provide a shallower interface.

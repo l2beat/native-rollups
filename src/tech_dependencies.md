@@ -4,7 +4,7 @@
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
 
-- [Statelessness (EIP-6800)](#statelessness-eip-6800)
+- [Statelessness (EIP-7864)](#statelessness-eip-7864)
 - [L1 ZK-EVM](#l1-zk-evm)
 - [FOCIL (EIP-7805)](#focil-eip-7805)
 - [RISC-V (or equivalent)](#risc-v-or-equivalent)
