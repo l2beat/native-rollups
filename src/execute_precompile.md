@@ -58,6 +58,7 @@ def execute(evm: Evm) -> None:
             raise ExecuteError
 
     # This is normally performed in `validate_header` in `state_transition`
+    # TODO: think about getting the base fee directly as an input and leave calculation to the caller
     base_fee_per_gas = calculate_base_fee_per_gas(
         block_gas_limit,
         parent_gas_limit,
@@ -195,7 +196,7 @@ def execute(evm: Evm) -> None:
         requests_hash           =EMPTY_REQUESTS_HASH
     )
 
-    chain = fork.BlockChain(
+    blockchain = fork.BlockChain(
         state        =pre_state,
         chain_id     =chain_id,
         parent_header=parent_header,
@@ -237,7 +238,7 @@ def execute(evm: Evm) -> None:
         chain_id                =chain.chain_id,
         state                   =chain.state,
         block_gas_limit         =block.header.gas_limit,
-        block_hashes            =EMPTY_BLOCK_HASHES
+        block_hashes            =EMPTY_BLOCK_HASHES,
         coinbase                =block.header.coinbase,
         number                  =block.header.number,
         base_fee_per_gas        =block.header.base_fee_per_gas,
@@ -268,12 +269,13 @@ contract Rollup {
 
     struct L2Block {
         bytes32 blobHash;
-        bytes32 prevRandao;
         bytes32 anchor;
+        uint gasUsed;
+        uint baseFeePerGas;
     }
 
-	uint64 public constant chainId = 1234321;
-	uint public gasLimit;
+	uint64 public constant CHAIN_ID = 1234321;
+	uint public constant GAS_LIMIT = 30_000_000;
 	
 	// latest settled state
 	bytes32 public state;
@@ -292,11 +294,12 @@ contract Rollup {
 	
     // assumes that one blob is one block
     // NOTE: if preconfs need to be supported, then it should not use current block info
-	function sequence(uint _blobIndex) public {
+	function sequence(uint _blobIndex, uint _gasUsed, uint _baseFeePerGas) public {
 		blocks[nextBlockNumberToSequence] = L2Block({
             blobHash: blobhash(index),
-            prevRandao: block.prevrandao,
-            anchor: blockhash(block.number - 1)
+            anchor: blockhash(block.number - 1),
+            gasUsed: _gasUsed,
+            baseFeePerGas: _baseFeePerGas
         });
         nextBlockNumberToSequence++;
 	}
@@ -305,18 +308,22 @@ contract Rollup {
 		bytes32 _newState,
 		bytes32 _receipts,
 	) public {
-        (bytes32 blobHash, bytes32 prev_randao, bytes32 anchor) = blocks[nextBlockNumberToSettle];
+        (bytes32 blobHash, bytes32 anchor) = blocks[nextBlockNumberToSettle];
+        (/* blobhash */, /* anchor */, uint parentGasUsed, uint parentBaseFeePerGas) = blocks[nextBlockNumberToSettle - 1]; // TODO: missing gas info validation
 
 		EXECUTE(
-			chainId,
+			CHAIN_ID,
 			nextBlockNumberToSettle,
 			state,
 			_newState,
 			_receipts,
-			gasLimit,
+			GAS_LIMIT,
 			msg.sender,
-            prev_randao, 
+            0, // randao not supported 
 			blobhash, // TBD: this should be a ref to past blobs. Currently a placeholder, assumes blobs are uniquely identified by their blobhash, which is not true today.
+            GAS_LIMIT, // represents parent's gas limit
+            parentGasUsed,
+            parentBaseFeePerGas,
             anchor // to be used for anchoring L1 -> L2 msgs on L2
 		)
 
