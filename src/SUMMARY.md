@@ -12,6 +12,7 @@
 - [L1 vs L2 diff](./l1_vs_l2_diff.md)
 - [Open problems](./open_problems.md)
 - [Customization](./customization.md)
+- [Proofs](./proofs.md)
 - [Sharding](./sharding_comparison.md)
 - [Stacks review](./stacks_review.md)
   - [Orbit stack](./orbit_stack.md)

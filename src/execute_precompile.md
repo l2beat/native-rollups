@@ -7,6 +7,8 @@
 - [Re-execution vs ZK enforcement](#re-execution-vs-zk-enforcement)
 - [Design principles](#design-principles)
 - [(WIP) Specification](#wip-specification)
+  - [`apply_body` variant](#apply_body-variant)
+  - [`state_transition` variant](#state_transition-variant)
 - [(WIP) Usage example](#wip-usage-example)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
