@@ -11,6 +11,15 @@
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
+## Relevant links
+
+- [ZK L1 2026 Roadmap](https://github.com/eth-act/planning/blob/91152e188cd4e4d7ad77796ddfcaee9cbbcbec64/projects.md)
+- [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)
+- [Execution Layer Rollout plan](https://hackmd.io/i4z1eOYATKq3Ang-9Zw5hQ)
+- [Reth's `StatelessInput` definition](https://github.com/paradigmxyz/reth/blob/b3c00ed602f2a8805974f25be714a3bea26901e9/crates/stateless/src/lib.rs#L64)
+- [ethrex's execution witness docs](https://github.com/lambdaclass/ethrex/blob/360f6a10bde8fcbc99514f672d00bc7dcbf283d9/docs/l2/fundamentals/execution_witness.md#L3-L13)
+- [State redesign tracking issue](https://github.com/ethereum/execution-specs/issues/1865)
+
 ## Statelessness (EIP-7864)
 L1 validators shouldn't store the state of all rollups, therefore the `EXECUTE` precompile requires its verification to be stateless. The statelessness upgrade is therefore required, with all its associated EIPs.
 
@@ -24,6 +33,8 @@ The ZK version of the `EXECUTE` precompile requires the L1 ZK-EVM upgrade to tak
 - Offchain vs onchain proofs: influences whether the precompile needs to take a ZK proof (or multiple proofs) as input.
 - Gas limit handling: influences whether the precompile needs to take a gas limit as an input or not. Some L1 ZK-EVM proposals suggest the complete removal of the gas limit, as long as the block proposer itself is also required to provide the ZK proof (see [Prover Killers Killer: You Build it, You Prove it](https://ethresear.ch/t/prover-killers-killer-you-build-it-you-prove-it/22308)).
 
+Relevant EIPs:
+- [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025): Optional Execution Proofs
 ## FOCIL (EIP-7805)
 While not strictly required, the addition of [FOCIL](https://eips.ethereum.org/EIPS/eip-7805) would help simplifying the design of forced transaction mechanisms, as described in the FOCIL section of the [Forced transactions](./forced_transactions.md#focil-eip-7805) page.
 
