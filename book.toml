@@ -5,5 +5,5 @@ src = "src"
 title = "Native rollups"
 
 [output.html]
-additional-js = ["static/solidity.min.js"]
+additional-js = ["static/solidity.min.js", "static/external-links.js"]
 default-theme = "ayu"

@@ -44,7 +44,7 @@ def execution_payload_data_to_blobs(data: ExecutionPayloadData) -> List[Blob]:
 
 ## Stateless validation
 - [stateless_types.py](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_types.py#L28)
-- [stateless.py](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L128)
+- [stateless.py](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L129)
 - [execution_engine/types.py](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L30)
 
 ```py
@@ -181,5 +181,6 @@ def verify_stateless_new_payload(
             stateless_input
         ),
         successful_validation=True,
+        chain_config=stateless_input.chain_config,
     )
 ```
