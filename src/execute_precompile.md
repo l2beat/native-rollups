@@ -237,7 +237,7 @@ contract NativeRollup {
     // against the anchored L1 block hash to prove the message exists.
     function sendMessage(address to, bytes calldata data) external payable {
         bytes32 messageHash = keccak256(
-            abi.encodePacked(msg.sender, to, msg.value, data, pendingL1Messages.length)
+            abi.encodePacked(msg.sender, to, msg.value, keccak256(data), pendingL1Messages.length)
         );
         pendingL1Messages.push(messageHash);
     }
@@ -533,7 +533,7 @@ contract NativeRollup {
 
     function sendMessage(address to, bytes calldata data) external payable {
         bytes32 messageHash = keccak256(
-            abi.encodePacked(msg.sender, to, msg.value, data, pendingL1Messages.length)
+            abi.encodePacked(msg.sender, to, msg.value, keccak256(data), pendingL1Messages.length)
         );
         pendingL1Messages.push(messageHash);
     }
