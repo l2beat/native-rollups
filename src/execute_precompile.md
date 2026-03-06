@@ -125,61 +125,48 @@ The ethrex project implements a version of this approach ([PR #6186](https://git
 The `EXECUTE` precompile wraps [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L129) with L2-specific preprocessing. The pseudocode uses types and functions from the [execution-specs](https://github.com/ethereum/execution-specs/tree/projects/zkevm/src/ethereum/forks/amsterdam):
 
 ```python
-from ethereum_types.numeric import U64
+from ethereum_types.numeric import U64, U256
+
+from ethereum_rlp import rlp
 
 from ethereum.forks.amsterdam.vm import Evm
 from ethereum.forks.amsterdam.vm.gas import charge_gas
 from ethereum.forks.amsterdam.vm.exceptions import InvalidParameter
 
 from ethereum.forks.amsterdam.stateless import (
-    ChainConfig,
     StatelessInput,
     verify_stateless_new_payload,
-)
-from ethereum.forks.amsterdam.execution_engine.types import (
-    NewPayloadRequest,
-)
-from ethereum.forks.amsterdam.stateless_types import (
-    ExecutionWitness,
 )
 
 
 def execute(evm: Evm) -> None:
     data = evm.message.data
+    stateless_input = rlp.decode_to(StatelessInput, data)
 
-    # Decode input (TBD: exact serialization scheme).
-    new_payload_request = decode_new_payload_request(data)
-    witness = decode_execution_witness(data)
-    chain_config = decode_chain_config(data)
-    public_keys = decode_public_keys(data)
-
-    charge_gas(evm, new_payload_request.execution_payload.gas_used)
+    charge_gas(evm, stateless_input.new_payload_request.execution_payload.gas_used)
 
     # L2-specific preprocessing: reject blob transactions.
-    payload = new_payload_request.execution_payload
+    payload = stateless_input.new_payload_request.execution_payload
     if payload.blob_gas_used != U64(0) or payload.excess_blob_gas != U64(0):
         raise InvalidParameter
 
     # Standard stateless validation (identical to L1).
-    stateless_input = StatelessInput(
-        new_payload_request=new_payload_request,
-        witness=witness,
-        chain_config=chain_config,
-        public_keys=public_keys,
-    )
     result = verify_stateless_new_payload(stateless_input)
 
     if not result.successful_validation:
         raise InvalidParameter
 
-    evm.output = result.new_payload_request_root + result.chain_config
+    evm.output = (
+        result.new_payload_request_root
+        + U256(result.chain_config.chain_id).to_be_bytes32()
+    )
 ```
 
-**Input:** The precompile reads its input from `evm.message.data`, which contains a serialized [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L64), [`ExecutionWitness`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_types.py#L28), [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L52), and `public_keys`. The exact serialization scheme is TBD (see [Open questions](#open-questions)).
+**Input:** The precompile reads its input from `evm.message.data`, which contains an RLP-encoded [`StatelessInput`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L65).
 
 **Output:**
 
-- **On success:** `evm.output` contains the concatenation of `new_payload_request_root` and `chain_config`, where `new_payload_request_root` is the root of the [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L64) and `chain_config` includes the `chain_id` used during execution (see [PR #2342](https://github.com/ethereum/execution-specs/pull/2342)).
+- **On success:** `evm.output` contains `new_payload_request_root` (32 bytes) followed by `chain_id` as a big-endian 32-byte word. The `new_payload_request_root` is the root of the [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L64) and `chain_id` comes from the [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L52) used during execution (see [PR #2342](https://github.com/ethereum/execution-specs/pull/2342)).
 - **On failure:** raises `InvalidParameter` ([`ExceptionalHalt`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/vm/exceptions.py)). This consumes all gas and causes the `STATICCALL` to return `success = false` with empty output.
 
 ### L2-specific preprocessing
@@ -297,8 +284,8 @@ contract NativeRollup {
         // 3. Decode and verify result.
         //    The precompile only returns output on success, so no need
         //    to check a validationSuccessful field.
-        (bytes32 newPayloadRequestRoot, uint64 provenChainId) =
-            abi.decode(result, (bytes32, uint64));
+        (bytes32 newPayloadRequestRoot, uint256 provenChainId) =
+            abi.decode(result, (bytes32, uint256));
         require(provenChainId == chainId, "chain_id mismatch");
 
         // 4. Update onchain state
@@ -652,7 +639,7 @@ This reduces per-block verification cost from 1 + N to 1, at the expense of incr
 
 4. **Root computation library**: The rollup contract needs to compute `new_payload_request_root` onchain (via `compute_new_payload_request_root`) and then hash the full `StatelessValidationResult`. The availability and gas cost of the required libraries in Solidity is a practical consideration.
 
-5. **Re-execution data encoding**: How `NewPayloadRequest` and `ExecutionWitness` are ABI-encoded for the `EXECUTE` precompile calldata is TBD. The encoding must be efficient given the potentially large witness size.
+5. **Re-execution data encoding**: The `EXECUTE` precompile takes an RLP-encoded `StatelessInput` as calldata. The encoding must be efficient given the potentially large witness size.
 
 6. **Re-execution gas cost**: The gas cost of the `EXECUTE` precompile depends on the L2 block complexity. The gas metering model is TBD.
 
