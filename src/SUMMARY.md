@@ -16,3 +16,4 @@
 - [Sharding](./sharding_comparison.md)
 - [Stacks review](./stacks_review.md)
   - [Orbit stack](./orbit_stack.md)
+- [L1 ZK-EVM tracker](./l1_zkevm_tracker.md)

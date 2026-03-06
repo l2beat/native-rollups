@@ -25,7 +25,7 @@ For L1, the ZK current interface candidate looks as follows:
 - **Verifier**: takes in input the blockhash, parenthash and boolean saying whether the STF is valid or not. The blockhash already contains the parenthash, but we need to check whether the one we already have matches with the new block being validated.
 - **Prover**: takes a block and an execution witness. The execution witness is computed during payload execution and it is made up of the all required state trie node preimages required for execution, list of all contract code preimages required for execution, all account and storage key preimages required for execution, and the state root of the previous block header which contains the pre-state and the parent header info required for validation.
 
-Given that the inputs reflect those of the `state_transition` function, if the `state_transition` [variant](./execute_precompile.md#state_transition_variant) is chosen, the same verification keys can be used both for L1 blocks and for native rollup blocks.
+Given that the inputs reflect those of the `state_transition` function, the same verification keys can potentially be used both for L1 blocks and for native rollup blocks.
 
 ## Non-enshrined vs enshrined proofs
 
