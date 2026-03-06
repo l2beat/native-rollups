@@ -38,15 +38,13 @@ The [original proposal](https://ethresear.ch/t/native-rollups-superpowers-from-l
 
 The re-execution variant would only be able to support optimistic rollups with a bisection protocol that goes down to single or few-L2-blocks sized steps, and that are EVM-equivalent. Today there are three stacks with working bisection protocols, namely Orbit stack (Arbitrum), OP stack (Optimism) and Cartesi. Cartesi is built to run a Linux VM so they wouldn't be able to use the precompile, and Orbit supports [Stylus](https://arbitrum.io/stylus) which doesn't make them fully EVM-equivalent, unless a Stylus-less version is implemented, but even in this case it wouldn't be able to support Arbitrum One. OP stack is mostly EVM-equivalent, but still requires heavy modifications to support native execution. It's therefore unclear whether trying to implement the re-execution version of the precompile is worth it, or if it's better to wait for the more powerful ZK version.
 
-While the L1 ZK-EVM upgrade is not needed for the re-execution version, statelessness is, as we want L1 validators to be able to verify the precompile without having to hold all rollups' state. It's not clear whether the time interval between statelessness and L1 ZK-EVM will be long enough to justify the implementation of the re-execution variant.
+While the L1 ZK-EVM upgrade is not needed for the re-execution version, statelessness is, as we want L1 validators to be able to verify the precompile without having to hold all rollups' state. It's not clear whether the time interval between statelessness and L1 ZK-EVM will be long enough to justify the implementation of the re-execution variant, or whether statelessness will be implemented before the L1 ZK-EVM in the first place.
 
 Both variants are specified in this document. The re-execution spec comes first because it is simpler and helps explain the progression to ZK: the core function being executed or proven is the same ([`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L129)), and the contract patterns (state management, messaging, anchoring) are shared. The ZK spec then shows what changes when re-execution is replaced by proof verification.
 
-The [EIP-8079](https://eips.ethereum.org/EIPS/eip-8079) precompile definition remains a useful reference for the L2-specific preprocessing logic (blob transaction filtering, L1 anchoring) that native rollups require on top of the standard state transition. The [ethrex](https://github.com/lambdaclass/ethrex) project has a working proof of concept of the re-execution variant (see [PR #6186](https://github.com/lambdaclass/ethrex/pull/6186)).
-
 ## Design principles
 
-The core principle is to re-use as many L1 components as possible. L2 operators run the same proving infrastructure as L1 provers: they prove the same program ([`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L129)) with the same verification keys. L1 nodes verify L2 proofs using the same [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025) infrastructure they use for L1 block proofs. In the re-execution variant, L1 validators run the same stateless validation function directly.
+The core principle is to re-use as many L1 components as possible. L2 operators run the same proving infrastructure as L1 provers: they prove the same program ([`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L129)) with the same keys. L1 nodes verify L2 proofs using the same [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025) infrastructure they use for L1 block proofs. In the re-execution variant, L1 validators run the same stateless validation function directly.
 
 This means native rollups inherit whatever the L1 EVM supports: no custom transaction types, precompiles, or fee markets on the L2 side. Any such change would require modifying the shared program, making the proposal more complex and harder to accept. The L2-specific logic (blob transaction filtering, L1 anchoring) is kept outside the standard function, in a thin preprocessing layer.
 
@@ -131,7 +129,7 @@ from ethereum_rlp import rlp
 
 from ethereum.forks.amsterdam.vm import Evm
 from ethereum.forks.amsterdam.vm.gas import charge_gas
-from ethereum.forks.amsterdam.vm.exceptions import InvalidParameter
+from ethereum.forks.amsterdam.vm.exceptions import ExceptionalHalt, InvalidParameter
 
 from ethereum.forks.amsterdam.stateless import (
     StatelessInput,
@@ -145,16 +143,21 @@ def execute(evm: Evm) -> None:
 
     charge_gas(evm, stateless_input.new_payload_request.execution_payload.gas_used)
 
-    # L2-specific preprocessing: reject blob transactions.
+    # L2-specific preprocessing: enforce fixed fields.
     payload = stateless_input.new_payload_request.execution_payload
+    request = stateless_input.new_payload_request
     if payload.blob_gas_used != U64(0) or payload.excess_blob_gas != U64(0):
+        raise InvalidParameter
+    if len(payload.withdrawals) != 0:
+        raise InvalidParameter
+    if len(request.execution_requests) != 0:
         raise InvalidParameter
 
     # Standard stateless validation (identical to L1).
     result = verify_stateless_new_payload(stateless_input)
 
     if not result.successful_validation:
-        raise InvalidParameter
+        raise ExceptionalHalt
 
     evm.output = (
         result.new_payload_request_root
@@ -167,17 +170,21 @@ def execute(evm: Evm) -> None:
 **Output:**
 
 - **On success:** `evm.output` contains `new_payload_request_root` (32 bytes) followed by `chain_id` as a big-endian 32-byte word. The `new_payload_request_root` is the root of the [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L64) and `chain_id` comes from the [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L52) used during execution (see [PR #2342](https://github.com/ethereum/execution-specs/pull/2342)).
-- **On failure:** raises `InvalidParameter` ([`ExceptionalHalt`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/vm/exceptions.py)). This consumes all gas and causes the `STATICCALL` to return `success = false` with empty output.
+- **On failure:** raises `InvalidParameter` for bad fixed fields, or `ExceptionalHalt` if validation fails. Both consume all gas and cause the `STATICCALL` to return `success = false` with empty output.
 
 ### L2-specific preprocessing
 
-The only preprocessing step before `verify_stateless_new_payload` is enforcing `blob_gas_used = 0` and `excess_blob_gas = 0`. L2 does not support type-3 (blob-carrying) transactions. Rather than iterating through all transactions to detect them, the precompile asserts these two fields are zero and raises `InvalidParameter` if the check fails. Since the STF verifies that the computed `blob_gas_used` matches the header claim, any blob transaction would cause a mismatch and be rejected inside `verify_stateless_new_payload` itself. This makes the check O(1) instead of O(n). See also [EIP-8079](https://eips.ethereum.org/EIPS/eip-8079) which defines a similar check.
+The preprocessing steps before `verify_stateless_new_payload` enforce that all fixed fields are zero/empty:
+
+- **`blob_gas_used = 0` and `excess_blob_gas = 0`**: L2 does not support type-3 (blob-carrying) transactions. Rather than iterating through all transactions to detect them, the precompile asserts these two fields are zero. Since the STF verifies that the computed `blob_gas_used` matches the header claim, any blob transaction would cause a mismatch and be rejected inside `verify_stateless_new_payload` itself. This makes the check O(1) instead of O(n). See also [EIP-8079](https://eips.ethereum.org/EIPS/eip-8079) which defines a similar check.
+- **`withdrawals` empty**: L2 has no beacon chain, so withdrawals must be empty. Without this check, an operator could mint arbitrary ETH on L2 via fake withdrawals.
+- **`execution_requests` empty**: L2 has no validator operations (deposits, exits, consolidations).
 
 L1 anchoring does not require preprocessing. The `parent_beacon_block_root` field of `NewPayloadRequest` is repurposed to carry an L1 anchor value chosen by the rollup contract. The existing [EIP-4788](https://eips.ethereum.org/EIPS/eip-4788) system transaction inside `apply_body` writes this value to the [beacon roots predeploy](https://eips.ethereum.org/EIPS/eip-4788#beacon-roots-contract), making it available to L2 contracts. This happens inside `verify_stateless_new_payload`, so the anchor write is covered by the L2 execution proof (or re-execution). No separate system transaction or predeploy is needed. The format of the anchor is not prescribed: rollups can pass an L1 block hash, a message queue commitment, or any other value useful for L1->L2 communication. See [L1 anchoring](./l1_anchoring.md) for more details.
 
 ### NativeRollup contract (re-execution)
 
-The L1 rollup contract calls the `EXECUTE` precompile and updates its onchain state. Like the [ZK variant](#nativerollup-contract-zk), the contract constructs the precompile input from a mix of **storage** (chain state that the contract enforces) and **calldata** (operator-provided fields). The contract stores:
+The following contract is a proof of concept showing how the `EXECUTE` precompile can be used. It calls the precompile and updates its onchain state. Like the [ZK variant](#nativerollup-contract-zk), the contract constructs the precompile input from a mix of **storage** (chain state that the contract enforces) and **calldata** (operator-provided fields). The contract stores:
 
 - `stateRoot`, `blockNumber`, `blockHash`, `gasLimit`: current L2 chain head
 - `chainId`: L2 chain identifier (part of `ChainConfig`)
@@ -245,40 +252,37 @@ contract NativeRollup {
         //    See: l1_anchoring.md, l1_l2_messaging.md
         bytes32 l1Anchor = blockhash(block.number - 1);
 
-        // 2. Call EXECUTE precompile.
-        //    The contract constructs the input from storage + calldata:
-        //    - parent_hash, block_number, gas_limit, chain_id: from storage
-        //    - l1Anchor (parent_beacon_block_root): computed onchain
-        //    - block params, transactions, witness, public_keys: from calldata
-        //    TBD: exact ABI encoding of NewPayloadRequest + ExecutionWitness.
-        (bool success, bytes memory result) = EXECUTE.staticcall(
-            abi.encode(
-                // ExecutionPayload fields
-                blockHash,               // parent_hash (from storage)
-                params.feeRecipient,
-                params.stateRoot,
-                params.receiptsRoot,
-                params.logsBloom,
-                params.prevRandao,
-                blockNumber + 1,         // block_number (from storage)
-                gasLimit,                // gas_limit (from storage)
-                params.gasUsed,
-                params.timestamp,
-                params.extraData,
-                params.baseFeePerGas,
-                params.blockHash,
-                transactions,
-                new bytes[](0),          // withdrawals (empty for L2)
-                // NewPayloadRequest fields
-                l1Anchor,                // parent_beacon_block_root
-                // Witness, config
-                witness,
-                chainId,                 // from storage
-                publicKeys
-            )
+        // 2. Call EXECUTE precompile with RLP-encoded StatelessInput.
+        bytes memory input = RLP.encodeStatelessInput(
+            NewPayloadRequest(
+                ExecutionPayload(
+                    blockHash,                  // parent_hash (from storage)
+                    params.feeRecipient,
+                    params.stateRoot,
+                    params.receiptsRoot,
+                    params.logsBloom,
+                    params.prevRandao,
+                    blockNumber + 1,            // block_number (from storage)
+                    gasLimit,                   // gas_limit (from storage)
+                    params.gasUsed,
+                    params.timestamp,
+                    params.extraData,
+                    params.baseFeePerGas,
+                    params.blockHash,
+                    transactions,
+                    new bytes[](0),             // withdrawals (empty for L2)
+                    0,                          // blob_gas_used (zero for L2)
+                    0                           // excess_blob_gas (zero for L2)
+                ),
+                new bytes32[](0),               // versioned_hashes (empty for re-execution)
+                l1Anchor,                       // parent_beacon_block_root
+                new bytes[](0)                  // execution_requests (empty for L2)
+            ),
+            witness,
+            chainId,
+            publicKeys
         );
-        // On failure, the precompile raises InvalidParameter
-        // (ExceptionalHalt), which makes STATICCALL return false.
+        (bool success, bytes memory result) = EXECUTE.staticcall(input);
         require(success, "EXECUTE failed");
 
         // 3. Decode and verify result.
@@ -383,7 +387,7 @@ The pattern extends EIP-4844:
 | **Onchain reference** | `blob_versioned_hashes` | `blob_versioned_hashes` + `validation_result_root` |
 | **EVM access** | `BLOBHASH` opcode | `BLOBHASH` + `PROOFROOT` opcodes |
 | **CL validation** | Blob availability (KZG, DAS) | Blob availability + proof validity ([EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)) |
-| **EL validation** | `is_valid_versioned_hashes` | Contract checks `PROOFROOT` using `BLOBHASH` |
+| **EL validation** | `is_valid_versioned_hashes` (protocol) | `validation_result_root != 0` (protocol) + contract checks `PROOFROOT` |
 
 See also [Proof-carrying transactions](./proofs.md) for more context on the proof format and the two-proof model.
 
@@ -406,6 +410,8 @@ def proofroot(evm: Evm) -> None:
 
     root = evm.message.tx_env.validation_result_root
     push(evm.stack, root)
+
+    evm.pc += Uint(1)
 ```
 
 If the transaction is not a proof-carrying transaction, `PROOFROOT` returns `bytes32(0)`, analogous to how `BLOBHASH` returns zero for non-blob transactions.
@@ -423,9 +429,9 @@ The blobs use the existing blob gas market. How to price the proof verification 
 
 **EL: transaction environment.** [`TransactionEnvironment`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/vm/__init__.py#L106) is extended with `validation_result_root: Hash32` (set from the transaction in [`process_transaction`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/fork.py#L889), or `bytes32(0)` for non-proof-carrying txs). This is what the `PROOFROOT` opcode reads, mirroring how [`blob_versioned_hashes`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/vm/instructions/environment.py#L560) in `TransactionEnvironment` is what `BLOBHASH` reads.
 
-**EL: engine API.** [`is_valid_versioned_hashes`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/new_payload.py#L43) already validates that versioned hashes from the CL match blob transaction hashes in the payload. For proof-carrying transactions, the same check applies to their `blob_versioned_hashes`. No additional engine API changes are needed: the EL does not see or validate the proof, just as it does not see blob contents.
+**EL: engine API.** [`is_valid_versioned_hashes`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/new_payload.py#L43) validates that versioned hashes from the CL match blob transaction hashes in the payload. It would need to be updated to also extract `blob_versioned_hashes` from `ProofCarryingTransaction` instances (currently it only handles `BlobTransaction`). Beyond this, no additional engine API changes are needed: the EL does not see or validate the proof, just as it does not see blob contents.
 
-**CL: proof validation.** The consensus layer extracts the `execution_proof` from the proof-carrying transaction's sidecar and validates it using [`proof_engine.verify_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/proof-engine.md#new-verify_execution_proof), the same function used for L1 block proofs via [`process_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-process_execution_proof). The proof's [`PublicInput`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-publicinput) must match the `validation_result_root` declared in the transaction body. If the proof is invalid, the L1 block is rejected, analogous to how an invalid KZG proof in a blob sidecar invalidates the block.
+**CL: proof validation.** The consensus layer extracts the `execution_proof` from the proof-carrying transaction's sidecar and validates it using [`proof_engine.verify_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/proof-engine.md#new-verify_execution_proof). Unlike L1 block proofs, which are delivered as [`SignedExecutionProof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-signedexecutionproof) messages signed by active validators and processed via [`process_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-process_execution_proof), L2 proofs are delivered via the transaction sidecar and do not require a validator signature — the CL calls `verify_execution_proof` directly. The proof's public output must match the `validation_result_root` declared in the transaction body. If the proof is invalid, the L1 block is rejected, analogous to how an invalid KZG proof in a blob sidecar invalidates the block.
 
 **CL: data availability.** Blob availability is handled by the existing DAS mechanism ([EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) / [EIP-7594](https://eips.ethereum.org/EIPS/eip-7594) PeerDAS). The CL treats proof-carrying transaction blobs identically to any other blobs: they are included in `blob_kzg_commitments`, sampled via DAS, and their versioned hashes are passed to the EL for cross-verification.
 
@@ -433,7 +439,7 @@ The blobs use the existing blob gas market. How to price the proof verification 
 - Blob/commitment/proof counts match `blob_versioned_hashes` (same as blob txs)
 - `kzg_to_versioned_hash(commitments[i]) == blob_versioned_hashes[i]` (same as blob txs)
 - KZG proofs are valid for the blobs (same as blob txs, via `verify_blob_kzg_proof_batch`)
-- The execution proof is valid for the declared `validation_result_root` (via `proof_engine.verify_execution_proof`)
+- The execution proof is valid for the declared `validation_result_root` (via `proof_engine.verify_execution_proof`). Note: this requires the EL gossip layer to have access to the proof engine, which is currently a CL component. How this cross-layer validation works at gossip time is TBD
 
 **Summary of changes by layer:**
 
@@ -442,7 +448,7 @@ The blobs use the existing blob gas market. How to price the proof verification 
 | **EL: tx type** | `BlobTransaction` (0x03) | `ProofCarryingTransaction` (0x05), adds `validation_result_root` |
 | **EL: validation** | Blob count, version byte, fee checks | Same + `validation_result_root != 0` |
 | **EL: tx env** | `blob_versioned_hashes` | Same + `validation_result_root` |
-| **EL: engine API** | `is_valid_versioned_hashes` | No change (blobs are just blobs) |
+| **EL: engine API** | `is_valid_versioned_hashes` | Updated to also handle `ProofCarryingTransaction` |
 | **CL: validation** | `is_data_available` (DAS) | Same + `proof_engine.verify_execution_proof` |
 | **P2P: sidecar** | `[tx, blobs, commitments, kzg_proofs]` | Same + `execution_proof` |
 
