@@ -120,10 +120,10 @@ The ethrex project implements a version of this approach ([PR #6186](https://git
 
 ### The EXECUTE precompile
 
-The `EXECUTE` precompile wraps [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197) with L2-specific preprocessing. The pseudocode uses types and functions from the [execution-specs](https://github.com/ethereum/execution-specs/tree/projects/zkevm/src/ethereum/forks/amsterdam):
+The `EXECUTE` precompile is the precompile equivalent of [`run_stateless_guest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_guest.py#L33), the ZK guest entry point that takes SSZ-serialized input, runs `verify_stateless_new_payload`, and returns SSZ-serialized output. The precompile adds L2-specific preprocessing (fixed-field checks) before calling the same function. The pseudocode uses types and functions from the [execution-specs](https://github.com/ethereum/execution-specs/tree/projects/zkevm/src/ethereum/forks/amsterdam):
 
 ```python
-from ethereum_types.numeric import U64, U256
+from ethereum_types.numeric import U64
 
 from ethereum.forks.amsterdam.vm import Evm
 from ethereum.forks.amsterdam.vm.gas import charge_gas
@@ -132,16 +132,15 @@ from ethereum.forks.amsterdam.vm.exceptions import ExceptionalHalt, InvalidParam
 from ethereum.forks.amsterdam.stateless import (
     verify_stateless_new_payload,
 )
-from ethereum.forks.amsterdam.stateless_ssz import (
-    SszStatelessInput,
-    ssz_to_stateless_input,
+from ethereum.forks.amsterdam.stateless_guest import (
+    deserialize_stateless_input,
+    serialize_stateless_output,
 )
 
 
 def execute(evm: Evm) -> None:
     data = evm.message.data
-    ssz_input = SszStatelessInput.deserialize(data)
-    stateless_input = ssz_to_stateless_input(ssz_input)
+    stateless_input = deserialize_stateless_input(data)
 
     charge_gas(evm, stateless_input.new_payload_request.execution_payload.gas_used)
 
@@ -161,17 +160,14 @@ def execute(evm: Evm) -> None:
     if not result.successful_validation:
         raise ExceptionalHalt
 
-    evm.output = (
-        result.new_payload_request_root
-        + U256(result.chain_config.chain_id).to_be_bytes32()
-    )
+    evm.output = serialize_stateless_output(result)
 ```
 
-**Input:** The precompile reads its input from `evm.message.data`, which contains an SSZ-serialized [`SszStatelessInput`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_ssz.py#L114).
+**Input:** The precompile reads its input from `evm.message.data`, which contains an SSZ-serialized [`StatelessInput`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L95), decoded via [`deserialize_stateless_input`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_guest.py#L27).
 
 **Output:**
 
-- **On success:** `evm.output` contains `new_payload_request_root` (32 bytes) followed by `chain_id` as a big-endian 32-byte word. The `new_payload_request_root` is the root of the [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L63) and `chain_id` comes from the [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L82) used during execution (see [PR #2342](https://github.com/ethereum/execution-specs/pull/2342)).
+- **On success:** `evm.output` contains the SSZ-serialized [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L126), encoded via [`serialize_stateless_output`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_guest.py#L19). This includes `new_payload_request_root`, `successful_validation`, and `chain_config` (with `chain_id`).
 - **On failure:** raises `InvalidParameter` for bad fixed fields, or `ExceptionalHalt` if validation fails. Both consume all gas and cause the `STATICCALL` to return `success = false` with empty output.
 
 ### L2-specific preprocessing
@@ -287,11 +283,10 @@ contract NativeRollup {
         (bool success, bytes memory result) = EXECUTE.staticcall(input);
         require(success, "EXECUTE failed");
 
-        // 3. Decode and verify result.
-        //    The precompile only returns output on success, so no need
-        //    to check a validationSuccessful field.
-        (bytes32 newPayloadRequestRoot, uint256 provenChainId) =
-            abi.decode(result, (bytes32, uint256));
+        // 3. Decode and verify result (SSZ-encoded StatelessValidationResult).
+        (bytes32 newPayloadRequestRoot, bool validationSuccessful, uint64 provenChainId) =
+            SSZ.decodeStatelessValidationResult(result);
+        require(validationSuccessful, "L2 validation failed");
         require(provenChainId == chainId, "chain_id mismatch");
 
         // 4. Update onchain state
