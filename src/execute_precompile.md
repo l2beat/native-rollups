@@ -304,7 +304,7 @@ contract NativeRollup {
 
 The ZK variant replaces the `EXECUTE` precompile with **proof-carrying transactions** and a **`PROOFROOT` opcode**. Instead of re-executing the L2 state transition on L1, the rollup operator generates a ZK proof and the consensus layer validates it. The rollup contract computes the expected commitment onchain and checks it against the proof.
 
-This follows the same EL/CL split pattern as [EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) blob transactions: the EL references a commitment (the `validation_result_root`, a hash of the proof's full public output), and the CL validates the corresponding proof.
+This follows the same EL/CL split pattern as [EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) blob transactions: the EL references a commitment (the `validation_result_root`), and the CL validates the corresponding proof. The `validation_result_root` is the `hash_tree_root` of the [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L126), the proof's public output, which contains the `new_payload_request_root`, whether validation succeeded, and the `chain_config` used during execution.
 
 The specification follows the [stateless execution model](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py) from the execution-specs, the [Block-in-Blobs (EIP-8142)](https://eips.ethereum.org/EIPS/eip-8142) pattern for transaction data availability, and the [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025) proof validation infrastructure from the consensus-specs.
 
@@ -428,7 +428,7 @@ The blobs use the existing blob gas market. How to price the proof verification 
 
 **EL: engine API.** [`is_valid_versioned_hashes`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/new_payload.py#L44) validates that versioned hashes from the CL match blob transaction hashes in the payload. It would need to be updated to also extract `blob_versioned_hashes` from `ProofCarryingTransaction` instances (currently it only handles `BlobTransaction`). Beyond this, no additional engine API changes are needed: the EL does not see or validate the proof, just as it does not see blob contents.
 
-**CL: proof validation.** The consensus layer extracts the `execution_proof` from the proof-carrying transaction's sidecar and validates it using [`proof_engine.verify_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/proof-engine.md#new-verify_execution_proof). Unlike L1 block proofs, which are delivered as [`SignedExecutionProof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-signedexecutionproof) messages signed by active validators and processed via [`process_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-process_execution_proof), L2 proofs are delivered via the transaction sidecar and do not require a validator signature — the CL calls `verify_execution_proof` directly. The proof's public output must match the `validation_result_root` declared in the transaction body. If the proof is invalid, the L1 block is rejected, analogous to how an invalid KZG proof in a blob sidecar invalidates the block.
+**CL: proof validation.** The consensus layer extracts the `execution_proof` from the proof-carrying transaction's sidecar and validates it using [`proof_engine.verify_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/proof-engine.md#new-verify_execution_proof). Unlike L1 block proofs, which are delivered as [`SignedExecutionProof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-signedexecutionproof) messages signed by active validators and processed via [`process_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-process_execution_proof), L2 proofs are delivered via the transaction sidecar and do not require a validator signature; the CL calls `verify_execution_proof` directly. The proof's public output must match the `validation_result_root` declared in the transaction body. If the proof is invalid, the L1 block is rejected, analogous to how an invalid KZG proof in a blob sidecar invalidates the block.
 
 **CL: data availability.** Blob availability is handled by the existing DAS mechanism ([EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) / [EIP-7594](https://eips.ethereum.org/EIPS/eip-7594) PeerDAS). The CL treats proof-carrying transaction blobs identically to any other blobs: they are included in `blob_kzg_commitments`, sampled via DAS, and their versioned hashes are passed to the EL for cross-verification.
 
@@ -501,7 +501,7 @@ contract NativeRollup {
         uint256 baseFeePerGas;
         bytes32 blockHash;
         bytes32 transactionsRoot;
-        uint256 payloadBlobCount;
+        uint256 payloadBlobCount; // EIP-8142: number of blobs carrying L2 block data
         // Unconstrained fields (free operator inputs)
         address feeRecipient;
         bytes32 prevRandao;
