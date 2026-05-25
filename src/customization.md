@@ -163,4 +163,4 @@ function sendMessage(
 TODO
 
 ## Custom VMs
-TODO
+Rollups with custom VMs (non-EVM) can use L1's proof verification infrastructure through the [native proof verification](./native_verification.md) proposal. Instead of deploying their own onchain verifier contracts, they submit proof-carrying transactions with their custom guest program's hash. The contract pattern is identical to a native rollup, just with a different `program_hash`. See the [native proof verification](./native_verification.md) page for details.
