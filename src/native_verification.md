@@ -22,20 +22,22 @@
 
 ## Abstract
 
-The overarching goal of this proposal is to massively derisk and simplify L2 bridges by replacing every rollup's bespoke onchain verifier stack with a standard L1 primitive. This is achieved through two changes:
+The overarching goal of this proposal is to massively derisk and simplify L2 bridges, and more generally any onchain application that verifies ZK proofs, by introducing a standard L1 primitive that any project can adopt in place of its bespoke onchain verifier stack. This is achieved through two changes:
 
 1. **Generalize [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)** so the consensus-layer proof verification infrastructure becomes program-agnostic, not tied to EVM execution proofs.
 2. **A new EIP** that exposes it to smart contracts through a proof-carrying transaction type and three opcodes (`PROGRAMHASH`, `PUBVALUESHASH`, `PROOFCOUNT`).
 
-Together, they let any rollup retire its onchain verifier contracts and inherit L1's proof verification infrastructure directly, with zkVM fixes shipping through client releases rather than rollup governance upgrades.
+Together, they let any project inherit L1's proof verification infrastructure directly, with zkVM fixes shipping through client releases rather than per-project governance upgrades.
 
 ## Motivation
 
-Today, every Ethereum rollup maintains bespoke onchain proof verification infrastructure. ZK rollups deploy zkVM verifier contracts, adapter contracts, multi-proof dispatchers, and program whitelisting logic. Optimistic rollups ship their own onchain fraud-proof VMs (Arbitrum's WAVM, Optimism's Cannon MIPS machine) plus the surrounding dispute logic. In either case every contract is maintained, patched, and upgraded independently in response to bugs in its specific proof system or VM, with each upgrade gated by a custom multisig or DAO. This is slow, risky, and duplicated across the ecosystem.
+Today, every Ethereum rollup maintains bespoke onchain proof verification infrastructure. ZK rollups deploy zkVM verifier contracts, adapter contracts, multi-proof dispatchers, and program whitelisting logic. Optimistic rollups ship their own onchain fraud-proof VMs (Arbitrum's WAVM, Optimism's Cannon MIPS machine) plus the surrounding dispute logic. In both cases every contract is maintained, patched, and upgraded independently in response to bugs in its specific proof system or VM, with each upgrade gated by a custom multisig or DAO. This is slow, risky, and duplicated across the ecosystem.
 
 [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025) introduces zkVM proof verification on Ethereum's consensus layer, but only for L1's own purposes: verifying execution payloads to enable stateless and sublinear validation. Rollups still need their own onchain verifier contracts.
 
-However, the infrastructure that EIP-8025 brings to the CL, the `ProofEngine`, proof gossip, and verification logic, is not inherently L1-specific. If generalized to be program-agnostic and exposed to smart contracts via a new transaction type, any rollup, even non-EVM ones, could offload proof verification to the CL. When a zkVM implementation needs to be patched, Ethereum client teams release updated software the same way bugs in geth or Nethermind are fixed today: through client releases, without a hard fork. This is the same principle behind native rollups: just as native rollups inherit L1's execution environment, native proof verification lets any rollup inherit L1's proof verification infrastructure.
+However, the infrastructure that EIP-8025 brings to the CL, the `ProofEngine`, proof gossip, and verification logic, is not inherently L1-specific. If generalized to be program-agnostic and exposed to smart contracts via a new transaction type, any rollup, even non-EVM ones, could offload proof verification to the CL. When a zkVM implementation needs to be patched, Ethereum client teams release updated software the same way bugs in geth or Nethermind are fixed today: through client releases, without a hard fork. This is the same principle behind [native rollups](https://eips.ethereum.org/EIPS/eip-8079), but more generalized: just as native rollups inherit L1's execution environment, native proof verification lets any rollup inherit L1's proof verification infrastructure.
+
+Although this document frames the proposal around rollups, the same primitive serves any contract that verifies a ZK proof onchain: privacy systems, ZK coprocessors, identity, ZK ML, and others.
 
 ## How rollups verify proofs today
 
@@ -110,9 +112,7 @@ contract MainnetVerifier is ComposeVerifier {
 
 ## Changes to EIP-8025
 
-EIP-8025 introduces optional execution proofs for L1 block validation. That functionality remains unchanged. The changes proposed here are to the underlying primitives, so that the same infrastructure can also serve the new proof-carrying transaction type. The generalization mirrors [ERE](https://github.com/eth-act/ere), whose [`zkVMVerifier`](https://github.com/eth-act/ere/blob/master/crates/verifier/core/src/verifier.rs) trait is program-agnostic and specific guest programs are built on top.
-
-EIP-8025's current [`ProofType`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#types) is a `uint8` that encodes both the zkVM backend and the guest program as a single value. In the current [Lighthouse implementation](https://github.com/eth-act/lighthouse/blob/feat/eip8025/beacon_node/execution_layer/src/eip8025/types.rs), the mapping is:
+EIP-8025 introduces optional execution proofs for L1 block validation. The infrastructure it brings to the consensus layer (the `ProofEngine`, gossip, verification logic) is L1-specific only because its types are: [`ExecutionProof.public_input`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-publicinput) carries a `new_payload_request_root: Root`, and [`ProofType`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#types) is a `uint8` enumerating a small fixed set of accepted `(client, zkVM)` builds (see [Lighthouse implementation](https://github.com/eth-act/lighthouse/blob/feat/eip8025/beacon_node/execution_layer/src/eip8025/types.rs)):
 
 | `ProofType` | Guest program | zkVM backend |
 |---|---|---|
@@ -124,105 +124,47 @@ EIP-8025's current [`ProofType`](https://github.com/ethereum/consensus-specs/blo
 | 5 | reth | SP1 |
 | 6 | reth | Zisk |
 
-This works for L1 execution proofs where the set of guest programs is small and known in advance. But it cannot accommodate arbitrary rollup programs: adding a new guest program requires assigning new `ProofType` values and updating every client.
+This works while the set of guest programs is small and known in advance, but cannot accommodate arbitrary rollup programs.
 
-The proposed change splits `ProofType` into two independent axes, following [ERE](https://github.com/eth-act/ere)'s design where the [`Compiler`](https://github.com/eth-act/ere/blob/master/crates/compiler/core/src/lib.rs) and the [`zkVMVerifier`](https://github.com/eth-act/ere/blob/master/crates/verifier/core/src/verifier.rs) backend are independent. `ProofType` is renamed to `BackendType` and becomes purely about the zkVM backend, and a new `program_hash: Bytes32` field identifies the guest program. Since each zkVM compiles the same source to a different binary (see [terminology note](#how-rollups-verify-proofs-today)), `program_hash` is specific to a `(guest program, zkVM)` pair. The [`verify_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/proof-engine.md#new-verify_execution_proof) method (which verifies and stores individual proofs arriving via gossip) generalizes accordingly:
+This EIP adds a generic verification primitive alongside, leaving EIP-8025's existing surface (`ExecutionProof`, `ProofType`, `verify_execution_proof`, `notify_new_payload`, `notify_forkchoice_updated`, `process_execution_proof`, `request_proofs`, `ProofAttributes`) untouched. The generalization mirrors [ERE](https://github.com/eth-act/ere), whose [`zkVMVerifier`](https://github.com/eth-act/ere/blob/master/crates/verifier/core/src/verifier.rs) trait is program-agnostic and specific guest programs are built on top. Following ERE's design where the [`Compiler`](https://github.com/eth-act/ere/blob/master/crates/compiler/core/src/compiler.rs) and the `zkVMVerifier` backend are independent traits, the new `Proof` container splits the conflated `ProofType` into two axes: a `BackendType: uint8` that identifies only the zkVM backend, and a `program_hash: Bytes32` that identifies the guest program (specific to a `(guest program, zkVM)` pair, see [terminology note](#how-rollups-verify-proofs-today)). The engine uses `backend_type` to select the circuit VK; `program_hash` is a public input to the circuit, checked alongside `public_values` during verification:
 
 ```python
-# Before (current EIP-8025):
-class PublicInput(Container):
-    new_payload_request_root: Root
-
-class ExecutionProof(Container):
-    proof_data: ByteList[MAX_PROOF_SIZE]
-    proof_type: ProofType              # encodes both program and backend (current)
-    public_input: PublicInput
-
-def verify_execution_proof(self: ProofEngine, execution_proof: ExecutionProof) -> bool: ...
-
-# After (generalized):
-class PublicInput(Container):
-    program_hash: Bytes32              # guest program (per zkVM)
+class ProofPublicInput(Container):
+    program_hash: Bytes32
     public_values: ByteList[MAX_PUBLIC_VALUES_SIZE]
 
 class Proof(Container):
     proof_data: ByteList[MAX_PROOF_SIZE]
-    backend_type: BackendType          # zkVM backend only
-    public_input: PublicInput
+    backend_type: BackendType
+    public_input: ProofPublicInput
 
 def verify_proof(self: ProofEngine, proof: Proof) -> bool: ...
 ```
 
-`BackendType` is `ProofType` renamed (still `uint8`). The engine uses `backend_type` to select the circuit VK; `program_hash` is a public input to the circuit, checked alongside `public_values` during verification.
-
-A second method, `has_valid_proof`, is a cheap lookup against proofs already verified by `verify_proof`. It is what the block-processing path (via `verify_new_payload_request_header`) calls to confirm a prior verification exists for a given `(program_hash, public_values_hash)` pair. Fresh proofs, whether from gossip or proof-carrying transaction sidecars, are always ingested through `verify_proof`.
+EIP-8025's [`verify_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/proof-engine.md#new-verify_execution_proof) can be reimplemented as a thin wrapper over `verify_proof` for code sharing, with no observable change at the gossip layer:
 
 ```python
-def has_valid_proof(
-    self: ProofEngine,
-    program_hash: Bytes32,
-    public_values_hash: Bytes32,
-) -> bool:
-    """
-    Return True if the engine holds a previously-verified Proof whose
-    (public_input.program_hash, sha256(public_input.public_values))
-    equals the given (program_hash, public_values_hash) pair.
-    """
-    ...
-```
-
-`backend_type` is not part of the lookup: `program_hash` is already per-`(source, zkVM)`, so distinct backends produce distinct hashes and no ambiguity arises.
-
-EIP-8025's [`verify_new_payload_request_header`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/proof-engine.md#new-verify_new_payload_request_header) (called from [`process_execution_payload`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#modified-process_execution_payload)) now builds the expected [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L126), hashes it, and delegates to `has_valid_proof` over the accepted L1 program hashes. The signature gains a `chain_config` parameter since `StatelessValidationResult` includes it; `process_execution_payload` supplies L1's own `ChainConfig` from the beacon state's chain spec. The expression `hash_tree_root(new_payload_request_header)` yields the same value as the root of the full `NewPayloadRequest` by construction, since the header is the roots-only form of the same container.
-
-```python
-from ethereum.forks.amsterdam.stateless import (
-    StatelessValidationResult,
-    ChainConfig,
-)
-from ethereum.forks.amsterdam.stateless_guest import (
-    serialize_stateless_output,
-)
-
-# Well-known program hashes for L1's stateless validator. Because each
-# `(client implementation, zkVM backend)` pair compiles to a different binary
-# (e.g. ethrex-SP1 vs reth-SP1 vs ethrex-Risc0), the engine accepts a *set*,
-# not a single value. Corresponds to ERE's zkVMVerifier::program_vk() for
-# each compiled variant of verify_stateless_new_payload.
-NATIVE_EVM_PROGRAM_HASHES: Set[Bytes32] = {...}  # configured per client
-
-
-def verify_new_payload_request_header(
-    self: ProofEngine,
-    new_payload_request_header: NewPayloadRequestHeader,
-    chain_config: ChainConfig,
-) -> bool:
-    """
-    EVM-specific method kept as the entry point `process_execution_payload`
-    calls. Implementation now delegates to the general has_valid_proof,
-    iterating over every accepted L1 program hash: any one stored proof
-    is sufficient.
-    """
-    expected_result = StatelessValidationResult(
-        new_payload_request_root=hash_tree_root(new_payload_request_header),
+def verify_execution_proof(self: ProofEngine, ep: ExecutionProof) -> bool:
+    # Client-side mapping from the (client, zkVM) ProofType to the new axes.
+    # Corresponds to ERE's zkVMVerifier::program_vk() for each compiled variant
+    # of verify_stateless_new_payload.
+    backend_type, program_hash = self.resolve_proof_type(ep.proof_type)
+    expected_public_values = serialize_stateless_output(StatelessValidationResult(
+        new_payload_request_root=ep.public_input.new_payload_request_root,
         successful_validation=True,
-        chain_config=chain_config,
-    )
-    # serialize_stateless_output() SSZ-encodes `expected_result`; the guest
-    # program emits the same bytes via the same helper, so their sha256 hashes
-    # agree by construction.
-    expected_public_values_hash = sha256(serialize_stateless_output(expected_result))
-
-    return any(
-        self.has_valid_proof(
+        chain_config=self.chain_config,
+    ))
+    return self.verify_proof(Proof(
+        proof_data=ep.proof_data,
+        backend_type=backend_type,
+        public_input=ProofPublicInput(
             program_hash=program_hash,
-            public_values_hash=expected_public_values_hash,
-        )
-        for program_hash in NATIVE_EVM_PROGRAM_HASHES
-    )
+            public_values=expected_public_values,
+        ),
+    ))
 ```
 
-On the prover side, the [honest prover guide](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/prover.md) specializes the same way: extract `NewPayloadRequest` from the beacon block and call `request_proofs` with this prover's own `program_hash` (one entry of `NATIVE_EVM_PROGRAM_HASHES` drawn from [ethrex](https://github.com/lambdaclass/ethrex), [reth](https://github.com/paradigmxyz/reth), or any other accepted implementation).
+The byte-level layout of [`serialize_stateless_output`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_guest.py#L19) over [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L123) is shown in [Impact on native rollups](#impact-on-native-rollups), since native-rollup contracts reconstruct it onchain. Block validity remains decoupled from proof verification; the [honest prover guide](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/prover.md) is unchanged. Sidecar-arrived proofs (proof-carrying transactions, see [Proof propagation](#proof-propagation)) go through `verify_proof` directly, without the L1 wrapper.
 
 ## Program hash stability (open problem)
 
@@ -230,8 +172,8 @@ Native proof verification's "fixes ship through client releases, nothing onchain
 
 No zkVM today delivers this directly. Both leading candidates fingerprint artifacts that change under normal SDK / dependency / toolchain churn, not just circuit-layer fixes:
 
-- **Risc0's `imageId`** is a SHA-256 over `SystemState { pc: 0, merkle_root }` with `merkle_root` a Poseidon2 merkle root of the initial memory image, which contains both the user ELF and the kernel ELF ([binfmt/src/elf.rs](https://github.com/risc0/risc0/blob/main/risc0/binfmt/src/elf.rs)). The memory image captures the exact compiled bytes, so a dep bump, toolchain update, or kernel patch all change `imageId` even when STF semantics are unchanged.
-- **SP1's `programVKey`** is a Poseidon2 over `(preprocessed_commit, pc_start, ...)` ([hypercube/src/verifier/hashable_key.rs](https://github.com/succinctlabs/sp1/blob/main/crates/hypercube/src/verifier/hashable_key.rs)). `preprocessed_commit` depends on the circuit's AIR preprocessing and `pc_start` on the linker, so circuit changes, SDK bumps, and toolchain changes all move it.
+- **Risc0's `imageId`** is a SHA-256 over `SystemState { pc: 0, merkle_root }` with `merkle_root` a Poseidon2 merkle root of the initial memory image, which contains both the user ELF and the kernel ELF ([binfmt/src/elf.rs#L435](https://github.com/risc0/risc0/blob/main/risc0/binfmt/src/elf.rs#L435)). The memory image captures the exact compiled bytes, so a dep bump, toolchain update, or kernel patch all change `imageId` even when STF semantics are unchanged.
+- **SP1's `programVKey`** is a Poseidon2 over `(preprocessed_commit, pc_start, ...)` ([hypercube/src/verifier/hashable_key.rs#L107](https://github.com/succinctlabs/sp1/blob/main/crates/hypercube/src/verifier/hashable_key.rs#L107)). Unlike Risc0's `imageId` (a pure hash of compiled bytes), the SP1 vk is a byproduct of running circuit setup over the ELF: `preprocessed_commit` is the AIR's preprocessing commitment and `pc_start` comes from the linker, so circuit changes, SDK bumps, and toolchain changes all move it, even when the user's guest source is byte-identical.
 
 Using either directly as the onchain `program_hash` would make every zkVM release a rollup-visible event.
 
@@ -254,30 +196,29 @@ TransactionPayloadBody:
 ```
 
 Where:
-- `proofs`: a list of `(program_hash, backend_type)` pairs, one per proof in the sidecar. Each `program_hash` is a `bytes32` identifying the guest program for that specific zkVM backend (see [terminology note](#how-rollups-verify-proofs-today)). Each `backend_type` is a `uint8`. The length of this list determines `proof_count`.
+- `proofs`: a list of `(program_hash, backend_type)` pairs. Each `program_hash` is a `bytes32` identifying the guest program for that specific zkVM backend (see [terminology note](#how-rollups-verify-proofs-today)). Each `backend_type` is a `uint8` and MUST be unique within the list, since two proofs from the same backend add no security. The length of this list determines `proof_count`.
 - `public_values_hash`: a `bytes32` hash of the program's public output (shared across all proofs, since all backends prove the same statement).
-- `blob_versioned_hashes`: same semantics as [EIP-4844](https://eips.ethereum.org/EIPS/eip-4844); used when the transaction also carries payload blobs (e.g. [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) block data).
 
-The CL-level `Proof` carries raw `public_values` bytes; the transaction body and EVM opcodes only expose `public_values_hash`. The contract reconstructs the expected bytes and compares hashes. Two invariants tie the two views together (checked by any node that handles the sidecar: on mempool propagation, and again by the builder when assembling the block):
+The CL-level `Proof` carries the raw `public_values` bytes; the transaction body (and the `PUBVALUESHASH` opcode) only expose their hash. The contract reconstructs the expected bytes and compares hashes. Two invariants tie the two views together (checked by any node that handles the sidecar, on mempool propagation and again by the builder when assembling the block):
 
 - `sidecar[i].public_input.program_hash == proofs[i].program_hash` and `sidecar[i].backend_type == proofs[i].backend_type`.
 - `sha256(sidecar[i].public_input.public_values) == public_values_hash`.
 
-These are what let `has_valid_proof(program_hash, public_values_hash)` look up stored proofs by `(program_hash, sha256(public_values))`. See [Proof propagation](#proof-propagation) for how proofs reach the builder and how the L1 block proof covers them.
+These bind the EVM-visible identifiers (`proofs[i].program_hash`, `public_values_hash`) to the underlying `Proof` objects passed to `verify_proof`. See [Proof propagation](#proof-propagation) for how proofs reach the builder and how the L1 block proof covers them.
 
 ### Opcodes
 
-New opcodes read the proof-carrying transaction's fields, following the same pattern as `ORIGIN`, `GASPRICE`, and `BLOBBASEFEE` (`G_base` cost). All return zero for non-proof-carrying transactions.
+New opcodes read the proof-carrying transaction's fields and return zero for non-proof-carrying transactions.
 
 | Opcode | Input | Output | Description |
 |--------|-------|--------|-------------|
 | `PROGRAMHASH` | `index` | `program_hash` (`bytes32`) | Program hash for the i-th proof. Indexed like `BLOBHASH`; returns `bytes32(0)` if `index >= PROOFCOUNT()` |
 | `PUBVALUESHASH` | none | `public_values_hash` (`bytes32`) | Hash of the program's public output (shared across all proofs) |
-| `PROOFCOUNT` | none | `proof_count` (`uint8`) | Number of distinct zkVM proofs verified by the CL |
+| `PROOFCOUNT` | none | `proof_count` (`uint8`) | Length of the transaction's `proofs` list |
 
 A custom rollup iterates with `PROOFCOUNT()` and checks each `PROGRAMHASH(i)` against its own whitelist.
 
-For native rollups, `PROGRAMHASH(i)` returns a well-known sentinel value (e.g. `bytes32(1)`) when the i-th proof uses a program that L1 currently accepts for its own EVM execution proofs. This way the contract checks `PROGRAMHASH(i) == NATIVE_PROGRAM` without storing specific per-zkVM hashes, and automatically follows L1 upgrades. Whether the sentinel is returned depends on the L1-accepted set at the block being executed; this set is part of the client-side `ProofEngine` configuration and updates via client releases.
+For native rollups, `PROGRAMHASH(i)` returns a well-known sentinel value (e.g. `bytes32(1)`) when the i-th proof uses a program that L1 currently accepts for its own EVM execution proofs. This way the contract checks `PROGRAMHASH(i) == NATIVE_PROGRAM` without storing specific per-zkVM hashes, and automatically follows L1 upgrades shipped in client releases.
 
 ### Multi-proof
 
@@ -287,11 +228,9 @@ This replaces contract-level multi-proof orchestration (like Taiko's `ComposeVer
 
 ### Proof propagation
 
-> This section is a very early work in progress. The design is not settled.
+The proof must reach a builder through the mempool, but needs no long-term availability. The proposed approach is an **ephemeral sidecar**: the proof travels alongside the transaction like an [EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) blob sidecar. Mempool nodes and the builder run each sidecar entry through `verify_proof` (and check the invariants from [Transaction format](#transaction-format)) before forwarding or including the transaction. The builder then strips the sidecar before block inclusion, folds it into the recursive L1 block proof, and discards it. Validators see only the transaction body (the `proofs` list and `public_values_hash`) plus the L1 block proof; they never need the raw proof bytes. The L1 block proof thus recursively covers every proof-carrying transaction in the block (post-quantum proofs may be large enough that L1 is limited to one proof per slot).
 
-The proof must reach a builder through the mempool, but needs no long-term availability. The proposed approach is an **ephemeral sidecar**: the proof travels alongside the transaction like an [EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) blob sidecar, but the builder strips it before block inclusion, folds it into the recursive L1 block proof, and discards it. Validators see only the transaction body (the `proofs` list and `public_values_hash`) plus the L1 block proof; they never need the raw proof bytes. The L1 block proof thus recursively covers every proof-carrying transaction in the block (post-quantum proofs may be large enough that L1 is limited to one proof per slot).
-
-**Size.** EIP-8025 sets `MAX_PROOF_SIZE = 300 KiB`. With geth's 1 MiB blob-pool cap, `len(proofs)` is effectively capped at 3 for mempool propagation. Any blobs the transaction also carries eat into the same 1 MiB budget and lower the effective cap.
+**Size.** EIP-8025 sets `MAX_PROOF_SIZE = 400 KiB` per proof. The spec doesn't bound `len(proofs)`, but mempool client size limits make 2–3 a practical ceiling.
 
 ## Impact on existing rollups
 
