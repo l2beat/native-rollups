@@ -63,12 +63,6 @@ contract ForcedInboxValidated {
     uint256 public immutable MAX_QUEUE_SIZE;
     address public immutable ROLLUP;
 
-    /// @dev `keccak256("")`. EIP-7702 delegation indicators `0xef0100||addr`
-    ///      hash to something else, so this gates submission to pure EOAs,
-    ///      which keeps "balance can only decrease via own signed tx" valid.
-    bytes32 private constant EMPTY_CODE_HASH =
-        0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
-
     /// @dev Mirrors L1's `BLOCKHASH` window as a familiar default. Pick to
     ///      taste based on L2 block time and L1 propagation.
     uint256 internal constant MAX_PROOF_AGE = 256;
@@ -112,7 +106,6 @@ contract ForcedInboxValidated {
     error ProofTooStale();
     error ProofNotAfterAdmission();
     error ProofRegression();
-    error NotPureEOA();
 
     constructor(uint256 maxQueueSize, address rollup) {
         if (maxQueueSize == 0) revert InvalidMaxQueueSize();
@@ -132,9 +125,8 @@ contract ForcedInboxValidated {
         sender = _validateSignature(t);
 
         bytes32 stateRoot = _recentStateRootAt(l2BlockNumber);
-        (uint64 provenNonce, uint256 provenBalance, bytes32 codeHash) =
+        (uint64 provenNonce, uint256 provenBalance) =
             _extractAccountState(sender, stateRoot, accountProof);
-        if (codeHash != EMPTY_CODE_HASH) revert NotPureEOA();
         _validateTxWithState(t, provenNonce, provenBalance);
 
         bytes memory rawTx = _encodeSigned(t);
@@ -187,7 +179,7 @@ contract ForcedInboxValidated {
         if (l2BlockNumber <= e.l2BlockNumber) revert ProofNotAfterAdmission();
 
         bytes32 stateRoot = _recentStateRootAt(l2BlockNumber);
-        (uint64 provenNonce, uint256 provenBalance,) =
+        (uint64 provenNonce, uint256 provenBalance) =
             _extractAccountState(sender, stateRoot, accountProof);
 
         uint256 cost = uint256(e.gasLimit) * e.maxFeePerGas + e.value;
@@ -271,15 +263,16 @@ contract ForcedInboxValidated {
         }
     }
 
-    /// @dev MPT walk + RLP decode of the EOA leaf
-    ///      `rlp([nonce, balance, storageHash, codeHash])`. Integers are
-    ///      stored with leading zeros stripped. Bubbles up `MerkleTrie`
-    ///      errors if the proof doesn't include the sender.
+    /// @dev MPT walk + RLP decode of the account leaf
+    ///      `rlp([nonce, balance, storageHash, codeHash])`. Only the first
+    ///      two fields are extracted; integers are stored with leading
+    ///      zeros stripped. Bubbles up `MerkleTrie` errors if the proof
+    ///      doesn't include the sender.
     function _extractAccountState(
         address sender,
         bytes32 stateRoot,
         bytes[] calldata accountProof
-    ) internal pure returns (uint64 nonce, uint256 balance, bytes32 codeHash) {
+    ) internal pure returns (uint64 nonce, uint256 balance) {
         bytes[] memory proof = accountProof; // SecureMerkleTrie wants memory
         bytes memory rlpAccount =
             SecureMerkleTrie.get(abi.encodePacked(sender), proof, stateRoot);
@@ -287,7 +280,6 @@ contract ForcedInboxValidated {
         RLPReader.RLPItem[] memory fields = RLPReader.readList(rlpAccount);
         nonce = uint64(_rlpBytesToUint(RLPReader.readBytes(fields[0])));
         balance = _rlpBytesToUint(RLPReader.readBytes(fields[1]));
-        codeHash = bytes32(RLPReader.readBytes(fields[3]));
     }
 
     function _rlpBytesToUint(bytes memory b) private pure returns (uint256 result) {

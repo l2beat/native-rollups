@@ -21,7 +21,7 @@ contract ExposedForcedInbox is ForcedInboxValidated {
         address sender,
         bytes32 stateRoot,
         bytes[] calldata accountProof
-    ) external pure returns (uint64 nonce, uint256 balance, bytes32 codeHash) {
+    ) external pure returns (uint64 nonce, uint256 balance) {
         return _extractAccountState(sender, stateRoot, accountProof);
     }
 }
@@ -51,11 +51,6 @@ contract IntegrationTest is Test {
         0xdd27ed6acfed865a1b5c7d20416067d320f6e91ce3d370c2668dcbf2c63393c6;
     uint64 constant EXPECTED_NONCE = 5896;
     uint256 constant EXPECTED_BALANCE = 5682781186715981478;
-    // vitalik.eth has a live EIP-7702 delegation, so its codeHash is NOT the
-    // empty-EOA sentinel. That makes this fixture a useful negative-case for
-    // the `codeHash == EMPTY_CODE_HASH` admission gate too.
-    bytes32 constant EXPECTED_CODE_HASH =
-        0xd8ef78646344da0ceb69cbcdb306939b3ba0514174fa28b6c6fa189953ff226d;
 
     ExposedForcedInbox inbox;
 
@@ -69,11 +64,10 @@ contract IntegrationTest is Test {
     /// `_extractAccountState` returns the fields `eth_getProof` reported.
     function test_extractsRealMainnetAccount() public view {
         bytes[] memory proof = _vitalikProof();
-        (uint64 nonce, uint256 balance, bytes32 codeHash) =
+        (uint64 nonce, uint256 balance) =
             inbox.extractAccountState(VITALIK, STATE_ROOT, proof);
         assertEq(uint256(nonce), uint256(EXPECTED_NONCE), "nonce");
         assertEq(balance, EXPECTED_BALANCE, "balance");
-        assertEq(codeHash, EXPECTED_CODE_HASH, "codeHash");
     }
 
     /// Asking for a different address against this state root reverts via

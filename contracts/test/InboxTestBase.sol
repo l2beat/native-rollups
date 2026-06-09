@@ -16,9 +16,8 @@ import "./mocks/MockRollup.sol";
 ///         - convenience submitters (`_submitSample`, `_submitWithFeeOn`)
 ///           that publish a fresh state root for the signer and then submit.
 abstract contract InboxTestBase is Test {
-    /// keccak256("") — the codeHash of any account that has never been
-    /// delegated under EIP-7702 and has no contract code. The inbox rejects
-    /// admission for any sender whose proven codeHash differs.
+    /// `keccak256("")`. Used as the default codeHash field when building
+    /// account leaves in test proofs.
     bytes32 internal constant EMPTY_CODE_HASH =
         0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
 

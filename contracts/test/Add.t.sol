@@ -192,10 +192,10 @@ contract AddTest is InboxTestBase {
         inbox.add(t, proof, l2Block);
     }
 
-    /// Reverts `NotPureEOA` if the proven `codeHash` differs from the
-    /// empty-EOA sentinel. This is the EIP-7702 gate: accounts with a
-    /// delegation designator (or any code) can't admit forced txs.
-    function test_rejectsNotPureEOA() public {
+    /// 7702-delegated EOAs are admissible: the inbox doesn't gate on
+    /// codeHash, so an account whose stored codeHash is the standard
+    /// `0xef0100 || delegate` indicator admits exactly like a pure EOA.
+    function test_acceptsDelegatedEOA() public {
         uint256 pk = 0xA11CE;
         address signer = vm.addr(pk);
         bytes32 delegatedCodeHash = keccak256(abi.encodePacked(hex"ef0100", address(0xdead)));
@@ -208,8 +208,8 @@ contract AddTest is InboxTestBase {
         t.yParity = v - 27;
         t.r = r;
         t.s = s;
-        vm.expectRevert(ForcedInboxValidated.NotPureEOA.selector);
-        inbox.add(t, proof, l2Block);
+        assertEq(inbox.add(t, proof, l2Block), signer);
+        assertTrue(_isQueued(inbox, signer));
     }
 
     // --- stateful rejection (geth: ValidateTransactionWithState) ---
