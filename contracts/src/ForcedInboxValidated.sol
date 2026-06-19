@@ -5,6 +5,7 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {Hashes} from "@openzeppelin/contracts/utils/cryptography/Hashes.sol";
 import {RLP} from "@openzeppelin/contracts/utils/RLP.sol";
 
+import {MerkleTrie} from "./libs/MerkleTrie.sol";
 import {SecureMerkleTrie} from "./libs/SecureMerkleTrie.sol";
 import {RLPReader} from "./libs/RLPReader.sol";
 
@@ -50,6 +51,16 @@ contract ForcedInboxValidated {
         uint256 value;
     }
 
+    /// @dev Per-IL-entry tx-trie inclusion witness used at settlement.
+    ///      `sender` identifies which IL'd entry; `txIndex` is its position
+    ///      in the L2 block's `transactions`; `proof` is the MPT inclusion
+    ///      proof against the validated `transactionsRoot`.
+    struct InclusionProof {
+        address sender;
+        uint256 txIndex;
+        bytes[] proof;
+    }
+
     mapping(address => Entry) public entry;
 
     // Doubly-linked list, sorted by maxFeePerGas descending. On ties, the
@@ -67,6 +78,17 @@ contract ForcedInboxValidated {
     ///      taste based on L2 block time and L1 propagation.
     uint256 internal constant MAX_PROOF_AGE = 256;
 
+    /// @dev Hard cap on entries processed per IL. Bounds the L1 gas cost of
+    ///      `settle` so the rollup's `advance` tx never blows through
+    ///      [EIP-7825](https://eips.ethereum.org/EIPS/eip-7825)'s 16.77 M
+    ///      per-tx limit. Worst case: 32 included entries with deep tx-trie
+    ///      proofs (~330 k each) ≈ 10.5 M, leaving headroom for proof
+    ///      verification and state updates in the same `advance` tx.
+    ///      `currentIL` and `settle` share this bound so the IL the rollup
+    ///      commits to (via the proof's `validation_result_root`) matches
+    ///      what `settle` actually processes.
+    uint256 internal constant MAX_IL_COUNT = 32;
+
     // Stateless validity constants, execution-specs (amsterdam).
     uint256 private constant TX_MAX_GAS_LIMIT = 16_777_216; // EIP-7825
     uint256 private constant MAX_INIT_CODE_SIZE = 49152;    // EIP-3860
@@ -78,6 +100,7 @@ contract ForcedInboxValidated {
 
     event ForcedTx(address indexed sender, bytes32 indexed l2TxHash, bytes rawTx);
     event ForcedTxPruned(address indexed sender, bytes32 indexed l2TxHash);
+    event ForcedTxExecuted(address indexed sender, bytes32 indexed l2TxHash);
 
     // Error names track geth where possible (core/txpool/errors.go,
     // core/error.go, core/vm/errors.go) so the two codebases line up.
@@ -106,6 +129,9 @@ contract ForcedInboxValidated {
     error ProofTooStale();
     error ProofNotAfterAdmission();
     error ProofRegression();
+    error NotRollup();
+    error WrongTxHash();
+    error ExtraInclusionProofs();
 
     constructor(uint256 maxQueueSize, address rollup) {
         if (maxQueueSize == 0) revert InvalidMaxQueueSize();
@@ -194,6 +220,94 @@ contract ForcedInboxValidated {
         emit ForcedTxPruned(sender, hash);
     }
 
+    /// @notice Operator-driven IL clearing, called by the rollup at
+    ///         settlement after the L2 proof has been verified. Walks the
+    ///         queue head in fee-descending order accumulating up to
+    ///         `gasBudget` (the IL), and for each IL'd entry:
+    ///         - removes it if its tx is in the validated `transactionsRoot`
+    ///           (executed),
+    ///         - removes it if absent AND the block had headroom to fit it
+    ///           (FOCIL implies invalid: nonce / balance / fee),
+    ///         - keeps it otherwise (didn't fit; retry next IL).
+    ///
+    ///         The walking rule matches `currentIL` so the IL reconstructed
+    ///         here equals the one the proof committed to (via
+    ///         `validation_result_root`). The rollup is responsible for
+    ///         calling this only after asserting the proof's
+    ///         `is_inclusion_list_satisfied = true` against that IL.
+    /// @dev    `included` must be sorted by IL position (= queue order):
+    ///         one entry per IL'd sender whose tx made it into the L2
+    ///         block. Any extra or out-of-order entries revert.
+    function settle(
+        uint256 gasBudget,
+        uint256 baseFee,
+        bytes32 transactionsRoot,
+        uint256 blockGasUsed,
+        uint256 blockGasLimit,
+        InclusionProof[] calldata included
+    ) external {
+        if (msg.sender != ROLLUP) revert NotRollup();
+
+        uint256 headroom = blockGasLimit - blockGasUsed;
+        uint256 ilGasUsed = 0;
+        uint256 ilCount = 0;
+        uint256 includedIdx = 0;
+        address cur = firstQueued;
+
+        while (cur != address(0)) {
+            if (ilCount >= MAX_IL_COUNT) break;
+            Entry storage e = entry[cur];
+            // Same fee + gas-budget rule as currentIL: stop at the first
+            // underpriced entry or when the next entry overflows the budget.
+            if (e.maxFeePerGas < baseFee) break;
+            uint256 entryGas = e.gasLimit;
+            if (ilGasUsed + entryGas > gasBudget) break;
+            ilGasUsed += entryGas;
+            unchecked { ++ilCount; }
+
+            // Snapshot before `_linkRemove` wipes `nextQueued[cur]`.
+            address next = nextQueued[cur];
+            bytes32 hash = e.l2TxHash;
+
+            // Was this IL'd entry's tx included in the L2 block?
+            bool wasIncluded;
+            if (
+                includedIdx < included.length
+                    && included[includedIdx].sender == cur
+            ) {
+                // Tx trie is unsecured (no keccak wrap), keyed by RLP(index).
+                bytes memory key = RLP.encode(included[includedIdx].txIndex);
+                bytes memory txBytes = MerkleTrie.get(
+                    key, included[includedIdx].proof, transactionsRoot
+                );
+                if (keccak256(txBytes) != hash) revert WrongTxHash();
+                wasIncluded = true;
+                unchecked { ++includedIdx; }
+            }
+
+            if (wasIncluded) {
+                _linkRemove(cur);
+                delete entry[cur];
+                emit ForcedTxExecuted(cur, hash);
+            } else if (entryGas <= headroom) {
+                // FOCIL satisfied + not included + had headroom: by the
+                // contrapositive of `check_transaction`, the entry must
+                // have failed nonce / balance / fee. Safe to clear.
+                _linkRemove(cur);
+                delete entry[cur];
+                emit ForcedTxPruned(cur, hash);
+            }
+            // else: didn't fit. FOCIL satisfaction tells us nothing about
+            // this entry's validity; leave it for the next IL.
+
+            cur = next;
+        }
+
+        // Every supplied inclusion proof must have matched an IL'd entry.
+        // Catches misordered or surplus proofs.
+        if (includedIdx != included.length) revert ExtraInclusionProofs();
+    }
+
     /// @notice IL commitment for the next L2 block. Stops at the first
     ///         underpriced entry (rest are lower-or-equal fee) or when the
     ///         next entry overflows `gasBudget`. `ilHash == 0` iff
@@ -216,6 +330,7 @@ contract ForcedInboxValidated {
         uint256 n = 0;
         address cur = firstQueued;
         while (cur != address(0)) {
+            if (n >= MAX_IL_COUNT) break;
             Entry storage e = entry[cur];
             // Fee-descending: once underpriced, every later entry is too.
             if (e.maxFeePerGas < baseFee) break;
@@ -317,7 +432,7 @@ contract ForcedInboxValidated {
 
     /// @dev O(N). Assumes `entry[sender]` is populated and `sender` is not
     ///      currently in the list. Ties go after the existing same-fee entries.
-    function _insertSorted(address sender) private {
+    function _insertSorted(address sender) internal {
         uint256 fee = entry[sender].maxFeePerGas;
         address cur = firstQueued;
         while (cur != address(0) && entry[cur].maxFeePerGas >= fee) {
