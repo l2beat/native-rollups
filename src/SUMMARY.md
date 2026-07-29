@@ -1,7 +1,7 @@
 # Summary
 
 - [Introduction](./introduction.md)
-- [The `EXECUTE` precompile](./execute_precompile.md)
+- [Proof-carrying transactions](./proof_carrying_transactions.md)
 - [Tech dependencies](./tech_dependencies.md)
 - [L1 Anchoring](./l1_anchoring.md)
 - [L1 to L2 messaging](./l1_l2_messaging.md)

@@ -50,7 +50,7 @@ Another possible mechanism is to use the beacon chain withdrawal mechanisms whic
 
 ## Proposed design
 
-Following the [design principles](./execute_precompile.md#design-principles), it is preferred not to add a new transaction type that can mint gas tokens, as existing projects already handle gas token deposits through other means. The preferred approach is to use a predeployed contract that contains preminted tokens, which are then unlocked when L1 to L2 messages are processed on the L2. This design fully supports custom gas tokens as it is not opinionated on what type of message unlocks the gas token on L2, it being ETH, an ERC20, NFTs, or mining mechanisms.
+Following the [design principles](./proof_carrying_transactions.md#design-principles), it is preferred not to add a new transaction type that can mint gas tokens, as existing projects already handle gas token deposits through other means. The preferred approach is to use a predeployed contract that contains preminted tokens, which are then unlocked when L1 to L2 messages are processed on the L2. This design fully supports custom gas tokens as it is not opinionated on what type of message unlocks the gas token on L2, it being ETH, an ERC20, NFTs, or mining mechanisms.
 
 ### The first deposit problem
 
