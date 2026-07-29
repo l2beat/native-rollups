@@ -4,8 +4,10 @@
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
 
+- [Relevant links](#relevant-links)
 - [Statelessness (EIP-7864)](#statelessness-eip-7864)
 - [L1 ZK-EVM](#l1-zk-evm)
+- [EVM-readable L1 chain configuration](#evm-readable-l1-chain-configuration)
 - [FOCIL (EIP-7805)](#focil-eip-7805)
 - [RISC-V (or equivalent)](#risc-v-or-equivalent)
 
@@ -35,6 +37,13 @@ The ZK version of the `EXECUTE` precompile requires the L1 ZK-EVM upgrade to tak
 
 Relevant EIPs:
 - [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025): Optional Execution Proofs
+
+## EVM-readable L1 chain configuration
+
+The native-rollup contract must reconstruct the exact [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L130-L159) committed by stateless execution. This proposal assumes a parameterless EVM environmental interface exposes the current canonical L1 `ChainConfig`. The contract ignores the returned L1 `chain_id`, retains the complete `active_fork.activation`, and combines it with its stored L2 `chain_id`.
+
+No current EVM instruction provides this value. [EIP-7910](https://eips.ethereum.org/EIPS/eip-7910) defines the parameterless `eth_config` JSON-RPC method, but it is not available to contracts. The exact opcode or precompile is left to the L1 zkEVM work; its value must change atomically with the L1 rules under which the current EVM execution occurs.
+
 ## FOCIL (EIP-7805)
 While not strictly required, the addition of [FOCIL](https://eips.ethereum.org/EIPS/eip-7805) would help simplifying the design of forced transaction mechanisms, as described in the FOCIL section of the [Forced transactions](./forced_transactions.md#focil-eip-7805) page.
 

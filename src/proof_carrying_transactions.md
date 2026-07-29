@@ -1,4 +1,4 @@
-# Native rollup verification
+# Proof-carrying transactions
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
@@ -7,9 +7,10 @@
 - [Re-execution vs ZK enforcement](#re-execution-vs-zk-enforcement)
 - [Design principles](#design-principles)
 - [Data layout](#data-layout)
-  - [`StatelessInput`](#statelessinput)
-  - [`NewPayloadRequest`](#newpayloadrequest)
-  - [`ExecutionPayload`](#executionpayload)
+  - [StatelessInput](#statelessinput)
+  - [ChainConfig](#chainconfig)
+  - [NewPayloadRequest](#newpayloadrequest)
+  - [ExecutionPayload](#executionpayload)
 - [Re-execution specification](#re-execution-specification)
   - [Overview](#overview)
   - [The EXECUTE precompile](#the-execute-precompile)
@@ -25,9 +26,6 @@
   - [Root computation](#root-computation)
   - [NativeRollup contract (ZK)](#nativerollup-contract-zk)
   - [Blob encoding](#blob-encoding)
-  - [Proof strategies](#proof-strategies)
-    - [Separate proofs](#separate-proofs-specified)
-    - [Recursive proofs (TBD)](#recursive-proofs-tbd)
   - [Open questions](#open-questions)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
@@ -40,11 +38,11 @@ The re-execution variant would only be able to support optimistic rollups with a
 
 While the L1 ZK-EVM upgrade is not needed for the re-execution version, statelessness is, as we want L1 validators to be able to verify the precompile without having to hold all rollups' state. It's not clear whether the time interval between statelessness and L1 ZK-EVM will be long enough to justify the implementation of the re-execution variant, or whether statelessness will be implemented before the L1 ZK-EVM in the first place.
 
-Both variants are specified in this document. The re-execution spec comes first because it is simpler and helps explain the progression to ZK: the core function being executed or proven is the same ([`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197)), and the contract patterns (state management, messaging, anchoring) are shared. The ZK spec then shows what changes when re-execution is replaced by proof verification.
+Both variants are specified in this document. The re-execution spec comes first because it is simpler and helps explain the progression to ZK: the core function being executed or proven is the same ([`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L321)), and the contract patterns (state management, messaging, anchoring) are shared. The ZK spec then shows what changes when re-execution is replaced by proof verification.
 
 ## Design principles
 
-The core principle is to re-use as many L1 components as possible. L2 operators run the same proving infrastructure as L1 provers: they prove the same program ([`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197)) with the same keys. L1 nodes verify L2 proofs using the same [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025) infrastructure they use for L1 block proofs. In the re-execution variant, L1 validators run the same stateless validation function directly.
+The core principle is to re-use as many L1 components as possible. L2 operators run the same proving infrastructure as L1 provers: they prove the same program ([`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L321)) with the same keys. The mandatory L1 proving path verifies those L2 proofs using the generalized verification infrastructure derived from [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025), while L1 validators verify the resulting L1 block proof. In the re-execution variant, L1 validators run the same stateless validation function directly.
 
 This means native rollups inherit whatever the L1 EVM supports: no custom transaction types, precompiles, or fee markets on the L2 side. Any such change would require modifying the shared program, making the proposal more complex and harder to accept. The L2-specific logic (blob transaction filtering, L1 anchoring) is kept outside the standard function, in a thin preprocessing layer.
 
@@ -52,7 +50,7 @@ Significant parts of the design depend on its [tech dependencies](tech_dependenc
 
 ## Data layout
 
-Both variants execute or prove the same function ([`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197)) and therefore share the same L2 block structure. The following tables describe how native rollup blocks map to the standard spec types.
+Both variants execute or prove the same function ([`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L321)) and therefore share the same L2 block structure. The following tables describe how native rollup blocks map to the standard spec types.
 
 Fields marked **constrained** are validated during execution (wrong value = proof/execution fails). Fields marked **unconstrained** are free inputs chosen by the operator. Fields marked **fixed** have a constant value for L2.
 
@@ -60,14 +58,39 @@ The unconstrained fields (`fee_recipient`, `prev_randao`, `parent_beacon_block_r
 
 ### StatelessInput
 
-[`StatelessInput`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L95): input to `verify_stateless_new_payload`.
+[`StatelessInput`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L165): input to `verify_stateless_new_payload`.
 
 | Field | Expected source | Notes |
 |-------|-----------------|-------|
 | `new_payload_request` | see below | |
 | `witness` | calldata (re-execution) / offchain (ZK) | [`ExecutionWitness`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L27): MPT node preimages, contract bytecodes, ancestor headers |
-| `chain_config` | storage (`chain_id`) | [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L82): L2 chain configuration |
+| `chain_config` | storage (`chain_id`) + EVM environment (`active_fork.activation`) | L2 chain configuration; see below |
 | `public_keys` | calldata (re-execution) / offchain (ZK) | Pre-recovered ECDSA keys to avoid expensive recovery in the ZK circuit |
+
+### ChainConfig
+
+The current L1 zkEVM [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L130-L159) has the following logical shape:
+
+```text
+ChainConfig {
+    chain_id: uint64,
+    active_fork: {
+        activation: {
+            block_number: Optional[uint64],
+            timestamp: Optional[uint64],
+        },
+    },
+}
+```
+
+At least one activation coordinate must be present, and stateless validation checks that the active fork's activation has been reached by the target payload. `ChainConfig` no longer contains a fork identifier or blob schedule. The exact stateless-validation schema and fork semantics are bound separately by the canonical program identity.
+
+This proposal assumes a **parameterless EVM environmental interface** exposes the current canonical L1 `ChainConfig`, analogously to how `CHAINID` exposes the current chain ID. The exact opcode or precompile is left to the L1 zkEVM work. A native-rollup contract reads that value, discards its L1 `chain_id`, and constructs the L2 configuration from:
+
+- the L2 `chain_id` stored by the rollup contract; and
+- the complete L1 `active_fork.activation`, including both optional block-number and timestamp coordinates.
+
+For post-Merge L1 forks the timestamp is normally the relevant coordinate, but copying the complete activation preserves the upstream type. Because the activation data comes from the EVM environment, native rollups follow L1 fork transitions without maintaining a fork schedule or applying a contract upgrade. The constructed L2 `ChainConfig` is used both as `StatelessInput.chain_config` and when reconstructing the proof's full `StatelessValidationResult`.
 
 ### NewPayloadRequest
 
@@ -116,7 +139,7 @@ This variant is **not intended for production**. It is specified for:
 - **Understanding**: providing a concrete, executable reference for the verification flow.
 - **Progression**: showing the stepping stone from re-execution to ZK (see [From re-execution to ZK](#from-re-execution-to-zk)).
 
-The ethrex project implements a version of this approach ([PR #6186](https://github.com/lambdaclass/ethrex/pull/6186)). Our spec follows the same pattern but wraps the standard [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197) directly, rather than using a custom `apply_body` variant with individual ABI-encoded fields.
+The ethrex project implements a version of this approach ([PR #6186](https://github.com/lambdaclass/ethrex/pull/6186)). Our spec follows the same pattern but wraps the standard [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L321) directly, rather than using a custom `apply_body` variant with individual ABI-encoded fields.
 
 ### The EXECUTE precompile
 
@@ -163,11 +186,11 @@ def execute(evm: Evm) -> None:
     evm.output = serialize_stateless_output(result)
 ```
 
-**Input:** The precompile reads its input from `evm.message.data`, which contains an SSZ-serialized [`StatelessInput`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L95), decoded via [`deserialize_stateless_input`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_guest.py#L27).
+**Input:** The precompile reads its input from `evm.message.data`, which contains an SSZ-serialized [`StatelessInput`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L165), decoded via [`deserialize_stateless_input`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_guest.py#L35).
 
 **Output:**
 
-- **On success:** `evm.output` contains the SSZ-serialized [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L126), encoded via [`serialize_stateless_output`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_guest.py#L19). This includes `new_payload_request_root`, `successful_validation`, and `chain_config` (with `chain_id`).
+- **On success:** `evm.output` contains the SSZ-serialized [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197), encoded via [`serialize_stateless_output`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_guest.py#L27). This includes `new_payload_request_root`, `successful_validation`, and the complete `chain_config`.
 - **On failure:** raises `InvalidParameter` for bad fixed fields, or `ExceptionalHalt` if validation fails. Both consume all gas and cause the `STATICCALL` to return `success = false` with empty output.
 
 ### L2-specific preprocessing
@@ -211,7 +234,7 @@ contract NativeRollup {
     bytes32 public stateRoot;
     uint256 public blockNumber;
     uint256 public gasLimit;
-    uint256 public chainId;
+    uint64 public chainId;
 
     // L2 state root history (for L2->L1 messaging via state proofs)
     mapping(uint256 => bytes32) public stateRootHistory;
@@ -250,7 +273,14 @@ contract NativeRollup {
         //    See: l1_anchoring.md, l1_l2_messaging.md
         bytes32 l1Anchor = blockhash(block.number - 1);
 
-        // 2. Call EXECUTE precompile with SSZ-serialized StatelessInput.
+        // 2. Construct the current L2 ChainConfig. L1CHAINCONFIG is the
+        //    assumed parameterless EVM environmental interface. Its L1
+        //    chain ID is overwritten; its complete active-fork activation
+        //    is retained.
+        ChainConfig memory l2ChainConfig = L1CHAINCONFIG();
+        l2ChainConfig.chainId = chainId;
+
+        // 3. Call EXECUTE precompile with SSZ-serialized StatelessInput.
         bytes memory input = SSZ.encodeStatelessInput(
             NewPayloadRequest(
                 ExecutionPayload(
@@ -277,19 +307,26 @@ contract NativeRollup {
                 new bytes[](0)                  // execution_requests (empty for L2)
             ),
             witness,
-            chainId,
+            l2ChainConfig,
             publicKeys
         );
         (bool success, bytes memory result) = EXECUTE.staticcall(input);
         require(success, "EXECUTE failed");
 
-        // 3. Decode and verify result (SSZ-encoded StatelessValidationResult).
-        (bytes32 newPayloadRequestRoot, bool validationSuccessful, uint64 provenChainId) =
+        // 4. Decode and verify result (SSZ-encoded StatelessValidationResult).
+        (
+            bytes32 newPayloadRequestRoot,
+            bool validationSuccessful,
+            ChainConfig memory provenChainConfig
+        ) =
             SSZ.decodeStatelessValidationResult(result);
         require(validationSuccessful, "L2 validation failed");
-        require(provenChainId == chainId, "chain_id mismatch");
+        require(
+            SSZ.hashTreeRoot(provenChainConfig) == SSZ.hashTreeRoot(l2ChainConfig),
+            "chain_config mismatch"
+        );
 
-        // 4. Update onchain state
+        // 5. Update onchain state
         blockHash = params.blockHash;
         stateRoot = params.stateRoot;
         blockNumber = blockNumber + 1;
@@ -302,36 +339,38 @@ contract NativeRollup {
 
 ### Overview
 
-The ZK variant replaces the `EXECUTE` precompile with **proof-carrying transactions** and a **`PROOFROOT` opcode**. Instead of re-executing the L2 state transition on L1, the rollup operator generates a ZK proof and the consensus layer validates it. The rollup contract computes the expected commitment onchain and checks it against the proof.
+The ZK variant replaces the `EXECUTE` precompile with **proof-carrying transactions** and a **`PROOFROOT` opcode**. Instead of re-executing the L2 state transition on L1, the rollup operator generates a ZK proof that is recursively verified by the mandatory L1 block proof. The rollup contract computes the expected commitment onchain and checks it against the proof.
 
-This follows the same EL/CL split pattern as [EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) blob transactions: the EL references a commitment (the `validation_result_root`), and the CL validates the corresponding proof. The `validation_result_root` is the `hash_tree_root` of the [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L126), the proof's public output, which contains the `new_payload_request_root`, whether validation succeeded, and the `chain_config` used during execution.
+This follows the same commitment pattern as [EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) blob transactions: the EL references a commitment (`validation_result_root`), while the proving and consensus path establishes that the corresponding proof is valid. The `validation_result_root` is the `hash_tree_root` of the [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197), the proof's public output, which contains the `new_payload_request_root`, whether validation succeeded, and the `chain_config` used during execution.
 
 The specification follows the [stateless execution model](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py) from the execution-specs, the [Block-in-Blobs (EIP-8142)](https://eips.ethereum.org/EIPS/eip-8142) pattern for transaction data availability, and the [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025) proof validation infrastructure from the consensus-specs.
 
+**Mandatory-proof assumption.** This design targets the future L1 regime in which execution proofs are consensus-critical and validators do not download full execution payloads. Validators sample payload data through DAS and validate the mandatory L1 block proof against a compact `NewPayloadRequestHeader`. The header must have the same SSZ `hash_tree_root` as the full `NewPayloadRequest`. The current optional EIP-8025 flow, in which the proof engine is notified with the full request, is a development-stage predecessor rather than the validator model assumed here.
+
 The flow:
 
-1. The **rollup operator** builds an L2 block and generates an execution proof by proving [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197), the same program that L1 provers prove for L1 blocks.
+1. The **rollup operator** builds an L2 block and generates an execution proof by proving [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L321), the same program that L1 provers prove for L1 blocks.
 2. The **operator** submits a [proof-carrying transaction](#proof-carrying-transactions) to L1. The transaction body includes the `validation_result_root` (accessible to the EVM via [`PROOFROOT`](#the-proofroot-opcode)) and `blob_versioned_hashes`. The sidecar carries the ZK proof and blobs ([EIP-8142](https://eips.ethereum.org/EIPS/eip-8142)-encoded L2 block data).
 3. The **rollup contract** reconstructs the expected `validation_result_root` and checks it against `PROOFROOT` (see [Root computation](#root-computation)).
-4. The **consensus layer** validates the proof from the sidecar (see [Transaction processing](#transaction-processing)). If the proof is invalid, the L1 block is rejected.
+4. The assumed **mandatory L1 block proof** recursively verifies the proof-carrying transaction's execution proof. Validators verify that L1 block proof and sample payload data through DAS; they do not download the full execution payload.
 5. The **rollup contract** updates its onchain state (block hash, state root, etc.).
 
 No precompile is needed. The rollup contract is the "programmable consensus layer" that decides which fields come from storage, which from the operator, and which are fixed.
 
-There are two possible strategies for how L2 proofs are validated relative to the L1 block proof: **separate proofs** (nodes validate L2 proofs independently, 1 + N proofs per block) and **recursive proofs** (the L1 prover recursively verifies L2 proofs, 1 proof per block). This document describes the separate proofs approach. See [Proof strategies](#proof-strategies) for details on both.
+This document assumes that the mandatory L1 proving infrastructure can recursively verify proof-carrying transaction proofs. The construction of that recursive proving and aggregation infrastructure is outside the scope of this proposal and can be specified separately.
 
 ### From re-execution to ZK
 
-The ZK variant builds directly on the re-execution spec. The core function being verified is the same: [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197). What changes is *how* that function is verified and *where* the data lives.
+The ZK variant builds directly on the re-execution spec. The core function being verified is the same: [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L321). What changes is *how* that function is verified and *where* the data lives.
 
 | Aspect | Re-execution | ZK |
 |--------|-------------|-----|
-| **Enforcement** | `EXECUTE` precompile re-runs L2 STF | CL validates ZK proof |
+| **Enforcement** | `EXECUTE` precompile re-runs L2 STF | Mandatory L1 block proof recursively verifies L2 proof |
 | **L2 data** | Calldata (txs + witness + public keys) | Blobs for txs ([EIP-8142](https://eips.ethereum.org/EIPS/eip-8142)), witness + public keys offchain |
 | **EVM access** | Precompile return value | `BLOBHASH` + `PROOFROOT` opcodes |
 | **Contract role** | Calls precompile, checks return | Computes `validation_result_root`, checks `PROOFROOT` |
-| **CL involvement** | None (pure EL) | Validates proof ([EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)) |
-| **L1 proves** | Full L2 execution (re-execution) | Only L2-specific preprocessing |
+| **CL involvement** | None (pure EL) | Verifies mandatory L1 block proof and samples payload data |
+| **L1 proves** | Full L2 execution (re-execution) | Contract execution and recursive L2 proof verification |
 | **Requires** | Statelessness | Statelessness + L1 ZK-EVM |
 
 **What stays the same:**
@@ -348,7 +387,7 @@ The main change is where L2 block data lives and who processes it:
 - **Transactions and block access list**: in re-execution, the full transaction list is passed as calldata to the `EXECUTE` precompile, which re-executes them. In ZK, the full data moves to blobs following [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142): the block access list and RLP-encoded transactions are packed into blobs via [`execution_payload_data_to_blobs`](https://eips.ethereum.org/EIPS/eip-8142). The contract only receives `transactions_root` in calldata, a constrained field validated by the L2 proof. The blobs ensure data availability so that L2 nodes and provers can reconstruct the block.
 - **Witness and public keys**: in re-execution, the [`ExecutionWitness`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L27) (trie node preimages, contract codes, ancestor headers) and pre-recovered public keys are passed as calldata because the EL needs them to re-execute. In ZK, neither is needed onchain: the prover uses them offchain to generate the proof, and they are not posted to L1.
 - **Block parameters**: remain in calldata in both variants. The contract needs them to either call the precompile (re-execution) or compute the `validation_result_root` onchain (ZK).
-- **Verification**: the `EXECUTE` precompile is replaced by proof-carrying transactions + `PROOFROOT`. The CL validates the proof; the L1 EL no longer re-executes the L2 STF. The L1 block proof only covers the contract's Root computation and `PROOFROOT` check, not the full L2 execution.
+- **Verification**: the `EXECUTE` precompile is replaced by proof-carrying transactions + `PROOFROOT`. The L1 EL no longer re-executes the L2 STF. Instead, the mandatory L1 block proof covers the contract's root computation and `PROOFROOT` check and recursively verifies the referenced L2 proof.
 
 ### Proof-carrying transactions
 
@@ -374,7 +413,7 @@ During transaction gossip responses (`PooledTransactions`), the transaction payl
 rlp([tx_payload_body, blobs, kzg_commitments, kzg_proofs, execution_proof])
 ```
 
-The `validation_result_root` is a hash of the proof's public output (see [Proof validation](#proof-validation)). The `blob_versioned_hashes` commit to the [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142)-encoded L2 block data. The `execution_proof` is validated by the CL (see [Transaction processing](#transaction-processing)).
+The `validation_result_root` is a hash of the proof's public output (see [Proof validation](#proof-validation)). The `blob_versioned_hashes` commit to the [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142)-encoded L2 block data. The `execution_proof` is recursively verified by the mandatory L1 proving path (see [Transaction processing](#transaction-processing)).
 
 The pattern extends EIP-4844:
 
@@ -383,10 +422,10 @@ The pattern extends EIP-4844:
 | **Blobs** | Transaction data | L2 block data ([EIP-8142](https://eips.ethereum.org/EIPS/eip-8142)) |
 | **Onchain reference** | `blob_versioned_hashes` | `blob_versioned_hashes` + `validation_result_root` |
 | **EVM access** | `BLOBHASH` opcode | `BLOBHASH` + `PROOFROOT` opcodes |
-| **CL validation** | Blob availability (KZG, DAS) | Blob availability + proof validity ([EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)) |
+| **CL validation** | Blob availability (KZG, DAS) | Blob availability + mandatory L1 block proof |
 | **EL validation** | `is_valid_versioned_hashes` (protocol) | `validation_result_root != 0` (protocol) + contract checks `PROOFROOT` |
 
-See also [Proof-carrying transactions](./proofs.md) for more context on the proof format and the two-proof model.
+See also [Proof-carrying transactions](./proofs.md) for more context on the proof format.
 
 ### The `PROOFROOT` opcode
 
@@ -415,7 +454,7 @@ If the transaction is not a proof-carrying transaction, `PROOFROOT` returns `byt
 
 ### Transaction processing
 
-Proof-carrying transactions are processed like blob transactions with one additional field (`validation_result_root`) and one additional CL validation step (proof verification). The EL treats the proof as opaque; the CL handles all proof validation via the existing [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025) `ProofEngine`.
+Proof-carrying transactions are processed like blob transactions with one additional field (`validation_result_root`). The EL treats the proof as opaque. The assumed mandatory L1 proving path recursively verifies the proof; validators verify only the resulting L1 block proof.
 
 **EL: transaction decoding and validation.** A new transaction type (e.g. `PROOF_TX_TYPE = 0x05`) is added to [`transactions.py`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/transactions.py#L303). The `ProofCarryingTransaction` class extends [`BlobTransaction`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/transactions.py#L303) with `validation_result_root: Hash32`. The [signing hash](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/transactions.py#L832) includes `validation_result_root`, so the sender commits to which L2 block is being proven.
 
@@ -428,15 +467,16 @@ The blobs use the existing blob gas market. How to price the proof verification 
 
 **EL: engine API.** [`is_valid_versioned_hashes`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/new_payload.py#L44) validates that versioned hashes from the CL match blob transaction hashes in the payload. It would need to be updated to also extract `blob_versioned_hashes` from `ProofCarryingTransaction` instances (currently it only handles `BlobTransaction`). Beyond this, no additional engine API changes are needed: the EL does not see or validate the proof, just as it does not see blob contents.
 
-**CL: proof validation.** The consensus layer extracts the `execution_proof` from the proof-carrying transaction's sidecar and validates it using [`proof_engine.verify_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/proof-engine.md#new-verify_execution_proof). Unlike L1 block proofs, which are delivered as [`SignedExecutionProof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-signedexecutionproof) messages signed by active validators and processed via [`process_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-process_execution_proof), L2 proofs are delivered via the transaction sidecar and do not require a validator signature; the CL calls `verify_execution_proof` directly. The proof's public output must match the `validation_result_root` declared in the transaction body. If the proof is invalid, the L1 block is rejected, analogous to how an invalid KZG proof in a blob sidecar invalidates the block.
+**Mandatory L1 proof.** The proof-carrying transaction makes the `execution_proof` and its declared `validation_result_root` available to the L1 proving path. The L1 block proof recursively verifies the execution proof and proves that its public output matches the declared root. A validator checks that single mandatory L1 proof against `NewPayloadRequestHeader`; it does not separately verify every proof-carrying transaction proof or download the full execution payload. The exact proof-delivery and recursive-aggregation machinery is assumed infrastructure and is outside this proposal.
 
 **CL: data availability.** Blob availability is handled by the existing DAS mechanism ([EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) / [EIP-7594](https://eips.ethereum.org/EIPS/eip-7594) PeerDAS). The CL treats proof-carrying transaction blobs identically to any other blobs: they are included in `blob_kzg_commitments`, sampled via DAS, and their versioned hashes are passed to the EL for cross-verification.
 
-**P2P: gossip.** During transaction gossip (`PooledTransactions`), the network representation wraps the transaction body with blobs, KZG data, and the execution proof (as shown in the [sidecar format](#proof-carrying-transactions) above). Receiving nodes validate:
+**P2P: gossip.** During transaction gossip (`PooledTransactions`), the network representation wraps the transaction body with blobs, KZG data, and the execution proof (as shown in the [sidecar format](#proof-carrying-transactions) above). Receiving nodes retain the existing blob-sidecar checks:
 - Blob/commitment/proof counts match `blob_versioned_hashes` (same as blob txs)
 - `kzg_to_versioned_hash(commitments[i]) == blob_versioned_hashes[i]` (same as blob txs)
 - KZG proofs are valid for the blobs (same as blob txs, via `verify_blob_kzg_proof_batch`)
-- The execution proof is valid for the declared `validation_result_root` (via `proof_engine.verify_execution_proof`). Note: this requires the EL gossip layer to have access to the proof engine, which is currently a CL component. How this cross-layer validation works at gossip time is TBD
+
+Whether transaction gossip also verifies the execution proof before forwarding is a non-consensus policy and delivery question left to the assumed L1 proving infrastructure.
 
 **Summary of changes by layer:**
 
@@ -446,30 +486,32 @@ The blobs use the existing blob gas market. How to price the proof verification 
 | **EL: validation** | Blob count, version byte, fee checks | Same + `validation_result_root != 0` |
 | **EL: tx env** | `blob_versioned_hashes` | Same + `validation_result_root` |
 | **EL: engine API** | `is_valid_versioned_hashes` | Updated to also handle `ProofCarryingTransaction` |
-| **CL: validation** | `is_data_available` (DAS) | Same + `proof_engine.verify_execution_proof` |
+| **CL: validation** | `is_data_available` (DAS) | DAS + mandatory L1 block proof recursively verifies the execution proof |
 | **P2P: sidecar** | `[tx, blobs, commitments, kzg_proofs]` | Same + `execution_proof` |
 
 ### Proof validation
 
-An L2 execution proof uses the same [`ExecutionProof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-executionproof) structure as an L1 block proof. It proves that [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197) succeeded for the L2 block. The proof's public output is the full [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L126):
+An L2 execution proof uses the same [`ExecutionProof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-executionproof) structure as an L1 block proof. It proves that [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L321) succeeded for the L2 block. The proof's public output is the full [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197):
 
-- `new_payload_request_root`: the root of the [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L63) for that L2 block, computed via [`compute_new_payload_request_root`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L139)
+- `new_payload_request_root`: the root of the [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L66) for that L2 block, computed via [`compute_new_payload_request_root`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L229)
 - `successful_validation`: whether the state transition succeeded
-- `chain_config`: the [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L82) (includes `chain_id`) used during execution (see [PR #2342](https://github.com/ethereum/execution-specs/pull/2342))
+- `chain_config`: the complete [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L130-L159), including `chain_id` and the active fork's activation, used during execution (see [PR #2342](https://github.com/ethereum/execution-specs/pull/2342))
 
-The `validation_result_root` declared in the proof-carrying transaction is a hash of this full `StatelessValidationResult`. Unlike L1 proofs, which are gossipped as [`SignedExecutionProof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-signedexecutionproof) messages signed by active validators, L2 proofs are delivered via the proof-carrying transaction sidecar and do not require a validator signature. The CL validates them using the same [`proof_engine.verify_execution_proof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/proof-engine.md#new-verify_execution_proof) function (see [Transaction processing](#transaction-processing)).
+The `validation_result_root` declared in the proof-carrying transaction is a hash of this full `StatelessValidationResult`. Current optional EIP-8025 gossips L1 proofs as [`SignedExecutionProof`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-signedexecutionproof) messages and notifies the proof engine with the full `NewPayloadRequest`. This proposal instead assumes the mandatory-proof regime: the proof-carrying transaction sidecar makes the L2 proof available to the L1 proving path, the mandatory L1 block proof recursively verifies it, and validators validate the resulting L1 proof against the root reconstructed from `NewPayloadRequestHeader`. Validators never need the full payload for this check.
 
-Together, the EL check (contract reconstructs expected root and matches `PROOFROOT`, see [Root computation](#root-computation)) and the CL check (valid proof for that root) guarantee that the L2 state transition was executed correctly.
+Together, the EL check (the contract reconstructs the expected root and matches `PROOFROOT`, see [Root computation](#root-computation)) and the mandatory L1 proof (which recursively verifies the L2 proof for that root) guarantee that the L2 state transition was executed correctly.
 
-**`chain_id` and proof binding.** The `chain_id` is part of [`StatelessInput.chain_config`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L82) but not part of [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L63) or the block header. If the public output were only the `new_payload_request_root`, the prover could freely choose `chain_id` as a private input, enabling cross-chain transaction replay: for typed transactions ([EIP-2930](https://eips.ethereum.org/EIPS/eip-2930) and later), [`recover_sender`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/transactions.py#L665) uses the transaction's own `tx.chain_id` for signature recovery, not `block_env.chain_id`, so transactions from any chain would execute successfully. By including `chain_config` in `StatelessValidationResult` ([PR #2342](https://github.com/ethereum/execution-specs/pull/2342)), the proof attests to which `chain_id` was used, and the contract can verify it matches its stored value by reconstructing the full `StatelessValidationResult` before hashing.
+**`ChainConfig` and proof binding.** `ChainConfig` is part of [`StatelessInput`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L165) but not part of [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L63) or the block header. If the public output were only the `new_payload_request_root`, the prover could freely choose it as a private input. In particular, choosing another `chain_id` would enable cross-chain transaction replay: for typed transactions ([EIP-2930](https://eips.ethereum.org/EIPS/eip-2930) and later), [`recover_sender`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/transactions.py#L665) uses the transaction's own `tx.chain_id` for signature recovery, not `block_env.chain_id`, so transactions from any chain would execute successfully. By including the complete `chain_config` in `StatelessValidationResult` ([PR #2342](https://github.com/ethereum/execution-specs/pull/2342)), the contract binds both its stored L2 chain ID and the EVM-provided current L1 fork activation.
+
+The exact fork/schema identity is not encoded in the current `ChainConfig`; it remains bound by the canonical proof program identity. The activation fields are still useful as an additional guard: stateless validation rejects a payload that predates the active fork, and the parameterless EVM value changes with L1's fork rules.
 
 ### Root computation
 
 The rollup contract must reconstruct the expected `validation_result_root` and check it against `PROOFROOT`. This requires two steps:
 
-1. **Compute `new_payload_request_root`** from block header fields via [`compute_new_payload_request_root`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L139). The hashing scheme is SSZ `hash_tree_root` over the [`SszNewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_ssz.py#L89) container (see [`stateless_ssz.py`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_ssz.py)). The contract only has header-level data (roots and scalar fields, not full transaction lists), so the scheme must allow reconstruction from [`NewPayloadRequestHeader`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-newpayloadrequestheader) fields. This is the same requirement that the CL has in [`process_execution_payload`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#modified-process_execution_payload), where the proof engine verifies a header against stored proofs.
+1. **Compute `new_payload_request_root` from `NewPayloadRequestHeader`.** The mandatory-proof model requires a compact header because neither validators nor the contract have the full transaction list. SSZ defines [root-equivalent summaries](https://github.com/ethereum/consensus-specs/blob/master/ssz/simple-serialize.md#summaries-and-expansions): variable-sized payload fields can be replaced by their `hash_tree_root` without changing the root of the enclosing object. Consequently, `hash_tree_root(NewPayloadRequestHeader) == hash_tree_root(NewPayloadRequest)`. [`NewPayloadRequestHeader`](https://github.com/ethereum/consensus-specs/issues/5076) was removed from the current optional EIP-8025 flow only because validators still receive the full payload; this proposal assumes its return for mandatory proofs. The root itself follows the zkEVM [`SszNewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_ssz.py) schema. [Execution-specs PR #3248](https://github.com/ethereum/execution-specs/pull/3248) is updating that schema to Gloas's EIP-7688 progressive merkleization, which intentionally changes `new_payload_request_root` while leaving its SSZ serialization unchanged. This proposal targets that progressive root.
 
-2. **Hash the full `StatelessValidationResult`**: compute `hash_tree_root` of the [`SszStatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_ssz.py#L123) containing `new_payload_request_root` (from step 1), `successful_validation = true`, and `chain_config` (with `chain_id` from storage). The result is the `validation_result_root`.
+2. **Hash the full `StatelessValidationResult`**: read the current L1 `ChainConfig` from the parameterless EVM environmental interface, replace its L1 chain ID with the contract's stored L2 chain ID, and compute `hash_tree_root` of the [`SszStatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_ssz.py#L254-L259) containing `new_payload_request_root` (from step 1), `successful_validation = true`, and that complete L2 `chain_config`. The result is the `validation_result_root`.
 
 The contract has access to every field needed for step 1:
 
@@ -478,6 +520,8 @@ The contract has access to every field needed for step 1:
 | Scalar header fields (`parent_hash`, `block_number`, etc.) | Contract storage and operator calldata |
 | `transactions_root` | Operator calldata (constrained: proven by the L2 proof) |
 | `withdrawals_root` | Known constant (empty for L2) |
+| `block_access_list_root` | Operator calldata (constrained: proven by the L2 proof) |
+| `slot_number` | TBD: its L2 interpretation must be defined |
 | `versioned_hashes` | `BLOBHASH` from the proof-carrying transaction |
 | `parent_beacon_block_root` | Computed onchain (L1 anchor) |
 | `execution_requests` | Known constant (empty for L2) |
@@ -513,7 +557,7 @@ contract NativeRollup {
     bytes32 public stateRoot;
     uint256 public blockNumber;
     uint256 public gasLimit;
-    uint256 public chainId;
+    uint64 public chainId;
 
     // L2 state root history (for L2->L1 messaging via state proofs)
     mapping(uint256 => bytes32) public stateRootHistory;
@@ -533,7 +577,14 @@ contract NativeRollup {
         //    Same pattern as the re-execution variant (see above).
         bytes32 l1Anchor = blockhash(block.number - 1);
 
-        // 2. Compute new_payload_request_root from
+        // 2. Construct the current L2 ChainConfig. L1CHAINCONFIG is the
+        //    assumed parameterless EVM environmental interface. Its L1
+        //    chain ID is overwritten; its complete active-fork activation
+        //    is retained.
+        ChainConfig memory l2ChainConfig = L1CHAINCONFIG();
+        l2ChainConfig.chainId = chainId;
+
+        // 3. Compute new_payload_request_root from
         //    storage + calldata + versioned hashes + computed anchor.
         //    Uses header-level fields: transactions_root instead of
         //    full transactions list.
@@ -564,21 +615,22 @@ contract NativeRollup {
             executionRequests:   bytes32(0)               // empty for L2
         );
 
-        // 3. Hash the full StatelessValidationResult:
+        // 4. Hash the full StatelessValidationResult:
         //    (new_payload_request_root, successful_validation, chain_config)
-        //    This implicitly verifies chain_id (from storage) and
-        //    successful_validation (always true for a valid proof).
-        bytes32 validationResultRoot = hash(
+        //    This binds chain_id from storage, the current L1 active-fork
+        //    activation, and successful_validation = true.
+        bytes32 validationResultRoot = SSZ.hashTreeRootStatelessValidationResult(
             npRoot,
-            true,               // successful_validation
-            chainId             // from storage (chain_config)
+            true,
+            l2ChainConfig
         );
 
-        // 4. Verify the computed root matches the proof-carrying tx's
-        //    declared root. The CL validates the proof for this root.
+        // 5. Verify the computed root matches the proof-carrying tx's
+        //    declared root. The mandatory L1 block proof recursively
+        //    verifies the L2 proof for this root.
         require(validationResultRoot == PROOFROOT, "root mismatch");
 
-        // 5. Update onchain state.
+        // 6. Update onchain state.
         blockHash = params.blockHash;
         stateRoot = params.stateRoot;
         blockNumber = blockNumber + 1;
@@ -608,44 +660,16 @@ L2 block data (transactions + block access list) is encoded into blobs following
 
 **Data availability guarantee.** The proof-carrying transaction carries both the blobs and the ZK proof. The `blob_versioned_hashes` in the transaction body commit to the blob data via KZG. The `validation_result_root` commits (through the `new_payload_request_root`) to a `NewPayloadRequest` that includes those same `versioned_hashes`. The contract reads the blob hashes via `BLOBHASH` and includes them in the root computation, binding the proof to the blob data. DAS ensures the blobs are available. An operator cannot withhold L2 data: if the blobs are missing, the L1 block is invalid (same as any blob transaction); if the versioned hashes don't match, the root check fails.
 
-### Proof strategies
-
-Each L1 block that contains native rollup state transitions involves two categories of proofs: one or more **L2 execution proofs** (one per proof-carrying transaction) and an **L1 block proof**. There are two strategies for how these proofs are validated.
-
-#### Separate proofs
-
-In this approach, L2 proofs and the L1 block proof are validated independently by the CL:
-
-1. **N L2 execution proofs** (generated by rollup operators): each proves [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197) for one L2 block. Carried in proof-carrying transaction sidecars and validated by the CL independently.
-
-2. **1 L1 block proof** (generated by the L1 prover): proves the L1 block execution, including the rollup contract's root computation and `PROOFROOT` check. Does **not** re-execute any L2 state transitions, as those are already proven by the operators.
-
-A node validates **1 + N** proofs per L1 block: the L1 block proof plus one L2 proof per proof-carrying transaction. This is the approach described in this document.
-
-#### Recursive proofs (TBD)
-
-In this approach, the L1 prover recursively verifies the L2 proofs as part of proving the L1 block:
-
-1. The rollup operator generates the L2 execution proof and makes it available to the L1 prover.
-2. The L1 prover, when proving the L1 block, also proves the *verification* of each L2 proof it encounters. The resulting L1 block proof recursively attests to the correctness of all L2 state transitions within that block.
-3. A node validates only **1 proof** per L1 block, regardless of how many L2 blocks were proven.
-
-This reduces per-block verification cost from 1 + N to 1, at the expense of increased complexity for the L1 prover (which must support recursive proof verification). The exact mechanism, including how L2 proofs are delivered to the L1 prover and how the recursive verification circuit is structured, is TBD. See also [Recursive L1+L2 proofs](./proofs.md#recursive-l1l2-proofs).
-
 ### Open questions
 
-1. **Blob transaction restriction**: L2 does not support type-3 (blob-carrying) transactions. [EIP-8079](https://eips.ethereum.org/EIPS/eip-8079) explicitly checks for this in the precompile. In the current design, this could be enforced via the L2 `ChainConfig` (the proof circuit rejects blob txs), or via additional onchain checks. The exact mechanism is TBD.
+1. **`block_access_list` handling**: With [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142), block access lists may also be encoded in blobs. If so, the operator would provide the `block_access_list` root as calldata (same pattern as `transactions_root`).
 
-2. **`block_access_list` handling**: With [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142), block access lists may also be encoded in blobs. If so, the operator would provide the `block_access_list` root as calldata (same pattern as `transactions_root`).
+2. **Proof-carrying transaction pricing**: Recursively verifying the transaction proof imposes additional work on the mandatory L1 prover. Whether this requires a separate proof gas market (analogous to the blob gas market), a flat fee, or is folded into the existing gas model is TBD. Related: how the overall gas model works depends on the L1 ZK-EVM design. See [tech dependencies](./tech_dependencies.md).
 
-3. **Proof-carrying transaction pricing**: Proof verification imposes a cost on the CL (and on L1 provers in the ZK L1 model). Whether this requires a separate proof gas market (analogous to the blob gas market), a flat fee, or is folded into the existing gas model is TBD. Related: how the overall gas model works depends on the L1 ZK-EVM design. See [tech dependencies](./tech_dependencies.md).
+3. **Root computation library**: The rollup contract needs to compute `new_payload_request_root` onchain via SSZ `hash_tree_root` (over `SszNewPayloadRequest`) and then `hash_tree_root` the full `SszStatelessValidationResult`. The availability and gas cost of an SSZ `hash_tree_root` library in Solidity is a practical consideration.
 
-4. **Root computation library**: The rollup contract needs to compute `new_payload_request_root` onchain via SSZ `hash_tree_root` (over `SszNewPayloadRequest`) and then `hash_tree_root` the full `SszStatelessValidationResult`. The availability and gas cost of an SSZ `hash_tree_root` library in Solidity is a practical consideration.
+4. **Re-execution data encoding**: The `EXECUTE` precompile takes an SSZ-serialized `StatelessInput` as calldata. The encoding must be efficient given the potentially large witness size.
 
-5. **Re-execution data encoding**: The `EXECUTE` precompile takes an SSZ-serialized `StatelessInput` as calldata. The encoding must be efficient given the potentially large witness size.
+5. **Re-execution gas cost**: The gas cost of the `EXECUTE` precompile depends on the L2 block complexity. The gas metering model is TBD.
 
-6. **Re-execution gas cost**: The gas cost of the `EXECUTE` precompile depends on the L2 block complexity. The gas metering model is TBD.
-
-7. **Sequence-first-prove-later**: The current spec requires blobs and proof to be in the same transaction, so the operator must have the proof ready at data posting time. Supporting sequence-first-prove-later (post data first, prove later) would require a mechanism to reference past blobs from the proof-carrying transaction. `BLOBHASH` only accesses blobs in the current transaction. Possible approaches include a new opcode or precompile that can attest to blob availability from past blocks (within the DAS availability window), or a contract-level registry of blob commitments.
-
-8. **Recursive proof delivery**: In the [recursive proofs](#recursive-proofs-tbd) strategy, how L2 proofs are delivered to the L1 prover, and the structure of the recursive verification circuit, are TBD.
+6. **Sequence-first-prove-later**: The current spec requires blobs and proof to be in the same transaction, so the operator must have the proof ready at data posting time. Supporting sequence-first-prove-later (post data first, prove later) would require a mechanism to reference past blobs from the proof-carrying transaction. `BLOBHASH` only accesses blobs in the current transaction. Possible approaches include a new opcode or precompile that can attest to blob availability from past blocks (within the DAS availability window), or a contract-level registry of blob commitments.
