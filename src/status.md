@@ -26,12 +26,7 @@
 
 If there is no confidence that many existing rollups will become native, is the upgrade worth it? Several teams have expressed interest, including Gnosis, Celo, Linea, Taiko, and Scroll. Even so, native rollups are worth shipping only if the feature is kept minimal, so that its low complexity justifies it even if usage turns out to be low.
 
-Top rollups such as Arbitrum and Optimism have expressed interest in an extensible native program: most execution comes from the native program, but the project is free to add precompiles, opcodes, transaction types, and so on. No research has been done on this yet. One idea to explore is to take the native program's key from the EIP-8357 registry as an input, and express the rollup's program as a delta on top of it.
-
-A more ambitious idea is to use native rollups explicitly as a form of sharding. Even once verification is no longer the bottleneck, the next bottleneck is serial execution when generating the block witness, and one way to address it is parallel block building. This is what rollups already do: separate state and a separate block-building pipeline that communicates asynchronously with L1 through messaging. Native rollups would allow multiple instances that are identical to L1, trustless and fully proven, as the original sharding vision intended. Two talks cover this in more detail:
-
-- [Ethereum's roadmap to 10M TPS](https://www.youtube.com/watch?v=0O3JyJpMQLQ) (TOKEN2049 Singapore 2025): a higher-level talk on the intuitions behind parallel block building.
-- [Execution sharding through native rollups](https://www.youtube.com/watch?v=69NKLnejppk) (ETHDenver 2026): a lower-level talk comparing sharding through native rollups with the live sharding implementations of Polkadot and Near.
+Top rollups such as Arbitrum and Optimism have instead expressed interest in an extensible native program, explored in [Native rollups with extensions](./extensions.md). A more ambitious direction is to use native rollups as a form of [execution sharding](./sharding_comparison.md).
 
 ## Timeline
 

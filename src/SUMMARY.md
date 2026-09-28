@@ -20,7 +20,8 @@
 
 # Beyond minimal native rollups
 
-- [Sharding](./sharding_comparison.md)
+- [Native rollups with extensions](./extensions.md)
+- [Execution sharding](./sharding_comparison.md)
 
 # Appendix
 
