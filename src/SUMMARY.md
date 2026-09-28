@@ -13,6 +13,8 @@
 - [Open problems](./open_problems.md)
 - [Customization](./customization.md)
 - [Native proof verification](./native_verification.md)
+  - [Native rollups built on EIP-8288](./eip_8288_native_rollups.md)
+    - [L1 EVM verification-key registry EIP](./evm_vk_registry_eip.md)
 - [Proofs](./proofs.md)
 - [Sharding](./sharding_comparison.md)
 - [Stacks review](./stacks_review.md)

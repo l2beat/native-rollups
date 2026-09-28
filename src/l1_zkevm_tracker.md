@@ -1,10 +1,14 @@
 # L1 ZK-EVM tracker
 
-Last update: Feb 25, 2026
+Last broad update: Feb 25, 2026
+
+BAL/BiB references checked: July 29, 2026
 
 ## Blocks in blobs
 
 - [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142)
+
+EIP-8142 is a draft and explicitly depends on EIP-7928. Its payload data is the canonical RLP-encoded BAL followed by the RLP-encoded transaction list; BiB therefore supplies BAL transport and availability rather than defining a competing format.
 
 ```py
 def execution_payload_data_to_blobs(data: ExecutionPayloadData) -> List[Blob]:
@@ -32,8 +36,8 @@ def execution_payload_data_to_blobs(data: ExecutionPayloadData) -> List[Blob]:
     transactions_bytes = RLP.encode(data.transactions)
 
     # Create 8-byte header: [4 bytes BAL length][4 bytes tx length]
-    bal_length = len(bal_bytes).to_bytes(4, 'little')
-    txs_length = len(transactions_bytes).to_bytes(4, 'little')
+    bal_length = len(bal_bytes).to_bytes(4, 'big')
+    txs_length = len(transactions_bytes).to_bytes(4, 'big')
     header = bal_length + txs_length
 
     # Combine header + data
@@ -75,12 +79,15 @@ class ExecutionPayload:
     extra_data: Bytes
     base_fee_per_gas: Uint
     block_hash: Hash32
-    transactions: Tuple[LegacyTransaction | Bytes, ...]
+    transactions: Tuple[Bytes, ...]
     withdrawals: Tuple[Withdrawal, ...]
     blob_gas_used: U64
     excess_blob_gas: U64
     block_access_list: Bytes
+    slot_number: U64
 ```
+
+The corresponding SSZ mirror now uses an EIP-7688 `ProgressiveContainer`. In particular, `transactions` is a `ProgressiveList[ProgressiveByteList]` and `block_access_list` is a `ProgressiveByteList`. This progressive schema landed in [execution-specs PR #3248](https://github.com/ethereum/execution-specs/pull/3248) after EIP-8142's current `ExecutionPayload` example was written, so that example should not be treated as the current complete SSZ schema.
 
 ```py
 @slotted_freezable

@@ -126,7 +126,14 @@ For post-Merge L1 forks the timestamp is normally the relevant coordinate, but c
 | `withdrawals` | fixed | constant | Empty for L2 |
 | `blob_gas_used` | fixed | constant | 0 for L2 |
 | `excess_blob_gas` | fixed | constant | 0 for L2 |
-| `block_access_list` | yes | TBD | TBD |
+| `block_access_list` | yes | calldata or blobs | Canonical RLP bytes defined by [EIP-7928](https://eips.ethereum.org/EIPS/eip-7928). Re-execution: full bytes in calldata. ZK: `block_access_list_root` in calldata, full bytes in [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) payload blobs |
+
+The BAL has two distinct commitments. Let `block_access_list = RLP.encode(BAL)`, as defined by EIP-7928:
+
+- `block_access_list_hash = keccak256(block_access_list)` is the existing EIP-7928 execution-block-header field. Stateless validation computes it from the full BAL and checks it through `block_hash`.
+- `block_access_list_root = hash_tree_root(ProgressiveByteList(block_access_list))` is a compact SSZ summary defined by this proposal for `NewPayloadRequestHeader`. Replacing the full `block_access_list` field with this root preserves the `hash_tree_root` of the enclosing progressive `ExecutionPayload`.
+
+`block_access_list_root` is not a new execution-block-header field and is not part of EIP-7928. It is only the root-equivalent representation needed by contracts and validators that do not download the full execution payload.
 
 ## Re-execution specification
 
@@ -260,6 +267,7 @@ contract NativeRollup {
     function advance(
         BlockParams calldata params,
         bytes calldata transactions,
+        bytes calldata blockAccessList,
         bytes calldata witness,
         bytes calldata publicKeys
     ) external {
@@ -300,7 +308,8 @@ contract NativeRollup {
                     transactions,
                     new bytes[](0),             // withdrawals (empty for L2)
                     0,                          // blob_gas_used (zero for L2)
-                    0                           // excess_blob_gas (zero for L2)
+                    0,                          // excess_blob_gas (zero for L2)
+                    blockAccessList             // block_access_list (canonical EIP-7928 RLP bytes)
                 ),
                 new bytes32[](0),               // versioned_hashes (empty for re-execution)
                 l1Anchor,                       // parent_beacon_block_root
@@ -366,7 +375,7 @@ The ZK variant builds directly on the re-execution spec. The core function being
 | Aspect | Re-execution | ZK |
 |--------|-------------|-----|
 | **Enforcement** | `EXECUTE` precompile re-runs L2 STF | Mandatory L1 block proof recursively verifies L2 proof |
-| **L2 data** | Calldata (txs + witness + public keys) | Blobs for txs ([EIP-8142](https://eips.ethereum.org/EIPS/eip-8142)), witness + public keys offchain |
+| **L2 data** | Calldata (transactions + BAL + witness + public keys) | [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) blobs (BAL + transactions), witness + public keys offchain |
 | **EVM access** | Precompile return value | `BLOBHASH` + `PROOFROOT` opcodes |
 | **Contract role** | Calls precompile, checks return | Computes `validation_result_root`, checks `PROOFROOT` |
 | **CL involvement** | None (pure EL) | Verifies mandatory L1 block proof and samples payload data |
@@ -384,7 +393,7 @@ The ZK variant builds directly on the re-execution spec. The core function being
 
 The main change is where L2 block data lives and who processes it:
 
-- **Transactions and block access list**: in re-execution, the full transaction list is passed as calldata to the `EXECUTE` precompile, which re-executes them. In ZK, the full data moves to blobs following [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142): the block access list and RLP-encoded transactions are packed into blobs via [`execution_payload_data_to_blobs`](https://eips.ethereum.org/EIPS/eip-8142). The contract only receives `transactions_root` in calldata, a constrained field validated by the L2 proof. The blobs ensure data availability so that L2 nodes and provers can reconstruct the block.
+- **Transactions and block access list**: in re-execution, the complete transaction list and canonical EIP-7928 RLP BAL are passed as calldata to the `EXECUTE` precompile. In ZK, EIP-8142 already places both in payload blobs: the RLP BAL followed by the RLP-encoded transaction list. The contract receives only their SSZ summaries, `transactions_root` and `block_access_list_root`, in calldata. Both are constrained by the L2 proof, while the blobs make the underlying data available to L2 nodes and provers.
 - **Witness and public keys**: in re-execution, the [`ExecutionWitness`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L27) (trie node preimages, contract codes, ancestor headers) and pre-recovered public keys are passed as calldata because the EL needs them to re-execute. In ZK, neither is needed onchain: the prover uses them offchain to generate the proof, and they are not posted to L1.
 - **Block parameters**: remain in calldata in both variants. The contract needs them to either call the precompile (re-execution) or compute the `validation_result_root` onchain (ZK).
 - **Verification**: the `EXECUTE` precompile is replaced by proof-carrying transactions + `PROOFROOT`. The L1 EL no longer re-executes the L2 STF. Instead, the mandatory L1 block proof covers the contract's root computation and `PROOFROOT` check and recursively verifies the referenced L2 proof.
@@ -509,7 +518,7 @@ The exact fork/schema identity is not encoded in the current `ChainConfig`; it r
 
 The rollup contract must reconstruct the expected `validation_result_root` and check it against `PROOFROOT`. This requires two steps:
 
-1. **Compute `new_payload_request_root` from `NewPayloadRequestHeader`.** The mandatory-proof model requires a compact header because neither validators nor the contract have the full transaction list. SSZ defines [root-equivalent summaries](https://github.com/ethereum/consensus-specs/blob/master/ssz/simple-serialize.md#summaries-and-expansions): variable-sized payload fields can be replaced by their `hash_tree_root` without changing the root of the enclosing object. Consequently, `hash_tree_root(NewPayloadRequestHeader) == hash_tree_root(NewPayloadRequest)`. [`NewPayloadRequestHeader`](https://github.com/ethereum/consensus-specs/issues/5076) was removed from the current optional EIP-8025 flow only because validators still receive the full payload; this proposal assumes its return for mandatory proofs. The root itself follows the zkEVM [`SszNewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_ssz.py) schema. [Execution-specs PR #3248](https://github.com/ethereum/execution-specs/pull/3248) is updating that schema to Gloas's EIP-7688 progressive merkleization, which intentionally changes `new_payload_request_root` while leaving its SSZ serialization unchanged. This proposal targets that progressive root.
+1. **Compute `new_payload_request_root` from `NewPayloadRequestHeader`.** The mandatory-proof model requires a compact header because neither validators nor the contract have the full transaction list or BAL. SSZ defines [root-equivalent summaries](https://github.com/ethereum/consensus-specs/blob/master/ssz/simple-serialize.md#summaries-and-expansions): variable-sized payload fields can be replaced by their `hash_tree_root` without changing the root of the enclosing object. Consequently, `hash_tree_root(NewPayloadRequestHeader) == hash_tree_root(NewPayloadRequest)`. [`NewPayloadRequestHeader`](https://github.com/ethereum/consensus-specs/issues/5076) was removed from the current optional EIP-8025 flow only because validators still receive the full payload; this proposal assumes its return for mandatory proofs. The root itself follows the zkEVM [`SszNewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_ssz.py) schema. Merged [execution-specs PR #3248](https://github.com/ethereum/execution-specs/pull/3248) aligns that schema with Gloas's EIP-7688 progressive merkleization, which changes `new_payload_request_root` while leaving its SSZ serialization unchanged. This proposal targets that progressive root.
 
 2. **Hash the full `StatelessValidationResult`**: read the current L1 `ChainConfig` from the parameterless EVM environmental interface, replace its L1 chain ID with the contract's stored L2 chain ID, and compute `hash_tree_root` of the [`SszStatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_ssz.py#L254-L259) containing `new_payload_request_root` (from step 1), `successful_validation = true`, and that complete L2 `chain_config`. The result is the `validation_result_root`.
 
@@ -520,13 +529,15 @@ The contract has access to every field needed for step 1:
 | Scalar header fields (`parent_hash`, `block_number`, etc.) | Contract storage and operator calldata |
 | `transactions_root` | Operator calldata (constrained: proven by the L2 proof) |
 | `withdrawals_root` | Known constant (empty for L2) |
-| `block_access_list_root` | Operator calldata (constrained: proven by the L2 proof) |
+| `block_access_list_root` | Operator calldata: `hash_tree_root(ProgressiveByteList(block_access_list))` (constrained by the L2 proof) |
 | `slot_number` | TBD: its L2 interpretation must be defined |
 | `versioned_hashes` | `BLOBHASH` from the proof-carrying transaction |
 | `parent_beacon_block_root` | Computed onchain (L1 anchor) |
 | `execution_requests` | Known constant (empty for L2) |
 
-`transactions_root` is a constrained field: if the operator provides a wrong value, the L2 proof fails and the CL rejects the L1 block. This is the same trust model as `state_root` and `receipts_root`, which are also claimed by the operator and validated by the proof.
+`transactions_root` and `block_access_list_root` are constrained fields: if the operator provides a wrong value, the reconstructed `new_payload_request_root` does not match the L2 proof, and the mandatory L1 proof fails. This is the same trust model as `state_root` and `receipts_root`, which are also claimed by the operator and validated by the proof.
+
+The contract does not separately receive EIP-7928's `block_access_list_hash`. The L2 proof computes that Keccak commitment from the full BAL, validates it as part of the execution block header, and binds the resulting `block_hash`.
 
 ### NativeRollup contract (ZK)
 
@@ -545,6 +556,7 @@ contract NativeRollup {
         uint256 baseFeePerGas;
         bytes32 blockHash;
         bytes32 transactionsRoot;
+        bytes32 blockAccessListRoot; // SSZ root of the progressive byte list containing RLP(BAL)
         uint256 payloadBlobCount; // EIP-8142: number of blobs carrying L2 block data
         // Unconstrained fields (free operator inputs)
         address feeRecipient;
@@ -586,8 +598,8 @@ contract NativeRollup {
 
         // 3. Compute new_payload_request_root from
         //    storage + calldata + versioned hashes + computed anchor.
-        //    Uses header-level fields: transactions_root instead of
-        //    full transactions list.
+        //    Uses header-level SSZ summaries instead of the full
+        //    transaction list and block access list.
         //    Hashing scheme is SSZ hash_tree_root. TBD: onchain library.
         bytes32 npRoot = computeNewPayloadRequestRoot(
             // ExecutionPayloadHeader fields
@@ -608,6 +620,7 @@ contract NativeRollup {
             withdrawalsRoot:     bytes32(0),              // empty for L2
             blobGasUsed:         0,                       // fixed for L2
             excessBlobGas:       0,                       // fixed for L2
+            blockAccessListRoot: params.blockAccessListRoot, // constrained (proven)
             payloadBlobCount:    params.payloadBlobCount,
             // NewPayloadRequest fields
             versionedHashes:     getVersionedHashes(params.payloadBlobCount),
@@ -656,20 +669,18 @@ See also: [L1 anchoring](./l1_anchoring.md), [L1->L2 messaging](./l1_l2_messagin
 
 ### Blob encoding
 
-L2 block data (transactions + block access list) is encoded into blobs following [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142). The operator calls [`execution_payload_data_to_blobs`](https://eips.ethereum.org/EIPS/eip-8142) to produce an ordered list of blobs, which are included in the proof-carrying transaction's sidecar.
+L2 block data is encoded into blobs following [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142), which explicitly depends on EIP-7928. The operator calls [`execution_payload_data_to_blobs`](https://eips.ethereum.org/EIPS/eip-8142) to encode the canonical RLP BAL followed by the RLP transaction list into an ordered list of blobs included in the proof-carrying transaction's sidecar. Native rollups do not define a separate BAL encoding.
 
-**Data availability guarantee.** The proof-carrying transaction carries both the blobs and the ZK proof. The `blob_versioned_hashes` in the transaction body commit to the blob data via KZG. The `validation_result_root` commits (through the `new_payload_request_root`) to a `NewPayloadRequest` that includes those same `versioned_hashes`. The contract reads the blob hashes via `BLOBHASH` and includes them in the root computation, binding the proof to the blob data. DAS ensures the blobs are available. An operator cannot withhold L2 data: if the blobs are missing, the L1 block is invalid (same as any blob transaction); if the versioned hashes don't match, the root check fails.
+**Data availability guarantee.** The proof-carrying transaction carries both the blobs and the ZK proof. The `blob_versioned_hashes` in the transaction body commit to the blob data via KZG. Following EIP-8142's zkEVM path, the proof derives payload blobs from its private BAL and transaction data and verifies blob/commitment consistency against the public versioned hashes. The `validation_result_root` additionally commits, through `new_payload_request_root`, to those versioned hashes, `transactions_root`, and `block_access_list_root`. The contract reconstructs the same root using `BLOBHASH` and the two operator-provided SSZ summaries. DAS ensures the blobs are available. Missing blobs make the L1 block invalid; inconsistent blob data makes the recursive proof invalid; and incorrect summary roots make the contract's root check fail.
 
 ### Open questions
 
-1. **`block_access_list` handling**: With [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142), block access lists may also be encoded in blobs. If so, the operator would provide the `block_access_list` root as calldata (same pattern as `transactions_root`).
+1. **Proof-carrying transaction pricing**: Recursively verifying the transaction proof imposes additional work on the mandatory L1 prover. Whether this requires a separate proof gas market (analogous to the blob gas market), a flat fee, or is folded into the existing gas model is TBD. Related: how the overall gas model works depends on the L1 ZK-EVM design. See [tech dependencies](./tech_dependencies.md).
 
-2. **Proof-carrying transaction pricing**: Recursively verifying the transaction proof imposes additional work on the mandatory L1 prover. Whether this requires a separate proof gas market (analogous to the blob gas market), a flat fee, or is folded into the existing gas model is TBD. Related: how the overall gas model works depends on the L1 ZK-EVM design. See [tech dependencies](./tech_dependencies.md).
+2. **Root computation library**: The rollup contract needs to compute `new_payload_request_root` onchain via SSZ `hash_tree_root` (over `SszNewPayloadRequest`) and then `hash_tree_root` the full `SszStatelessValidationResult`. The availability and gas cost of an SSZ `hash_tree_root` library in Solidity is a practical consideration.
 
-3. **Root computation library**: The rollup contract needs to compute `new_payload_request_root` onchain via SSZ `hash_tree_root` (over `SszNewPayloadRequest`) and then `hash_tree_root` the full `SszStatelessValidationResult`. The availability and gas cost of an SSZ `hash_tree_root` library in Solidity is a practical consideration.
+3. **Re-execution data encoding**: The `EXECUTE` precompile takes an SSZ-serialized `StatelessInput` as calldata. The encoding must be efficient given the potentially large witness size.
 
-4. **Re-execution data encoding**: The `EXECUTE` precompile takes an SSZ-serialized `StatelessInput` as calldata. The encoding must be efficient given the potentially large witness size.
+4. **Re-execution gas cost**: The gas cost of the `EXECUTE` precompile depends on the L2 block complexity. The gas metering model is TBD.
 
-5. **Re-execution gas cost**: The gas cost of the `EXECUTE` precompile depends on the L2 block complexity. The gas metering model is TBD.
-
-6. **Sequence-first-prove-later**: The current spec requires blobs and proof to be in the same transaction, so the operator must have the proof ready at data posting time. Supporting sequence-first-prove-later (post data first, prove later) would require a mechanism to reference past blobs from the proof-carrying transaction. `BLOBHASH` only accesses blobs in the current transaction. Possible approaches include a new opcode or precompile that can attest to blob availability from past blocks (within the DAS availability window), or a contract-level registry of blob commitments.
+5. **Sequence-first-prove-later**: The current spec requires blobs and proof to be in the same transaction, so the operator must have the proof ready at data posting time. Supporting sequence-first-prove-later (post data first, prove later) would require a mechanism to reference past blobs from the proof-carrying transaction. `BLOBHASH` only accesses blobs in the current transaction. Possible approaches include a new opcode or precompile that can attest to blob availability from past blocks (within the DAS availability window), or a contract-level registry of blob commitments.
