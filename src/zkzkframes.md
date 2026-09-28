@@ -8,7 +8,6 @@
 - [How a native rollup uses it](#how-a-native-rollup-uses-it)
   - [NativeRollup contract](#nativerollup-contract)
 - [Relation to the mandatory L1 proof](#relation-to-the-mandatory-l1-proof)
-- [Comparison with proof-carrying transactions](#comparison-with-proof-carrying-transactions)
 - [Open issues](#open-issues)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
@@ -89,19 +88,6 @@ Replay is constrained by state: the expected root commits to the parent L2 block
 EIP-8288's recursive STARK only proves that every declared dependency is valid. It does not prove that the L1 transactions executed correctly, that the rollup contract matched the dependency to the right transition, or that the dependency list was correctly extracted from the block. With full-payload validation, validators check those things by executing the block themselves.
 
 This book assumes validators instead verify a mandatory L1 execution proof and do not download the full payload. That proof must therefore also bind EIP-8288's dependency hash and recursive STARK. Validators can either verify both proofs separately against the same dependency hash, or the mandatory L1 proof can recursively verify the EIP-8288 aggregate, leaving a single proof.
-
-## Comparison with proof-carrying transactions
-
-| Concern | [Proof-carrying transactions](./native_verification.md) | EIP-8288 |
-|---|---|---|
-| Envelope | New transaction type | EIP-8141 frame transaction |
-| Proof declaration | Signed `program_id`, backend types, public values hash | Dependency triple in a dependency frame |
-| Program identity | Canonical `program_id` | Exact verification key hash from EIP-8357 |
-| EVM access | New opcodes | Existing `FRAMEPARAM` and `FRAMEDATACOPY` |
-| Proof transport | Ephemeral transaction sidecar | Mempool wrapper |
-| Aggregation | Deferred to the mandatory L1 proving path | Recursive, in the mempool, FOCIL, and builder |
-| Account authorization | Must be designed into the new type | EIP-8141 `VERIFY`, `APPROVE`, and `SENDER` |
-| Multi-proof | Configurable backend threshold | One mandatory proof |
 
 ## Open issues
 

@@ -6,9 +6,8 @@
 
 - [Motivation](#motivation)
 - [How rollups verify proofs today](#how-rollups-verify-proofs-today)
-  - [Example: Taiko (multi-verifier)](#example-taiko-multi-verifier)
 - [Impact on existing rollups](#impact-on-existing-rollups)
-- [Custom VMs](#custom-vms)
+- [What L1 must provide](#what-l1-must-provide)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
@@ -18,86 +17,32 @@ Today, every Ethereum rollup maintains bespoke onchain proof verification infras
 
 [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025) introduces zkVM proof verification on Ethereum's consensus layer, but only for L1's own purposes: verifying execution payloads to enable stateless and sublinear validation. Rollups still need their own onchain verifier contracts.
 
-However, the infrastructure that EIP-8025 brings to the CL, the `ProofEngine`, proof gossip, and verification logic, is not inherently L1-specific. If generalized to be program-agnostic and exposed to smart contracts via a new transaction type, any rollup, even non-EVM ones, could offload proof verification to the CL. Verifier implementation fixes that preserve protocol-defined validity semantics can ship exactly like ordinary geth or Nethermind maintenance. This is the same principle behind [native rollups](https://eips.ethereum.org/EIPS/eip-8079), but more generalized: just as native rollups inherit L1's execution environment, native proof verification lets any rollup inherit L1's proof verification infrastructure.
-
-Although this document frames the proposal around rollups, the same primitive serves any contract that verifies a ZK proof onchain: privacy systems, ZK coprocessors, identity, ZK ML, and others.
+The proof verification infrastructure being built for L1 is not inherently L1-specific. As argued in the [introduction](./introduction.md#thesis-generalized-proof-verification), once the L1 zkEVM separates the program from the VM that proves it, verifying a proof of any program is essentially the same work. If L1 verified proofs of arbitrary programs, any rollup, including non-EVM ones, and any other application that verifies ZK proofs could rely on L1's verification instead of its own. Verifier implementation fixes that preserve the verified relation would then ship like ordinary client maintenance, rather than through each project's governance.
 
 ## How rollups verify proofs today
 
-Each zkVM vendor provides a universal Solidity verifier contract (typically a Groth16 or Plonk check over BN254). The program identity and the public values (any inputs and outputs the circuit commits to) are passed alongside the proof. For SP1:
+Each zkVM vendor provides a universal Solidity verifier contract, typically a Groth16 or Plonk check over BN254. The program's verification key and the public values are passed alongside the proof. For SP1:
 
 ```solidity
 interface ISP1Verifier {
     function verifyProof(
-        bytes32 programVKey,         // concrete SP1 program VK
+        bytes32 programVKey,         // program verification key
         bytes calldata publicValues, // public values (inputs and/or outputs)
         bytes calldata proofBytes    // the proof
     ) external view;
 }
 ```
 
-**A note on terminology.** SP1 calls `programVKey` a "verification key", but this collides with the zkVM's own circuit verification key. This document keeps them separate:
+Rollups then build their own stack around these verifiers. Taiko, for example, runs six contracts, each maintained and upgraded through a custom multisig:
 
-- **Program identity (`program_id`)**: a standardized, backend-independent `bytes32` commitment to deterministic program semantics. This is the identity exposed to contracts and remains stable across behavior-preserving compiler and verifier changes.
-- **Guest implementation**: a concrete implementation of those semantics, such as Ethrex, Reth, or Zesu for L1 stateless validation. Guest implementation and version are verifier metadata, not application identity; implementations fully bound to the same deterministic behavior share one `program_id`.
-- **Concrete program VK** (called `programVKey` by SP1 and `imageId` by Risc0): a backend- and build-specific identifier for compiled guest code. [ERE](https://github.com/eth-act/ere) expresses this as each backend's [`zkVMVerifier::ProgramVk`](https://github.com/eth-act/ere/blob/master/crates/verifier/core/src/verifier.rs) associated type. It may change without changing `program_id`.
-- **Backend family (`backend_type`)**: the named proof-system or zkVM family, such as SP1, Risc0, OpenVM, or ZisK. This is application-visible and is the unit counted for multi-proof diversity; distinct families may still share dependencies and are not assumed to be perfectly independent.
-
-### Example: Taiko (multi-verifier)
-
-Taiko illustrates the complexity that arises when a rollup uses multiple proof systems. Its verification architecture involves six contracts across three tiers (two raw verifiers, two adapters, one dispatcher, one SGX verifier), each independently maintained and upgraded through a custom multisig.
-
-**1. Raw zkVM verifiers.** Taiko deploys both an SP1 Plonk verifier (`SP1Verifier.sol`) and a Risc0 Groth16 verifier (`RiscZeroGroth16Verifier.sol`). These are the vendor-provided universal verifier contracts.
-
-**2. Taiko-specific adapters.** Each raw verifier is wrapped in an adapter contract that implements Taiko's `IVerifier` interface:
-
-```solidity
-// TaikoSP1Verifier: adapter for SP1
-contract TaikoSP1Verifier is IVerifier {
-    address public sp1RemoteVerifier;                    // raw SP1 verifier
-    mapping(bytes32 => bool) public isProgramTrusted;    // whitelisted programs
-
-    function verifyProof(Context[] calldata _ctxs, bytes calldata _proof) external view {
-        bytes32 aggregationProgram = bytes32(_proof[:32]);
-        bytes32 blockProvingProgram = bytes32(_proof[32:64]);
-        require(isProgramTrusted[aggregationProgram]);
-        require(isProgramTrusted[blockProvingProgram]);
-
-        bytes memory publicInputs = buildPublicInputs(_ctxs);
-        ISP1Verifier(sp1RemoteVerifier).verifyProof(
-            aggregationProgram, publicInputs, _proof[64:]
-        );
-    }
-}
-```
-
-A parallel `Risc0Verifier` has the same shape, with `isImageTrusted` replacing `isProgramTrusted` and `sha256(buildPublicInputs(...))` as the journal digest.
-
-**3. Multi-verifier dispatcher.** A `ComposeVerifier` contract orchestrates multiple verifiers and enforces that a sufficient set has verified each proof:
-
-```solidity
-contract MainnetVerifier is ComposeVerifier {
-    address public immutable sgxGethVerifier;    // SGX verifier (required)
-    address public immutable risc0RethVerifier;  // Risc0 option
-    address public immutable sp1RethVerifier;    // SP1 option
-
-    function verifyProof(Context[] calldata _ctxs, bytes calldata _proof) external {
-        SubProof[] memory subProofs = abi.decode(_proof, (SubProof[]));
-        for (uint256 i = 0; i < subProofs.length; ++i) {
-            IVerifier(subProofs[i].verifier).verifyProof(_ctxs, subProofs[i].proof);
-        }
-        require(areVerifiersSufficient(verifiers));
-    }
-
-    function areVerifiersSufficient(address[] memory _verifiers) internal view override {
-        // Must have exactly 2: sgxGethVerifier + (risc0 or sp1)
-    }
-}
-```
+- two raw zkVM verifiers, the vendor-provided SP1 Plonk and Risc0 Groth16 contracts;
+- two adapters, one per zkVM, that implement Taiko's `IVerifier` interface and whitelist the trusted program verification keys;
+- an SGX verifier; and
+- a `ComposeVerifier` dispatcher that calls several verifiers and requires a sufficient combination: SGX plus either SP1 or Risc0.
 
 ## Impact on existing rollups
 
-The table below reports Solidity SLOC (non-blank, non-comment source lines) for each project's onchain contracts, split between "core" rollup logic and the proof verification stack that native proof verification would retire.
+The table below reports Solidity SLOC (non-blank, non-comment source lines) for each project's onchain contracts, split between "core" rollup logic and the proof verification stack that generalized proof verification would retire.
 
 | Project | Proof system | Core SLOC | Retired SLOC | % retired |
 |---|---|---:|---:|---:|
@@ -108,7 +53,15 @@ The table below reports Solidity SLOC (non-blank, non-comment source lines) for 
 | Lighter | Validity, no VM (custom circuits) | 5,417 | 1,699 | 31.4% |
 | **Total** | | **60,811** | **23,626** | **38.9%** |
 
-These numbers are rough estimates. They cover only on-chain Solidity code and exclude off-chain provers, sequencers, and the guest program behind each `program_id`. Governance surfaces (multisigs, timelocks, DAO contracts, proxy admins), partner-specific bridges, and proxy boilerplate are excluded from both columns.
+These numbers are rough estimates. They cover only onchain Solidity code and exclude offchain provers, sequencers, and each project's guest program. Governance surfaces (multisigs, timelocks, DAO contracts, proxy admins), partner-specific bridges, and proxy boilerplate are excluded from both columns.
 
-## Custom VMs
-Rollups with custom VMs (non-EVM) can use L1's proof verification infrastructure through the [native proof verification](./native_verification.md) proposal. Instead of deploying their own onchain verifier contracts, they submit proof-carrying transactions with their custom guest program's hash. The contract pattern is identical to a native rollup, just with a different `program_hash`. See the [native proof verification](./native_verification.md) page for details.
+## What L1 must provide
+
+Generalized proof verification needs four things from L1:
+
+1. **A program-agnostic verifier.** [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)'s proof engine only verifies proofs of L1 execution. It must be generalized to verify a proof of any program against that program's verification key and public input.
+2. **Proof delivery and access from contracts.** [EIP-8288](./zkzkframes.md) lets a transaction declare a proof dependency in a frame, which contracts read through frame introspection.
+3. **Aggregation.** Proofs are too large to include in blocks individually. EIP-8288 aggregates them recursively in the mempool and in the builder, and the mandatory L1 block proof must cover the result.
+4. **Program identity.** A contract accepts proofs under exact verification key hashes. Applications manage the hashes they accept, as they whitelist programs today. For the EVM, L1 itself publishes the approved hash for each fork in the [EIP-8357 registry](./evm_vk_registry.md).
+
+A native rollup is the special case whose verification key hash comes from the EIP-8357 registry, and whose contract reconstructs the proof's public output from L1 state, as described in the [Specification](./specification.md). A rollup with a custom VM follows the same pattern with its own program and verification key.

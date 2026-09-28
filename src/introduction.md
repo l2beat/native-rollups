@@ -69,14 +69,14 @@ In this world, a native rollup is just the minimal special case that uses the na
 
 Two proposals currently describe how proofs are delivered and aggregated:
 
-- [Proof-carrying transactions](./native_verification.md): a new transaction type with an ephemeral proof sidecar, which is discarded once the builder aggregates the proof, plus opcodes that expose the proof's inputs. It follows the [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025) specifications as closely as possible to maximize code reuse.
+- [Proof-carrying transactions](https://ethresear.ch/t/native-proof-verification/24798): a new transaction type with an ephemeral proof sidecar, which is discarded once the builder aggregates the proof, plus opcodes that expose the proof's inputs. It follows the [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025) specifications as closely as possible to maximize code reuse.
 - [EIP-8288](./zkzkframes.md), also known as zkzkframes: a new [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame mode instead of a new transaction type, with proof inputs exposed through frame introspection and proofs aggregated recursively in the mempool and by the builder.
 
 The two are equivalent in practice, and this book prefers EIP-8288 because it builds on frame transactions. It still needs to be made concrete with respect to the existing zkEVM specifications, and it is an open question whether mempool nodes can realistically perform recursive proving. On top of EIP-8288, native rollups need one more piece: the [EVM verification key registry (EIP-8357)](./evm_vk_registry.md), which lets rollup contracts refer to the same program as L1.
 
 ## How this book is organized
 
-- **Proof verification**: the case for generalized proof verification, the two candidate designs, and the EVM verification key registry.
+- **Proof verification**: the case for generalized proof verification, EIP-8288, and the EVM verification key registry.
 - **Reusing the L1 STF**: the native rollup specification, and how L2-specific features work without modifying the L1 program.
 - **Beyond minimal native rollups**: directions beyond the minimal design, such as execution sharding.
 - **Appendix**: open problems, the original `EXECUTE` re-execution proposal, a review of the Orbit stack, and dependency tracking.
