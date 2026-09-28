@@ -4,31 +4,23 @@
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
 
-- [Overview](#overview)
-- [Brainstorming](#brainstorming)
-- [FOCIL (EIP-7805)](#focil-eip-7805)
+- [Constraints](#constraints)
+- [Design options](#design-options)
+- [Open questions](#open-questions)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
-## Overview
 
-Rollups with centralized sequencers must implement a forced transaction mechanism if they wish to preserve L1 censorship resistance properties. Users need to be able to permissionlessly send transactions to L1 and have the guarantee that they will be eventually included on L2 if they are accepted on L1.
+Rollups with centralized sequencers need a forced transaction mechanism to preserve L1's censorship resistance: a user must be able to submit a transaction on L1 with the guarantee that it is eventually included on L2.
 
-Fundamentally, proposed forced transactions do not need to include an L2 transaction signature because they can be authenticated using the L1 transaction signature, assuming that they are supposed to be the same address on L1 and L2. In existing implementations, forced transactions are usually pushed through calldata on L1, given that using a blob would leave most of the space unused and might therefore be cost-inefficient. Forced transaction mechanisms should be designed not to interfere with centralized preconfirmations where possible.
+## Constraints
 
-## Brainstorming
-> ⚠️
-> The following are just examples to demonstrate that forced transaction mechanisms are compatible with native rollups and that their implementations isn't unrealistic. Projects are free to design their own mechanisms and the precompile aims to be flexible enough to accommodate them.
+Native rollups only support the transaction types that L1 has, so a forced transaction is an ordinary signed L2 transaction. It cannot be an unsigned transaction authenticated by its L1 sender, as in the OP and Orbit stacks. Forced transactions are usually posted in calldata rather than blobs, since a single transaction would leave most of a blob unused. Where possible, the mechanism should not interfere with the sequencer's preconfirmations.
 
-The `EXECUTE` precompile can only support transactions with signatures, so forced transactions must include a signature too. On L1, one exception is made for withdrawals from the beacon chain, which are not authenticated on the execution layer. The limitation of withdrawals is that they only cover ETH minting and they cannot be used as a replacement for general message passing.
+## Design options
 
-One approach consists in having a mechanism to detect whether sequenced blocks contain individual forced transactions from a queue on L1 that are older than a certain time threshold, and if not, revert the block submission. It's unclear whether proving inclusion of arbitrary bytes in blobs is feasible to be done on L1 or if it requires a dedicated ZK verifier. This design alone doesn't solve for a sequencer that is not only censoring but is completely offline, and therefore an additional fallback mechanism that removes the sequencer whitelist might be needed.
+- **Contract-enforced queue.** Users post signed L2 transactions to an inbox on L1, and the rollup contract refuses to advance the chain unless every queued transaction older than a threshold is included. The contract can check inclusion with an SSZ inclusion proof against the block's `transactions_root`, which it already receives and which the proof binds, at some onchain cost. A sequencer that is offline, rather than censoring, also needs a fallback, such as removing the sequencer whitelist after a timeout.
+- **Inclusion lists.** With [FOCIL](https://eips.ethereum.org/EIPS/eip-7805), L1 blocks must include the valid transactions of their inclusion lists. A native rollup could reuse the same logic with an inclusion list built by its contract, adding its own filters or delays to preserve preconfirmations. This requires the L1 stateless validation program to support FOCIL, and its public output to commit to the inclusion list and whether it was satisfied. FOCIL is a Hegotá headliner, but the current program does not include it yet.
 
-Another solution is to allow the `EXECUTE` precompile not only to reference blobs, but also storage or calldata. In this way users can save their forced txs in storage and the contract around the `EXECUTE` calls can force the `transactions` input to be read from that storage if forced txs older than a certain time threshold are present.
+## Open questions
 
-## FOCIL (EIP-7805)
-
-[FOCIL](https://eips.ethereum.org/EIPS/eip-7805) introduces a new `inclusion_list_transactions` parameter to the `state_transition` function and the `apply_body` function, that conditions the validity of the block with a `validate_inclusion_list_transactions` function. In particular, it is checked that block transactions include all valid transactions from the IL that can fit in the block. The execution spec diff on top of osaka can be found [here](https://github.com/ethereum/execution-specs/pull/1349/files).
-
-Native rollups can re-use such logic where the IL comes from a smart contract as opposed to the CL. Custom logic can be applied that act as an additional filter, or that add delays to preserve the validity of already issued preconfirmations. The IL would therefore become another input to the `EXECUTE` precompile. In this case, FOCIL inclusion on L1 becomes an obvious tech dependency.
-
-It is still an open question how to properly manage the equivalent of a mempool within a smart contract, potential DoS attacks and re-submissions. Some of these problems are not unique to this "L2 FOCIL" design and might be present in existing forced transaction mechanisms too.
+- **Onchain mempool**: both options manage the equivalent of a mempool in a contract, which raises denial-of-service and resubmission problems. Some of these problems also affect existing forced transaction mechanisms.
