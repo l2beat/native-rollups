@@ -63,7 +63,7 @@ Each rollup chooses one of two policies:
 - **Follow current**: query with zero and accept only the current hash. When a hard fork updates the registry, the rollup moves to the new EVM automatically, without changing its code or storage.
 - **Pin**: query a stored historical hash, and keep that fork's EVM semantics after L1 moves on. This gives the rollup its own upgrade window, at its own risk.
 
-The full contract is shown in [Native rollups built on EIP-8288](./zkzkframes.md#nativerollup-contract).
+The full contract is shown in [EIP-8288 (zkzkframes)](./zkzkframes.md#nativerollup-contract).
 
 ## Security considerations
 

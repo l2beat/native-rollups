@@ -19,7 +19,7 @@
 
 - **Reusing the L1 STF** is largely specified in the [Specification](./specification.md), and ethrex has built a [proof of concept](https://github.com/lambdaclass/ethrex/pull/6186). The remaining issues are newer EIPs, such as Block-in-Blobs, and compatibility with future L1 upgrades.
 - **Proof-carrying transactions** were proposed in the [Native proof verification](https://ethresear.ch/t/native-proof-verification/24798) post on ethresear.ch in May 2026, and are described in [Native proof verification](./native_verification.md). The post assumed n-of-m mandatory proofs; the 1-of-1 mandatory proofs proposed by the [strawmap](https://strawmap.org/) would simplify the specification.
-- **EIP-8288** (zkzkframes) was merged as a Draft on 9 September 2026. See [Native rollups built on EIP-8288](./zkzkframes.md).
+- **EIP-8288** (zkzkframes) was merged as a Draft on 9 September 2026. See [EIP-8288 (zkzkframes)](./zkzkframes.md).
 - **EIP-8357**, the EVM verification key registry, is under review in [ethereum/EIPs#12055](https://github.com/ethereum/EIPs/pull/12055), with a reference implementation in [ethereum/sys-asm#56](https://github.com/ethereum/sys-asm/pull/56) and tests in [ethereum/execution-specs#3466](https://github.com/ethereum/execution-specs/pull/3466). See [EIP-8357](./evm_vk_registry.md).
 
 ## The case for native rollups

@@ -7,7 +7,7 @@
 
 - [Generalized proof verification](./generalized_proof_verification.md)
 - [Native proof verification](./native_verification.md)
-- [Native rollups built on EIP-8288](./zkzkframes.md)
+- [EIP-8288 (zkzkframes)](./zkzkframes.md)
 - [EIP-8357: EVM Verification Key Registry](./evm_vk_registry.md)
 
 # Reusing the L1 STF
