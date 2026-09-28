@@ -1,307 +1,72 @@
 # EIP-8357: EVM Verification Key Registry
 
-EIP front matter:
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+**Table of Contents**
 
-```yaml
-eip: 8357
-title: EVM Verification Key Registry
-description: Exposes fork-approved EVM verification keys and activation timestamps to contracts
-author: Luca Donno (@lucadonnoh)
-discussions-to: https://ethereum-magicians.org/t/eip-8357-evm-verification-key-registry/29222
-status: Draft
-type: Standards Track
-category: Core
-created: 2026-07-30
-requires: 161, 1559, 7910, 7928, 8037, 8288
-```
+- [Motivation](#motivation)
+- [How the registry works](#how-the-registry-works)
+- [How native rollups use it](#how-native-rollups-use-it)
+- [Security considerations](#security-considerations)
 
-> **Research draft.** The EIP-8288 verification-key encoding and integration
-> described below were reviewed against the open, unmerged revision
-> [`9c67268`](https://github.com/ethereum/EIPs/pull/11772/commits/9c67268d7bac54eb24c787996e9f1045c10666c4).
-> The final predeploy address, runtime bytecode, synthetic deployment
-> transaction, initial record, and executable test vectors remain `TBD`.
-> This draft is not ready for submission until those values are fixed.
-> When moved into the EIPs repository, the fenced YAML above must become the
-> file's actual front matter and links must use the repository's canonical
-> relative EIP and CC0 paths.
->
-> The Glamsterdam integration was audited on 2026-07-30 against EIPs
-> `0a1d42b`, execution-specs `forks/amsterdam` at `3e27f98`, and
-> execution-specs `projects/zkevm` at `1d1b610`.
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
-## Abstract
+EIP-8357 is a draft Core EIP that tells contracts which verification key L1 has approved for proving EVM execution in each fork. It is the one piece native rollups need on top of [EIP-8288](./zkzkframes.md). This page summarizes the design; the EIP is authoritative:
 
-This EIP creates a fixed-address system contract containing the canonical EVM
-verification key for each registered L1 feature fork. Each entry maps one
-exact verification key to the activation timestamp of the fork-specific EVM
-program bound by that key.
-
-The contract stores one `current_verification_key`. A caller may retrieve
-either the current entry or an exact historical entry. This lets a native
-rollup follow L1 EVM upgrades automatically or deliberately remain on a
-historical EVM fork.
+- EIP text: [ethereum/EIPs#12055](https://github.com/ethereum/EIPs/pull/12055)
+- Reference implementation: [ethereum/sys-asm#56](https://github.com/ethereum/sys-asm/pull/56)
+- Tests: [ethereum/execution-specs#3466](https://github.com/ethereum/execution-specs/pull/3466)
+- Discussion: [Ethereum Magicians](https://ethereum-magicians.org/t/eip-8357-evm-verification-key-registry/29222)
 
 ## Motivation
 
-Native rollups are intended to inherit Ethereum's execution environment and
-upgrade process instead of maintaining a bespoke verifier and its governance.
-The rollup contract must therefore identify the verification key that L1 has
-approved for proving EVM execution.
+EIP-8288 verifies each proof dependency against an explicitly supplied `verification_key_hash`, a hash of the STARK verification key. It does not tell contracts which hashes L1 recognizes as its own EVM program, which one is current, or when each became active. A native rollup that hard-coded these values would have to upgrade through its own governance at every L1 feature fork, or remain on an older EVM: exactly the [governance risk](./introduction.md#governance-risk) native rollups are meant to remove.
 
-Proof-verification mechanisms can verify a proof under an exact key without
-identifying which key represents the canonical L1 EVM or exposing its
-activation timestamp. EIP-8288 is one such mechanism. Hard-coding those values
-would force each rollup to upgrade through its own governance at every L1
-feature fork or remain on an older EVM.
+EIP-8357 records these values once, in shared L1 state that every contract can read. Verifiers keep accepting exact hashes, while each rollup chooses whether to follow the current entry or pin a historical one.
 
-This EIP makes the fork-selected key and activation timestamp available inside
-the EVM, allowing rollups to follow Ethereum upgrades automatically or retain
-historical EVM semantics.
+## How the registry works
 
-## Specification
+The registry is an ordinary EVM contract at a fixed address, `0x0000709b303ef147cee6c13f3af6c5a402da8357`. Anyone can deploy it through the [EIP-7997](https://eips.ethereum.org/EIPS/eip-7997) deterministic factory with a fixed salt, so the address is bound to the exact bytecode.
 
-The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD",
-"SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this
-document are to be interpreted as described in
-[RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) and
-[RFC 8174](https://www.rfc-editor.org/rfc/rfc8174).
+Its state is:
 
-### Parameters
+- a mapping from each registered `verification_key_hash` to the activation timestamp of the L1 feature fork whose EVM semantics it represents; and
+- the current `verification_key_hash`.
 
-| Constant | Value |
-|---|---:|
-| `SYSTEM_ADDRESS` | `0xfffffffffffffffffffffffffffffffffffffffe` |
-| `EVM_VK_REGISTRY_ADDRESS` | `TBD` |
-| `CURRENT_VERIFICATION_KEY_SLOT` | `0` |
-| `ACTIVATION_MAPPING_SLOT` | `1` |
+Entries are append-only: a registered hash is never deleted, overwritten, or revoked.
 
-The all-zero verification key is reserved for current-entry lookup and MUST
-NOT be registered.
+**Reads.** Any caller sends a single 32-byte word:
 
-### Registry state
+- zero requests the current entry;
+- a nonzero value requests that exact registered hash.
 
-`verification_key` is the 32-byte field defined by EIP-8288 for
-`LEANSTARK_SCHEME`. It is the L1-approved key for a deterministic,
-fork-specific EVM stateless-validation program.
+The registry returns `verification_key_hash || activation_timestamp`, and reverts if no such entry exists.
 
-Each key stores the nonzero `uint64` timestamp at which its L1 feature fork
-activates.
+**Updates.** Only `SYSTEM_ADDRESS` can update the registry, and only in the first block of a hard fork, before any transactions are processed:
 
-Storage slot `CURRENT_VERIFICATION_KEY_SLOT` stores the current
-`verification_key`. Registering a new key replaces this value. Previously
-registered entries remain available through exact-key lookup.
+- a 64-byte registration adds a new hash with its activation timestamp and makes it current;
+- a 32-byte reactivation makes a previously registered hash current again, keeping its original activation timestamp.
 
-Entries are append-only. A registered key MUST NOT be deleted or overwritten.
+Each new or reactivated hash is specified by its own Core EIP, which names the L1 feature fork whose EVM semantics it represents. The fork that activates EIP-8357 also registers the initial hash. The system call's gas does not count toward the block, and the block is invalid if the call fails.
 
-For each nonzero `verification_key`, define the base activation slot using the
-standard Solidity mapping layout:
+## How native rollups use it
 
-```python
-def activation_slot(verification_key: Bytes32) -> U256:
-    return U256(
-        keccak256(
-            verification_key
-            + uint256_be(ACTIVATION_MAPPING_SLOT)
-        )
-    )
-```
+A native rollup reads the registry when it advances its L2 state and uses the result in two places:
 
-The registry stores:
+- it requires the EIP-8288 dependency in the transaction to carry the returned `verification_key_hash`; and
+- it builds the L2 `ChainConfig` from its own chain ID and the returned activation timestamp, with the block-number coordinate absent.
 
-| Slot | Value |
-|---|---|
-| `activation_slot(verification_key)` | activation timestamp |
+The second point replaces the assumption, made elsewhere in this book, of an EVM environmental interface that exposes L1's `ChainConfig`.
 
-An entry is registered if this slot is nonzero. Its value MUST be at most
-`2**64 - 1`.
+Each rollup chooses one of two policies:
 
-### Contract interface
+- **Follow current**: query with zero and accept only the current hash. When a hard fork updates the registry, the rollup moves to the new EVM automatically, without changing its code or storage.
+- **Pin**: query a stored historical hash, and keep that fork's EVM semantics after L1 moves on. This gives the rollup its own upgrade window, at its own risk.
 
-The contract selects its operation by `CALLER`:
+The full contract is shown in [Native rollups built on EIP-8288](./zkzkframes.md#nativerollup-contract).
 
-- if `CALLER == SYSTEM_ADDRESS`, execute the fork-update operation;
-- otherwise, execute the read operation.
+## Security considerations
 
-All calls MUST have value `0`.
-
-In calldata and return data, `activation_timestamp` MUST be encoded as a
-zero-padded, 32-byte big-endian word.
-
-#### Read
-
-A non-system caller MUST provide exactly 32 bytes of calldata:
-
-- an all-zero word requests the current entry; or
-- a nonzero word requests that exact `verification_key`.
-
-For a valid request, the contract MUST return exactly 64 bytes:
-
-```text
-verification_key
-|| activation_timestamp
-```
-
-For an all-zero query, `verification_key` MUST be loaded from
-`CURRENT_VERIFICATION_KEY_SLOT`. For a nonzero query, `verification_key` MUST
-equal the supplied value.
-
-The call MUST revert without return data if:
-
-- calldata is malformed;
-- call value is nonzero;
-- no registered entry exists for the selected `verification_key`.
-
-The read operation MUST NOT modify state.
-
-#### Fork update
-
-The system caller supplies exactly one 64-byte registration:
-
-```text
-verification_key
-|| activation_timestamp
-```
-
-The call registers that key and updates the current pointer to it. The first
-call registers only the key active at the registry's activation.
-
-- `verification_key` MUST be nonzero;
-- the key MUST not already be registered;
-- `activation_timestamp` MUST be nonzero and at most `2**64 - 1`.
-
-If any condition fails, the call MUST revert. On success, the activation
-timestamp is stored, `CURRENT_VERIFICATION_KEY_SLOT` is set to
-`verification_key`, and no data is returned.
-
-The fork-update operation is:
-
-```python
-def update_registry(calldata: Bytes) -> None:
-    assert caller == SYSTEM_ADDRESS
-    assert callvalue == 0
-    assert len(calldata) == 64
-
-    verification_key = calldata[0:32]
-    activation_timestamp = uint256_be_decode(calldata[32:64])
-
-    assert verification_key != bytes32(0)
-    assert 0 < activation_timestamp <= 2**64 - 1
-
-    slot = activation_slot(verification_key)
-    assert sload(slot) == 0
-
-    sstore(slot, activation_timestamp)
-    sstore(CURRENT_VERIFICATION_KEY_SLOT, verification_key)
-```
-
-### Adding a key
-
-Each new `verification_key` MUST be specified by a distinct Core EIP that lists
-this EIP in its `requires` header. The key is activated in a hard fork.
-
-That EIP MUST define:
-
-1. the exact `verification_key`;
-2. the L1 feature fork whose EVM semantics the key represents.
-
-Clients construct the update calldata from the `verification_key` defined by
-the Core EIP and the `activation_timestamp` supplied by the hard-fork meta-EIP.
-
-For every registration, clients construct:
-
-```text
-EVM_VK_REGISTRY_UPDATE =
-    verification_key
-    || activation_timestamp
-```
-
-### Block processing
-
-In the first block where a hard fork adding a `verification_key` is active,
-before processing transactions, execution clients MUST call
-`EVM_VK_REGISTRY_ADDRESS` as `SYSTEM_ADDRESS` with
-`EVM_VK_REGISTRY_UPDATE` as calldata and value `0`.
-
-This is a system operation and therefore:
-
-- the call MUST use the system-call gas accounting specified by EIP-8037;
-- the call MUST NOT follow EIP-1559 fee burn semantics;
-- the call MUST be treated as a pre-execution system-contract call under
-  EIP-7928; and
-- the block MUST be invalid if `EVM_VK_REGISTRY_ADDRESS` contains no code or
-  the call fails.
-
-The call MUST NOT be performed in any other block.
-
-### Deployment
-
-The exact runtime bytecode, synthetic deployment transaction,
-`EVM_VK_REGISTRY_ADDRESS`, and initial record are `TBD`.
-
-Before activation:
-
-- the exact registry runtime bytecode MUST be deployed at
-  `EVM_VK_REGISTRY_ADDRESS`;
-- the account MUST have nonce `1` and be exempt from EIP-161 cleanup; and
-- the `systemContracts` object in every applicable EIP-7910 configuration from
-  the activation fork onward MUST contain the key
-  `EVM_VK_REGISTRY_ADDRESS` and the exact registry address, preserving the
-  object's required alphabetical key order.
-
-At the registry's initial activation, the registry call MUST register exactly
-one key: the key current for that fork.
-
-## Rationale
-
-### Current and pinned verification keys
-
-A native rollup that queries the current entry when verifying a proof follows
-L1 EVM upgrades without requiring a separate rollup governance action for each
-new verification key.
-
-Registrations remain available through exact-key lookup so that a native
-rollup can instead pin a historical key while its infrastructure adapts to an
-L1 upgrade. Storing the activation timestamp with each key lets both
-current-following and pinned consumers construct the corresponding
-[`ChainConfig`](https://github.com/ethereum/execution-specs/blob/1d1b61039fb8bc3ab8909ba92f924c37adc001bd/src/ethereum/forks/amsterdam/stateless.py)
-using the timestamp coordinate with the block-number coordinate absent.
-
-### Registry instead of a verifier wildcard
-
-A verifier wildcard could also provide automatic upgrades, but it would make
-each proof-verification mechanism responsible for selecting the key currently
-approved by L1.
-
-The registry separates key selection from proof verification. It records the
-current and historical keys once in shared, EVM-readable state and resolves a
-current-entry query to a concrete, nonzero verification key. Verification
-mechanisms can continue to accept exact keys, while contracts can choose
-between following the current pointer and pinning any registered key. The
-all-zero selector is a registry lookup convention and is never itself a
-verification key.
-
-## Backwards Compatibility
-
-This EIP introduces backward-incompatible changes to the block validation
-rules and must be activated through a hard fork. Existing transaction formats
-are unchanged.
-
-## Test Cases
-
-TBD. Registration test vectors are network-specific because the
-`activation_timestamp` is supplied by the network's hard-fork schedule.
-
-## Reference Implementation
-
-TBD.
-
-## Security Considerations
-
-Historical lookup never revokes a registered verification key. Past keys are
-not maintained by L1 and remain available even if they are known to be
-compromised. Consumers selecting a historical key assume that risk.
-
-## Copyright
-
-Copyright and related rights waived via
-[CC0](https://creativecommons.org/publicdomain/zero/1.0/).
+- **The registered hash must be sound.** If a hash for an incorrect program were registered as current, an attacker could prove false state transitions for every rollup following it.
+- **Following current means adopting each fork's key.** Proofs generated under the previous key may fail after the switch, and a rollup that cannot produce proofs under the new key may halt.
+- **Pinning transfers maintenance risk.** Registered hashes are never revoked, even if proofs under them are later considered insecure. L1 does not maintain historical entries, and a pinned rollup must detect vulnerabilities and migrate on its own.
