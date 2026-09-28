@@ -4,6 +4,7 @@
 
 # Proof verification
 
+- [Generalized proof verification](./generalized_proof_verification.md)
 - [Native proof verification](./native_verification.md)
 - [Native rollups built on EIP-8288](./zkzkframes.md)
 - [EIP-8357: EVM Verification Key Registry](./evm_vk_registry.md)
@@ -27,6 +28,7 @@
 # Appendix
 
 - [Open problems](./open_problems.md)
+- [The `EXECUTE` precompile](./execute_reexecution.md)
 - [Proofs](./proofs.md)
 - [Orbit stack](./orbit_stack.md)
 - [Tech dependencies](./tech_dependencies.md)

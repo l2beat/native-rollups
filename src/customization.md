@@ -8,10 +8,8 @@
   - [ETH burn](#eth-burn)
   - [NFT-gated gas credits](#nft-gated-gas-credits)
 - [Custom sequencing](#custom-sequencing)
-- [Custom VMs](#custom-vms)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
-
 ## Custom gas tokens
 We present PoCs for custom gas token implementations using Linea's messaging bridge as inspiration, which is reported here:
 
@@ -161,6 +159,3 @@ function sendMessage(
 
 ## Custom sequencing
 TODO
-
-## Custom VMs
-Rollups with custom VMs (non-EVM) can use L1's proof verification infrastructure through the [native proof verification](./native_verification.md) proposal. Instead of deploying their own onchain verifier contracts, they submit proof-carrying transactions with their custom guest program's hash. The contract pattern is identical to a native rollup, just with a different `program_hash`. See the [native proof verification](./native_verification.md) page for details.
