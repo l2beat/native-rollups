@@ -17,7 +17,6 @@
 - [L2 fee market](./l2_fee_market.md)
 - [Forced transactions](./forced_transactions.md)
 - [L1 vs L2 diff](./l1_vs_l2_diff.md)
-- [Customization](./customization.md)
 
 # Beyond minimal native rollups
 
