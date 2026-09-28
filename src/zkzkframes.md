@@ -30,7 +30,7 @@ A native rollup update declares exactly one dependency:
 - `validation_result_root` is the `hash_tree_root` of the `StatelessValidationResult` produced by proving the L2 block with L1's stateless validation program, as defined in the [Specification](./specification.md#proof-statement).
 - `verification_key_hash` is the hash of the EVM program's verification key selected from the [EIP-8357 registry](./evm_vk_registry.md), either the current entry or a pinned one.
 
-A LeanSTARK proof is a proof of a program running on [leanVM](https://github.com/leanEthereum/leanVM), so the L1 stateless validation program must be provable on leanVM. Today leanVM runs its own instruction set, while the L1 program is proven with RISC-V zkVMs under EIP-8025, so their proofs would have to be wrapped into a leanVM proof. leanVM plans to move to RISC-V ([leanVM #277](https://github.com/leanEthereum/leanVM/pull/277)), which would let it prove the same guest programs as EIP-8025 directly. Declaring a dependency means requiring it, so the native proof is always a single mandatory 1-of-1 proof.
+A LeanSTARK proof is a proof of a program running on [leanVM](https://github.com/leanEthereum/leanVM). This book assumes that L1 uses the same zkVM for its own execution proofs, so the L1 stateless validation program is proven on leanVM directly. leanVM's planned move to RISC-V ([leanVM #277](https://github.com/leanEthereum/leanVM/pull/277)) points in this direction: it would run the same guest programs that EIP-8025's zkVMs run today, once it supports their standard target and interface, including cryptographic accelerators, and continuations for block-sized runs. Declaring a dependency means requiring it, so the native proof is always a single mandatory 1-of-1 proof.
 
 A minimal self-paying transaction looks like this:
 
@@ -48,7 +48,7 @@ The rollup contract verifies no proof itself. It reads the triple with `FRAMEPAR
 
 EIP-8288's recursive STARK only proves that every declared dependency is valid. It does not prove that the L1 transactions executed correctly, that the rollup contract matched the dependency to the right transition, or that the dependency list was correctly extracted from the block. With full-payload validation, validators check those things by executing the block themselves.
 
-This book assumes validators instead verify a mandatory L1 execution proof and do not download the full payload. That proof must therefore also bind EIP-8288's dependency hash and recursive STARK. Validators can either verify both proofs separately against the same dependency hash, or the mandatory L1 proof can recursively verify the EIP-8288 aggregate, leaving a single proof.
+This book assumes validators instead verify a mandatory L1 execution proof and do not download the full payload. That proof must therefore also bind EIP-8288's dependency hash and recursive STARK. Since both proofs come from the same zkVM, the mandatory L1 proof can recursively verify the EIP-8288 aggregate, leaving validators a single proof.
 
 ## Open issues
 
@@ -56,5 +56,4 @@ This book assumes validators instead verify a mandatory L1 execution proof and d
 2. **Wrapper capacity.** `MAX_LEANSTARK_DEPS_PER_WRAPPER = 1`, yet each node is expected to broadcast one wrapper covering all of its active transactions. As written, two native-rollup transactions cannot share a wrapper.
 3. **Frame placement.** EIP-8288's examples put the dependency frame before `VERIFY`, while EIP-8141's public mempool only recognizes four validation prefixes. The layout above places it after the prefix; neither EIP specifies this yet.
 4. **Compact validation.** EIP-8288 assumes validators extract dependencies from the full transactions. How its dependency hash and recursive STARK enter the compact payload header and the mandatory L1 proof is not specified.
-5. **Proving the L1 program on leanVM.** EIP-8288 treats leanVM as a black box, while the L1 program is built for EIP-8025's zkVMs. Even a RISC-V leanVM would need to close three gaps to run the same guests: the target (EIP-8025 standardizes `riscv64im_zicclsm`, leanVM uses `riscv64im`), the [standard guest interface](https://github.com/eth-act/zkevm-standards) for input, output, and cryptographic accelerators such as keccak and secp256k1, and continuations for runs as large as an EVM block.
-6. **Unfinished parameters.** `AGGREGATED_VK` is still to be defined, with no mechanism for later changes to the verifier relation. The dependency-list hash function is not final, although BLAKE3 is the leading choice, and there is no reference implementation yet.
+5. **Unfinished parameters.** `AGGREGATED_VK` is still to be defined, with no mechanism for later changes to the verifier relation. The dependency-list hash function is not final, although BLAKE3 is the leading choice, and there is no reference implementation yet.

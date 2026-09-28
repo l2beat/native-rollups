@@ -54,7 +54,7 @@ These numbers are rough estimates. They cover only onchain Solidity code and exc
 
 Generalized proof verification needs four things from L1:
 
-1. **A program-agnostic verifier.** [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)'s proof engine only verifies proofs of L1 execution. It must be generalized to verify a proof of any program against that program's verification key and public input.
+1. **A program-agnostic verifier.** [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025) only proves L1 execution. EIP-8288's recursive circuit verifies a proof of any program against its verification key hash, on the same zkVM that L1 uses for its own execution proofs (see [EIP-8288](./zkzkframes.md#how-a-native-rollup-uses-it)).
 2. **Proof delivery and access from contracts.** [EIP-8288](./zkzkframes.md) lets a transaction declare a proof dependency in a frame, which contracts read through frame introspection.
 3. **Aggregation.** EIP-8288 aggregates proofs recursively in the mempool and in the builder, and the mandatory L1 block proof must cover the result.
 4. **Program identity.** A contract accepts proofs under exact verification key hashes. Applications manage the hashes they accept, as they whitelist programs today. For the EVM, L1 itself publishes the approved hash for each fork in the [EIP-8357 registry](./evm_vk_registry.md).
