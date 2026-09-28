@@ -99,7 +99,7 @@ A native rollup builds its L2 `ChainConfig` from the L2 `chain_id` stored in its
 | `state_root` | yes | calldata | Post-state root |
 | `receipts_root` | yes | calldata | Post-receipts root |
 | `logs_bloom` | yes | calldata | Computed during execution |
-| `prev_randao` | no | various | See [L1 vs L2 diff: RANDAO](./l1_vs_l2_diff.md#randao) |
+| `prev_randao` | no | various | See [L1 vs L2 differences](./l1_vs_l2_diff.md#randao) |
 | `block_number` | yes | storage | Must equal `parent_header.number + 1` |
 | `gas_limit` | yes | storage | Bounds check against parent (1/1024 rule). TBD: ZK gas handling |
 | `gas_used` | yes | calldata | Computed during execution |

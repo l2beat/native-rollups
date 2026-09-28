@@ -21,7 +21,7 @@ Native rollups reuse the `parent_beacon_block_root` field of `NewPayloadRequest`
 
 The rollup contract chooses the value, and the proof binds it through `new_payload_request_root`, so the operator cannot pick a different one. The [reference contract](./specification.md#nativerollup-contract) passes `blockhash(block.number - 1)`, which lets L2 contracts prove any L1 state with storage proofs. A message queue commitment or any other `bytes32` works too.
 
-The trade-off is that the field no longer holds a beacon block root on L2, so a rollup cannot expose both a beacon root and a custom anchor. Most rollups do not support EIP-4788 today anyway (see [L1 vs L2 diff](./l1_vs_l2_diff.md#beacon-roots-storage)).
+The trade-off is that the field no longer holds a beacon block root on L2, so a rollup cannot expose both a beacon root and a custom anchor. Most rollups do not support EIP-4788 today anyway (see [L1 vs L2 differences](./l1_vs_l2_diff.md#beacon-roots-storage)).
 
 Alternatives that were considered and dropped:
 
