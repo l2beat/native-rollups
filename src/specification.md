@@ -85,7 +85,7 @@ A native rollup builds its L2 `ChainConfig` from the L2 `chain_id` stored in its
 |-------|-------------|-----------------|-------|
 | `execution_payload` | | | See below |
 | `versioned_hashes` | yes | `BLOBHASH` | Ordered list of blob versioned hashes. On L1, the first `payload_blob_count` entries are payload blobs ([EIP-8142](https://eips.ethereum.org/EIPS/eip-8142), carrying block data) and the rest are from type-3 blob transactions. On L2, since blob transactions are not supported, the list contains only payload blob hashes, read via `BLOBHASH` from the transaction's blobs |
-| `parent_beacon_block_root` | no | computed onchain | Repurposed as the L1 anchor on L2. The existing [EIP-4788](https://eips.ethereum.org/EIPS/eip-4788) system transaction inside `apply_body` writes this value to the beacon roots predeploy, making it available to L2 contracts. The rollup contract chooses what to pass in this field (e.g. an L1 block hash, a message queue commitment, or any other value useful for L1->L2 communication). See [L1 anchoring](./l1_anchoring.md) and [L1->L2 messaging](./l1_l2_messaging.md) |
+| `parent_beacon_block_root` | no | computed onchain | Repurposed as the L1 anchor on L2. The existing [EIP-4788](https://eips.ethereum.org/EIPS/eip-4788) system transaction inside `apply_body` writes this value to the beacon roots predeploy, making it available to L2 contracts. The rollup contract chooses what to pass in this field (e.g. an L1 block hash, a message queue commitment, or any other value useful for L1->L2 communication). See [Messaging](./messaging.md) |
 | `execution_requests` | fixed | constant | Empty: L2 has no validator operations (deposits, exits, consolidations) |
 
 ### ExecutionPayload
@@ -225,7 +225,7 @@ contract NativeRollup {
         require(vkHash == expectedVkHash, "wrong verification key");
 
         // 3. Compute new_payload_request_root from storage, calldata,
-        //    versioned hashes, and the L1 anchor (see L1 anchoring).
+        //    versioned hashes, and the L1 anchor (see Messaging).
         //    Hashing scheme is SSZ hash_tree_root. TBD: onchain library.
         bytes32 npRoot = computeNewPayloadRequestRoot(
             // ExecutionPayloadHeader fields
@@ -284,7 +284,7 @@ contract NativeRollup {
 
 Replay is constrained by state: the expected root commits to the parent L2 block hash and number, the L2 chain ID, the activation timestamp, the L1 anchor, and the blob versioned hashes.
 
-See also: [L1 anchoring](./l1_anchoring.md), [L1->L2 messaging](./l1_l2_messaging.md), [L2->L1 messaging](./l2_l1_messaging.md)
+See also: [Messaging](./messaging.md)
 
 ## Blob encoding
 

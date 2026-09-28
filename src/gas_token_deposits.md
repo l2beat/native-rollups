@@ -18,7 +18,7 @@
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 ## Overview
 
-Rollup users need a way to obtain the gas token to be able to send transactions on the L2. Existing solutions divide into two approaches: either an escrow contract contains preminted tokens that are unlocked through the [L2 to L1 messaging](l2_l1_messaging.md) channel, or a new transaction type that is able to mint the gas token is added to the STF. This page will also discuss two more approaches that are currently not used in any project.
+Rollup users need a way to obtain the gas token to be able to send transactions on the L2. Existing solutions divide into two approaches: either an escrow contract contains preminted tokens that are unlocked through the [L1 to L2 messaging](./messaging.md#l1-to-l2-messaging) channel, or a new transaction type that is able to mint the gas token is added to the STF. This page will also discuss two more approaches that are currently not used in any project.
 
 ## Current approaches
 

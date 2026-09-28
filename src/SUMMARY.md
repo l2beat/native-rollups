@@ -12,9 +12,7 @@
 # Reusing the L1 STF
 
 - [Specification](./specification.md)
-- [L1 Anchoring](./l1_anchoring.md)
-- [L1 to L2 messaging](./l1_l2_messaging.md)
-- [L2 to L1 messaging](./l2_l1_messaging.md)
+- [Messaging](./messaging.md)
 - [Gas token deposits](./gas_token_deposits.md)
 - [L2 fee market](./l2_fee_market.md)
 - [Forced transactions](./forced_transactions.md)
