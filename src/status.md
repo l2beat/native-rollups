@@ -39,7 +39,7 @@ Mandatory proofs and a zkzkframes-like feature are both hard requirements. Accor
 
 ### Can anything ship earlier?
 
-Probably not. The [original proposal](https://ethresear.ch/t/native-rollups-superpowers-from-l1-execution/21517) suggested shipping native rollups through [re-execution](./execute_reexecution.md) instead of ZK proofs. Re-execution, however, only supports optimistic rollups with bisection games, which still require a long challenge period for withdrawals, something all rollups are trying to move away from.
+Probably not. The [original proposal](https://ethresear.ch/t/native-rollups-superpowers-from-l1-execution/21517) suggested shipping native rollups through re-execution instead of ZK proofs. Re-execution, however, only supports optimistic rollups with bisection games, which still require a long challenge period for withdrawals, something all rollups are trying to move away from.
 
 Another suggested path is to ship native rollups and generalized proof verification before mandatory proofs, as a testing ground: if something fails, only the applications that chose to take that risk fail, not all of L1. Delaying mandatory proofs is not desirable, but this remains an option if there is not enough confidence to ship them at all.
 

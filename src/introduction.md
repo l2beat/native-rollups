@@ -79,4 +79,4 @@ The two are equivalent in practice, and this book prefers EIP-8288 because it bu
 - **Proof verification**: the case for generalized proof verification, EIP-8288, and the EVM verification key registry.
 - **Reusing the L1 STF**: the native rollup specification, and how L2-specific features work without modifying the L1 program.
 - **Beyond minimal native rollups**: directions beyond the minimal design, such as execution sharding.
-- **Appendix**: open problems, the original `EXECUTE` re-execution proposal, a review of the Orbit stack, and dependency tracking.
+- **Appendix**: open problems, a review of the Orbit stack, and dependency tracking.

@@ -28,8 +28,6 @@
 # Appendix
 
 - [Open problems](./open_problems.md)
-- [The `EXECUTE` precompile](./execute_reexecution.md)
-- [Proofs](./proofs.md)
 - [Orbit stack](./orbit_stack.md)
 - [Tech dependencies](./tech_dependencies.md)
 - [L1 ZK-EVM tracker](./l1_zkevm_tracker.md)

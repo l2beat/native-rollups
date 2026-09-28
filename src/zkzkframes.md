@@ -6,7 +6,6 @@
 
 - [What EIP-8288 is](#what-eip-8288-is)
 - [How a native rollup uses it](#how-a-native-rollup-uses-it)
-  - [NativeRollup contract](#nativerollup-contract)
 - [Relation to the mandatory L1 proof](#relation-to-the-mandatory-l1-proof)
 - [Open issues](#open-issues)
 
@@ -28,7 +27,7 @@ A native rollup update declares exactly one dependency:
 (LEANSTARK_SCHEME, validation_result_root, verification_key_hash)
 ```
 
-- `validation_result_root` is the `hash_tree_root` of the `StatelessValidationResult` produced by proving the L2 block with L1's stateless validation program, as defined in the [Specification](./specification.md#proof-validation).
+- `validation_result_root` is the `hash_tree_root` of the `StatelessValidationResult` produced by proving the L2 block with L1's stateless validation program, as defined in the [Specification](./specification.md#proof-statement).
 - `verification_key_hash` is the hash of the EVM program's verification key selected from the [EIP-8357 registry](./evm_vk_registry.md), either the current entry or a pinned one.
 
 EIP-8288 only verifies LeanSTARK proofs. If the L2 block is proven with another zkVM, that proof must first be wrapped into the canonical LeanSTARK relation for the selected EVM fork. Declaring a dependency means requiring it, so the native proof is always a single mandatory 1-of-1 proof.
@@ -43,45 +42,7 @@ frame 2: SENDER      target = NativeRollup, data = advance(params, dependency_fr
 
 The `VERIFY` frame runs the smart account's authorization; the dependency frame grants no authority on its own. A sponsored transaction replaces frame 0 with an `only_verify` frame for the sender followed by a `pay` frame for the paymaster. The L2 data still travels in blobs: EIP-8288 proves correctness, not availability, and `BLOBHASH` returns the transaction's versioned hashes in every frame.
 
-### NativeRollup contract
-
-The rollup contract verifies no proof itself. It checks that the transaction declares exactly the dependency it expects for the next L2 block:
-
-```solidity
-uint8 constant LEANSTARK_SCHEME = 0x11;
-address constant EVM_VK_REGISTRY = 0x0000709b303ef147cee6c13f3af6c5a402da8357;
-
-enum VkPolicy { FollowCurrent, Pinned }
-VkPolicy public vkPolicy;
-bytes32 public pinnedVkHash;
-
-function advance(BlockParams calldata params, uint256 dependencyFrameIndex) external {
-    // Read the declared triple with FRAMEPARAM and FRAMEDATACOPY. Requiring a
-    // single 96-byte triple avoids ambiguous matching across frames.
-    (uint8 scheme, bytes32 dataHash, bytes32 vkHash) = readDependency(dependencyFrameIndex);
-    require(scheme == LEANSTARK_SCHEME);
-
-    // EIP-8357: zero selects the current entry.
-    (bytes32 expectedVkHash, uint64 activationTimestamp) =
-        readRegistry(vkPolicy == VkPolicy.FollowCurrent ? bytes32(0) : pinnedVkHash);
-    require(vkHash == expectedVkHash);
-
-    // L2 ChainConfig: stored chain ID, activation by timestamp only.
-    ChainConfig memory l2ChainConfig = chainConfig(chainId, activationTimestamp);
-
-    bytes32 npRoot = computeNewPayloadRequestRoot(
-        blockHash, params, getVersionedHashes(params.payloadBlobCount), blockhash(block.number - 1)
-    );
-    require(dataHash == SSZ.hashTreeRootStatelessValidationResult(npRoot, true, l2ChainConfig));
-
-    blockHash = params.blockHash;
-    stateRoot = params.stateRoot;
-    blockNumber++;
-    stateRootHistory[blockNumber] = params.stateRoot;
-}
-```
-
-Replay is constrained by state: the expected root commits to the parent L2 block hash and number, the L2 chain ID, the activation timestamp, the L1 anchor, and the blob versioned hashes.
+The rollup contract verifies no proof itself. It reads the triple with `FRAMEPARAM` and `FRAMEDATACOPY`, checks the verification key hash against the EIP-8357 registry, and checks the data hash against the root it reconstructs from its own state. See the [NativeRollup contract](./specification.md#nativerollup-contract) in the Specification.
 
 ## Relation to the mandatory L1 proof
 
