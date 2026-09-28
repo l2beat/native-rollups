@@ -1,6 +1,7 @@
 # Summary
 
 [Introduction](./introduction.md)
+[Status and roadmap](./status.md)
 
 # Proof verification
 
