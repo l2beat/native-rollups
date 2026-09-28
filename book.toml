@@ -7,3 +7,8 @@ title = "Native rollups"
 [output.html]
 additional-js = ["static/solidity.min.js", "static/external-links.js"]
 default-theme = "ayu"
+
+[output.html.redirect]
+"/execute_precompile.html" = "specification.html"
+"/proof_carrying_transactions.html" = "specification.html"
+"/stacks_review.html" = "orbit_stack.html"

@@ -47,4 +47,4 @@ At this point it's not clear whether it is possible to easily expose a custom da
 
 In principle, [EIP-7685: General purpose execution layer requests](https://eips.ethereum.org/EIPS/eip-7685) could be used, but this requires overloading its semantic from EL->CL to L2->L1 requests, and adding a new type of request that also "pollutes" the L1 execution environment.
 
-On the other hand, it is expected that [statelessness](./tech_dependencies.md#statelessness-eip-6800) will help in reducing the cost of providing inclusion proofs directly against a state root, which might remove the need to provide a shallower interface.
+On the other hand, it is expected that [statelessness](./tech_dependencies.md#statelessness-eip-7864) will help in reducing the cost of providing inclusion proofs directly against a state root, which might remove the need to provide a shallower interface.

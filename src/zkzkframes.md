@@ -124,7 +124,7 @@ This thought experiment makes the following assumptions:
 The chapter does not design the recursive prover. Registry entries and current
 key changes are protocol decisions activated by hard forks, as specified in
 the standalone
-[L1 EVM verification-key registry EIP draft](./evm_vk_registry_eip.md).
+[L1 EVM verification-key registry EIP draft](./evm_vk_registry.md).
 
 ## What EIP-8288 replaces
 
@@ -183,7 +183,7 @@ follows the established fixed-address system-contract pattern used by
 [EIP-4788](https://eips.ethereum.org/EIPS/eip-4788) and
 [EIP-2935](https://eips.ethereum.org/EIPS/eip-2935). Its exact interface and
 fork-owned update path are developed in the
-[registry EIP draft](./evm_vk_registry_eip.md).
+[registry EIP draft](./evm_vk_registry.md).
 
 The predeploy's minimal read interface takes one 32-byte query:
 
@@ -308,7 +308,7 @@ validation_result_root =
 ```
 
 The exact fields and root computation are unchanged from
-[Proof-carrying transactions](./proof_carrying_transactions.md#proof-validation):
+[Specification](./specification.md#proof-validation):
 
 - `new_payload_request_root` commits to the L2 execution payload, payload-blob
   versioned hashes, L1 anchor, and execution requests;
@@ -684,7 +684,7 @@ Several issues in the current EIP-8288 PR matter directly to this architecture:
 1. **EVM VK registry.** Neither EIP-8288 nor another current L1 proposal
    defines the fixed-address current pointer or the mapping from each exact
    `verification_key` to its activation timestamp. The
-   [standalone EIP draft](./evm_vk_registry_eip.md) specifies the intended
+   [standalone EIP draft](./evm_vk_registry.md) specifies the intended
    lookup and hard-fork update semantics, but its final address, bytecode,
    deployment transaction, initial entries, and executable tests remain open.
 2. **Adding a key.** Every new key must be specified by a distinct Core EIP

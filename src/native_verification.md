@@ -259,7 +259,7 @@ EIP-8288 as a whole is not, however, a drop-in alternative to the ephemeral side
 
 The two EIP-8288 ideas should therefore be considered separately: its EIP-8141 dependency-frame and smart-account composition may inspire a future delivery envelope, while its recursive mempool, FOCIL, and builder architecture is a different end-to-end proving design. Such a frame-based variant would be a new mechanism rather than adoption of EIP-8288 unchanged. EIP-8288 also depends on EIP-8141 Frame Transactions, which are only Considered for Inclusion rather than Scheduled for Inclusion, and EIP-8288 itself remains an unmerged draft. Its current LeanSPHINCS and LeanSTARK dependencies do not build on EIP-8025's `ProofEngine`, proof objects, proof gossip, or related L1 zk execution-proof specifications. Reusing its frame-level idea for native proof verification would therefore still require future alignment between those efforts.
 
-The separate [EIP-8288-native rollup architecture](./eip_8288_native_rollups.md) explores the stronger alternative in which native rollups adopt that complete proving pipeline rather than borrowing only its frame-level delivery idea.
+The separate [EIP-8288-native rollup architecture](./zkzkframes.md) explores the stronger alternative in which native rollups adopt that complete proving pipeline rather than borrowing only its frame-level delivery idea.
 
 This proposal assumes future infrastructure in which a mandatory L1 block proof recursively verifies every proof-carrying transaction proof. Under that assumption, the builder strips and discards the sidecar after folding the verified claims into the L1 block proof. Validators see only the signed `program_id`, `backend_types`, and `public_values_hash` plus the L1 block proof. Designing the aggregation scheme, proving pipeline, and deployment of that mandatory block-proof infrastructure is explicitly out of scope here and remains future work.
 
@@ -312,7 +312,7 @@ A single backend-independent `isTrustedProgram` whitelist replaces both `isProgr
 
 ## Impact on native rollups
 
-The NativeRollup contract from the [ZK specification](./proof_carrying_transactions.md#nativerollup-contract-zk) uses the same pattern. Instead of `PROOFROOT` against a `validation_result_root`, it checks `PROGRAMID`, `PUBVALUESHASH`, and `PROOFCOUNT`; it may additionally inspect `BACKENDTYPE` if it wants a stricter backend policy. It constructs `ChainConfig` as specified in [Proof-carrying transactions](./proof_carrying_transactions.md#chainconfig): the stored L2 chain ID plus the complete active-fork activation read from the parameterless EVM environmental interface.
+The NativeRollup contract from the [ZK specification](./specification.md#nativerollup-contract-zk) uses the same pattern. Instead of `PROOFROOT` against a `validation_result_root`, it checks `PROGRAMID`, `PUBVALUESHASH`, and `PROOFCOUNT`; it may additionally inspect `BACKENDTYPE` if it wants a stricter backend policy. It constructs `ChainConfig` as specified in [Specification](./specification.md#chainconfig): the stored L2 chain ID plus the complete active-fork activation read from the parameterless EVM environmental interface.
 
 ```solidity
 bytes32 constant NATIVE_PROGRAM = bytes32(uint256(1));
