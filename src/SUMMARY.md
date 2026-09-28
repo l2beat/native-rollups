@@ -22,10 +22,3 @@
 
 - [Native rollups with extensions](./extensions.md)
 - [Execution sharding](./sharding_comparison.md)
-
-# Appendix
-
-- [Open problems](./open_problems.md)
-- [Orbit stack](./orbit_stack.md)
-- [Tech dependencies](./tech_dependencies.md)
-- [L1 ZK-EVM tracker](./l1_zkevm_tracker.md)

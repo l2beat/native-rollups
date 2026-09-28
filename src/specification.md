@@ -25,7 +25,7 @@ The core principle is to reuse as many L1 components as possible. L2 operators p
 
 This means native rollups inherit whatever the L1 EVM supports: no custom transaction types, precompiles, or fee markets on the L2 side. Any such change would require modifying the shared program. L2-specific logic, such as L1 anchoring and the fixed fields below, lives in the rollup contract, which decides which fields come from storage, which from the operator, and which are constants.
 
-Parts of the design depend on L1 features that are still in development, listed in [tech dependencies](tech_dependencies.md). The specification is written as if they were already implemented, and will change as they mature.
+Parts of the design depend on L1 features that are still in development, listed in [L1 dependencies](./status.md#l1-dependencies). The specification is written as if they were already implemented, and will change as they mature.
 
 ## Overview
 
@@ -294,10 +294,12 @@ L2 block data is encoded into blobs following [EIP-8142](https://eips.ethereum.o
 
 ## Open questions
 
-1. **Proof pricing**: covering an L2 proof in the mandatory L1 proof adds work for the L1 prover. EIP-8288 charges a fixed `LEANSTARK_VERIFICATION_GAS` per dependency. Whether that is adequate, or a separate proof gas market is needed, depends on the L1 zkEVM gas model. See [tech dependencies](./tech_dependencies.md).
+1. **Proof pricing**: covering an L2 proof in the mandatory L1 proof adds work for the L1 prover. EIP-8288 charges a fixed `LEANSTARK_VERIFICATION_GAS` per dependency. Whether that is adequate, or a separate proof gas market is needed, depends on the L1 zkEVM gas model.
 
 2. **Root computation library**: the rollup contract needs to compute `new_payload_request_root` onchain via SSZ `hash_tree_root` (over `SszNewPayloadRequest`) and then `hash_tree_root` the full `SszStatelessValidationResult`. The availability and gas cost of an SSZ `hash_tree_root` library in Solidity is a practical consideration.
 
 3. **One L2 block per transaction**: EIP-8288 allows one STARK dependency per transaction, and the native program proves one block, so every L2 block needs its own L1 transaction. Proving a range of blocks with a single proof would require L1 to approve a program that validates multiple blocks.
 
 4. **Sequence-first-prove-later**: the current design requires blobs and proof to be in the same transaction, so the operator must have the proof ready at data posting time. Supporting sequence-first-prove-later (post data first, prove later) would require a mechanism to reference past blobs. `BLOBHASH` only accesses blobs in the current transaction. Possible approaches include a new opcode or precompile that can attest to blob availability from past blocks (within the DAS availability window), or a contract-level registry of blob commitments.
+
+5. **Forward compatibility**: the rollup contract reconstructs `new_payload_request_root` with a fork-specific schema and assigns an L2 value to every field. When an L1 fork changes `NewPayloadRequest` or `ExecutionPayload`, as with the recently added `slot_number`, a contract that follows the current registry entry must already know the new schema and the L2 value of each new field. Supporting this without a contract upgrade at every such fork is open.

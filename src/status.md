@@ -7,6 +7,7 @@
 **Table of Contents**
 
 - [Where things stand](#where-things-stand)
+- [L1 dependencies](#l1-dependencies)
 - [The case for native rollups](#the-case-for-native-rollups)
 - [Timeline](#timeline)
   - [Can anything ship earlier?](#can-anything-ship-earlier)
@@ -21,6 +22,20 @@
 - **Proof-carrying transactions**, proposed in the [Native proof verification](https://ethresear.ch/t/native-proof-verification/24798) post in May 2026, are the main alternative to EIP-8288. The book follows EIP-8288, as explained in the [introduction](./introduction.md#candidate-designs).
 - **EIP-8288** (zkzkframes) was merged as a Draft on 9 September 2026. See [EIP-8288 (zkzkframes)](./zkzkframes.md).
 - **EIP-8357**, the EVM verification key registry, is under review in [ethereum/EIPs#12055](https://github.com/ethereum/EIPs/pull/12055), with a reference implementation in [ethereum/sys-asm#56](https://github.com/ethereum/sys-asm/pull/56) and tests in [ethereum/execution-specs#3466](https://github.com/ethereum/execution-specs/pull/3466). See [EIP-8357](./evm_vk_registry.md).
+
+## L1 dependencies
+
+| Dependency | Needed for | Status |
+|---|---|---|
+| L1 stateless validation program | The program native rollups prove | In development in [execution-specs `projects/zkevm`](https://github.com/ethereum/execution-specs/tree/projects/zkevm) |
+| Mandatory execution proofs | One L1 block proof that covers the L2 proofs | Optional proofs ([EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)) proposed for Hegotá; mandatory in K\* under the current strawmap ordering |
+| [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions | The transaction envelope for EIP-8288 dependencies | Scheduled for Hegotá |
+| Compact `NewPayloadRequestHeader` | Validation without full payloads, and the contract's root computation | Removed from the optional-proof flow ([consensus-specs#5076](https://github.com/ethereum/consensus-specs/issues/5076)), assumed to return with mandatory proofs |
+| [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) Block-in-Blobs | L2 block data in blobs | Proposed for Hegotá |
+| [EIP-7928](https://eips.ethereum.org/EIPS/eip-7928) block-level access lists | Part of every proven payload | Scheduled for Glamsterdam |
+| [EIP-7997](https://eips.ethereum.org/EIPS/eip-7997) deterministic factory | Deploying the EIP-8357 registry | Scheduled for Glamsterdam |
+| [EIP-7805](https://eips.ethereum.org/EIPS/eip-7805) FOCIL | Optional: [forced transactions](./forced_transactions.md) through inclusion lists | Scheduled for Hegotá |
+| [EIP-7864](https://eips.ethereum.org/EIPS/eip-7864) binary state tree | Optional: cheaper storage proofs for [messaging](./messaging.md) | Draft |
 
 ## The case for native rollups
 
