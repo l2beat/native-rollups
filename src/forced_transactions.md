@@ -21,7 +21,7 @@ A queue that requires every old entry to be included does not work: a signed tra
 
 ## L2 FOCIL
 
-[FOCIL](https://eips.ethereum.org/EIPS/eip-7805) already forces transactions into L1 blocks without new transaction types. The execution layer checks the block against an inclusion list, and a listed transaction may only be missing if it could not have been appended at the end of the block: it is invalid, underpriced, or does not fit. A native rollup can reuse this check unchanged and replace the parts that build the list, the inclusion list committee and the mempool, with an L1 inbox contract. The design is described in [Repurposing FOCIL as an L2 forced transaction mechanism](https://ethresear.ch/t/repurposing-focil-as-an-l2-forced-transaction-mechanism/25233), with a [prototype contract](https://github.com/l2beat/native-rollups/pull/4).
+[FOCIL](https://eips.ethereum.org/EIPS/eip-7805) already forces transactions into L1 blocks without new transaction types. The execution layer checks the block against an inclusion list, and a listed transaction may only be missing if it could not have been appended at the end of the block: it is invalid, underpriced, or does not fit. A native rollup can reuse this check unchanged and replace the parts that build the list, the inclusion list committee and the mempool, with an L1 inbox contract. The design is described in [Repurposing FOCIL as an L2 forced transaction mechanism](https://ethresear.ch/t/repurposing-focil-as-an-l2-forced-transaction-mechanism/25233), with a [prototype contract](https://github.com/l2beat/native-rollups/blob/main/contracts/src/ForcedInboxValidated.sol) in this repository.
 
 The inbox works as follows:
 
