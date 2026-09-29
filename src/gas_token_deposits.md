@@ -1,60 +1,42 @@
 # Gas token deposits
+
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
 
-- [Overview](#overview)
-- [Current approaches](#current-approaches)
-  - [OP stack](#op-stack)
-  - [Linea](#linea)
-  - [Taiko](#taiko)
-  - [Orbit stack](#orbit-stack)
-- [Other approaches](#other-approaches)
-  - [Manual state manipulation](#manual-state-manipulation)
-  - [Beacon chain withdrawals](#beacon-chain-withdrawals)
-- [Proposed design](#proposed-design)
-  - [The first deposit problem](#the-first-deposit-problem)
+- [Design](#design)
+- [Existing rollups](#existing-rollups)
+- [Open questions](#open-questions)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
-## Overview
 
-Rollup users need a way to obtain the gas token to be able to send transactions on the L2. Existing solutions divide into two approaches: either an escrow contract contains preminted tokens that are unlocked through the [L2 to L1 messaging](l2_l1_messaging.md) channel, or a new transaction type that is able to mint the gas token is added to the STF. This page will also discuss two more approaches that are currently not used in any project.
+Rollup users need the L2 gas token to send transactions. Native rollups cannot mint it with a special transaction type, since L1 has none. Instead, the gas token is pre-minted on L2 and released by L1 to L2 messages.
 
-## Current approaches
+## Design
 
-### OP stack
+A predeployed L2 contract holds a pre-minted supply of the gas token. When the [messenger](./messaging.md#l1-to-l2-messaging) processes a deposit message from L1, the contract releases the corresponding amount to the recipient. Withdrawals lock tokens back into the contract and send an [L2 to L1 message](./messaging.md#l2-to-l1-messaging).
 
-The custom `DepositTransaction` type allows to mint the gas token based on `TransactionDeposited` event fields. On L2, the gas token magically appears in the user's balance.
+Because the L2 contract only reacts to messages, the L1 side decides what backs the gas token. Custom gas tokens are therefore only a matter of L1 contract design:
 
-### Linea
+- **ETH**: the L1 contract escrows the ETH sent with each message, as Linea does.
+- **ERC20**: the L1 contract transfers an ERC20 into escrow instead. Tokens with non-standard decimals or transfer logic need special care.
+- **ETH burn**: the L1 contract burns the ETH instead of escrowing it.
+- **NFT-gated credits**: NFT holders can claim a fixed amount of gas token once per NFT.
 
-Linea uses [preminted tokens](https://lineascan.build/address/0x508Ca82Df566dCD1B0DE8296e70a96332cD644ec) in the `L2MessageService` contract, which are then unlocked when L1 to L2 messages are processed on the L2. No new transaction type that can mint gas token is added to the STF.
+Alternatives that were considered and dropped:
 
-### Taiko
+- A transaction type that mints the gas token, as in the OP and Orbit stacks. L1 has no such transaction type.
+- Minting through the `withdrawals` field of the payload. The rollup contract could fill it from its own deposit queue, but withdrawals are only processed at the end of a block, so deposits could not be used within the same block. The reference design keeps `withdrawals` empty.
 
-Taiko uses [preminted tokens](https://taikoscan.io/address/0x1670000000000000000000000000000000000001) in the L2 `Bridge` contract, which are then unlocked when L1 to L2 messages are processed on the L2. No new transaction type that can mint gas token is added to the STF.
+## Existing rollups
 
-### Orbit stack
+| Stack | Deposit mechanism |
+|---|---|
+| OP stack | A deposit transaction type mints the gas token from `TransactionDeposited` event fields |
+| Linea | [Pre-minted tokens](https://lineascan.build/address/0x508Ca82Df566dCD1B0DE8296e70a96332cD644ec) in the `L2MessageService`, unlocked by L1 to L2 messages |
+| Taiko | [Pre-minted tokens](https://taikoscan.io/address/0x1670000000000000000000000000000000000001) in the L2 `Bridge`, unlocked by L1 to L2 messages |
+| Orbit stack | A deposit transaction type (`ArbitrumDepositTx`) mints the gas token |
 
-Orbit stack uses a custom transaction type that is able to mint the gas token based on the `ArbitrumDepositTx` type. On L2, the gas token magically appears in the user's balance.
+## Open questions
 
-## Other approaches
-
-### Manual state manipulation
-
-Before (and after) calling the `EXECUTE` precompile, projects are free to modify the L2 state root directly with custom execution, including dedicated proving systems. This can be used to touch balances, but it requires doing all updates either before or after block execution. This strategy cannot be used to support arbitrary intra-block gas-token deposits.
-
-### Beacon chain withdrawals
-
-Another possible mechanism is to use the beacon chain withdrawal mechanisms which mints the gas token on L1. Withdrawals are processed at the end of a block, so they wouldn't be able to allow deposits to be processed intra-block. As of now, no existing project uses beacon chain withdrawals for gas token deposits, but the mechanism can be left open for use.
-
-## Proposed design
-
-Following the [design principles](./execute_precompile.md#design-principles), it is preferred not to add a new transaction type that can mint gas tokens, as existing projects already handle gas token deposits through other means. The preferred approach is to use a predeployed contract that contains preminted tokens, which are then unlocked when L1 to L2 messages are processed on the L2. This design fully supports custom gas tokens as it is not opinionated on what type of message unlocks the gas token on L2, it being ETH, an ERC20, NFTs, or mining mechanisms.
-
-### The first deposit problem
-
-WIP.
-
-To be discussed: 
-- How can a user claim on L2 the first deposit if they don't have any gas token to pay for the transaction fees?
+- **First deposit**: a user with no gas token on L2 cannot pay to claim their first deposit, so someone else has to claim it for them. Linea's messages already carry a fee that pays whoever delivers them on L2, and the same pattern could apply here.

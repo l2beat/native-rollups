@@ -4,31 +4,42 @@
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
 
-- [Overview](#overview)
-- [Brainstorming](#brainstorming)
-- [FOCIL (EIP-7805)](#focil-eip-7805)
+- [Constraints](#constraints)
+- [L2 FOCIL](#l2-focil)
+- [What L1 must provide](#what-l1-must-provide)
+- [Open questions](#open-questions)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
-## Overview
 
-Rollups with centralized sequencers must implement a forced transaction mechanism if they wish to preserve L1 censorship resistance properties. Users need to be able to permissionlessly send transactions to L1 and have the guarantee that they will be eventually included on L2 if they are accepted on L1.
+Rollups with centralized sequencers need a forced transaction mechanism to preserve L1's censorship resistance: a user must be able to submit a transaction on L1 with the guarantee that it is eventually included on L2.
 
-Fundamentally, proposed forced transactions do not need to include an L2 transaction signature because they can be authenticated using the L1 transaction signature, assuming that they are supposed to be the same address on L1 and L2. In existing implementations, forced transactions are usually pushed through calldata on L1, given that using a blob would leave most of the space unused and might therefore be cost-inefficient. Forced transaction mechanisms should be designed not to interfere with centralized preconfirmations where possible.
+## Constraints
 
-## Brainstorming
-> ⚠️
-> The following are just examples to demonstrate that forced transaction mechanisms are compatible with native rollups and that their implementations isn't unrealistic. Projects are free to design their own mechanisms and the precompile aims to be flexible enough to accommodate them.
+Native rollups only support the transaction types that L1 has, so a forced transaction is an ordinary signed L2 transaction. It cannot be an unsigned transaction authenticated by its L1 sender, as in the OP and Orbit stacks, and it cannot reserve space in the block or skip the base fee. Where possible, the mechanism should not interfere with the sequencer's preconfirmations.
 
-The `EXECUTE` precompile can only support transactions with signatures, so forced transactions must include a signature too. On L1, one exception is made for withdrawals from the beacon chain, which are not authenticated on the execution layer. The limitation of withdrawals is that they only cover ETH minting and they cannot be used as a replacement for general message passing.
+A queue that requires every old entry to be included does not work: a signed transaction can become invalid after submission, for example if its sender spends the balance, and the chain could not advance past it.
 
-One approach consists in having a mechanism to detect whether sequenced blocks contain individual forced transactions from a queue on L1 that are older than a certain time threshold, and if not, revert the block submission. It's unclear whether proving inclusion of arbitrary bytes in blobs is feasible to be done on L1 or if it requires a dedicated ZK verifier. This design alone doesn't solve for a sequencer that is not only censoring but is completely offline, and therefore an additional fallback mechanism that removes the sequencer whitelist might be needed.
+## L2 FOCIL
 
-Another solution is to allow the `EXECUTE` precompile not only to reference blobs, but also storage or calldata. In this way users can save their forced txs in storage and the contract around the `EXECUTE` calls can force the `transactions` input to be read from that storage if forced txs older than a certain time threshold are present.
+[FOCIL](https://eips.ethereum.org/EIPS/eip-7805) already forces transactions into L1 blocks without new transaction types. The execution layer checks the block against an inclusion list, and a listed transaction may only be missing if it could not have been appended at the end of the block: it is invalid, underpriced, or does not fit. A native rollup can reuse this check unchanged and replace the parts that build the list, the inclusion list committee and the mempool, with an L1 inbox contract. The design is described in [Repurposing FOCIL as an L2 forced transaction mechanism](https://ethresear.ch/t/repurposing-focil-as-an-l2-forced-transaction-mechanism/25233), with a [prototype contract](https://github.com/l2beat/native-rollups/blob/main/contracts/src/ForcedInboxValidated.sol) in this repository.
 
-## FOCIL (EIP-7805)
+The inbox works as follows:
 
-[FOCIL](https://eips.ethereum.org/EIPS/eip-7805) introduces a new `inclusion_list_transactions` parameter to the `state_transition` function and the `apply_body` function, that conditions the validity of the block with a `validate_inclusion_list_transactions` function. In particular, it is checked that block transactions include all valid transactions from the IL that can fit in the block. The execution spec diff on top of osaka can be found [here](https://github.com/ethereum/execution-specs/pull/1349/files).
+1. **Submission.** Anyone submits a signed L2 transaction. The contract runs the stateless checks (signature, intrinsic gas, bounds), and the nonce and balance checks against an account proof on a recent L2 state root. Without the stateful checks, the head of the queue could be filled with high-fee transactions that can never execute. Entries are ordered by `maxFeePerGas`, with one entry per sender, and a full queue evicts its cheapest entry.
+2. **Inclusion list.** When the rollup advances, the list is the head of the queue, up to a gas budget and while entries pay the base fee. Only entries older than a threshold qualify, so the prover knows the list in advance.
+3. **Enforcement.** The list is an input to the L2 proof, and the rollup contract only advances if the proof reports it satisfied. On L1, satisfaction affects fork choice; here it becomes a condition for advancing.
+4. **Clearing.** Satisfaction does not say which listed transactions were included, so entries leave the queue in two ways. Anyone can prune an entry with an account proof at a newer block, showing that its nonce advanced or that its balance no longer covers it. The nonce alone is not enough, since [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) lets a balance fall without it. At settlement, the operator proves which listed transactions are in the block's `transactions_root`, and an absent entry is dropped if the block had room for it, since it must then have been invalid. An entry that did not fit stays for the next block.
+5. **Offline sequencer.** A timeout removes the sequencer whitelist if the sequencer stops producing blocks.
 
-Native rollups can re-use such logic where the IL comes from a smart contract as opposed to the CL. Custom logic can be applied that act as an additional filter, or that add delays to preserve the validity of already issued preconfirmations. The IL would therefore become another input to the `EXECUTE` precompile. In this case, FOCIL inclusion on L1 becomes an obvious tech dependency.
+Block stuffing remains possible but costly, as on L1: EIP-1559 raises the base fee exponentially while the listed transactions wait. This relies on every L2 block carrying the list, otherwise the operator could publish empty blocks to lower the base fee cheaply. The [Specification](./specification.md) already proves one L2 block per update.
 
-It is still an open question how to properly manage the equivalent of a mempool within a smart contract, potential DoS attacks and re-submissions. Some of these problems are not unique to this "L2 FOCIL" design and might be present in existing forced transaction mechanisms too.
+In the prototype, a submission costs about 1.3M gas and a prune about 1.1M gas, roughly 0.001 ETH at 1 gwei. Settlement costs about 275k gas per included entry with Merkle-Patricia proofs, so a list of 32 entries fits within 10M gas. Against the SSZ `transactions_root` that the rollup contract already receives, an inclusion proof is a short sha256 branch.
+
+## What L1 must provide
+
+The rollup reuses L1's stateless validation program, so that program must take the inclusion list as an input, and its proven output must commit to the list and to whether it was satisfied. FOCIL is scheduled for Hegotá and specified on top of Amsterdam in [`eips/amsterdam/eip-7805`](https://github.com/ethereum/execution-specs/tree/eips/amsterdam/eip-7805), where satisfaction is computed separately from block validity and consumed by fork choice. The zkEVM program does not include it yet, and neither EIP-8025 nor the consensus specs say how a proof commits to it. L1 needs the same once attesters verify proofs instead of executing payloads.
+
+## Open questions
+
+- **Account proofs.** Submitting and pruning require account proofs, which today require a full node, prohibitive for most users of an L2. Block-level access lists carry storage diffs but not storage roots, so tracking them is not enough to build account proofs. [EIP-8268](https://eips.ethereum.org/EIPS/eip-8268) would add storage roots to them, so that nodes tracking only accounts, as in [VOPS](https://ethresear.ch/t/a-pragmatic-path-towards-validity-only-partial-statelessness-vops/22236), could serve these proofs.
+- **Pruning incentives.** A prune costs about 1.1M gas and benefits everyone waiting in the queue. Submitters could post a small bond that refunds whoever prunes their entry.
