@@ -66,7 +66,7 @@ The input carries no fork schedule. The guest reads it as `schema_id || SSZ(Stat
 | `execution_payload` | | | See below |
 | `versioned_hashes` | yes | `BLOBHASH` | Ordered list of blob versioned hashes. On L1, the first `payload_blob_count` entries are payload blobs ([EIP-8142](https://eips.ethereum.org/EIPS/eip-8142), carrying block data) and the rest are from type-3 blob transactions. On L2, since blob transactions are not supported, the list contains only payload blob hashes, read via `BLOBHASH` from the transaction's blobs |
 | `parent_beacon_block_root` | no | computed onchain | Repurposed as the L1 anchor on L2. The existing [EIP-4788](https://eips.ethereum.org/EIPS/eip-4788) system transaction inside `apply_body` writes this value to the beacon roots predeploy, making it available to L2 contracts. The rollup contract chooses what to pass in this field (e.g. an L1 block hash, a message queue commitment, or any other value useful for L1->L2 communication). See [Messaging](./messaging.md) |
-| `execution_requests` | fixed | constant | Empty: L2 has no validator operations (deposits, exits, consolidations) |
+| `execution_requests` | fixed | constant | Empty: L2 has no validator or builder operations, so all five lists (deposits, withdrawals, consolidations, and [EIP-8282](https://eips.ethereum.org/EIPS/eip-8282) builder deposits and exits) are empty |
 
 ### ExecutionPayload
 
