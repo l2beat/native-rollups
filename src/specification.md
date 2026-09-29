@@ -21,7 +21,7 @@
 
 ## Design principles
 
-The core principle is to reuse as many L1 components as possible. L2 operators prove the same program as L1 provers, [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L321), under the verification key that L1 approves for the current fork. The mandatory L1 block proof covers the L2 proofs, and validators only verify that block proof.
+The core principle is to reuse as many L1 components as possible. L2 operators prove the same program as L1 provers, [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py), under the verification key that L1 approves for the current fork. The mandatory L1 block proof covers the L2 proofs, and validators only verify that block proof.
 
 This means native rollups inherit whatever the L1 EVM supports: no custom transaction types, precompiles, or fee markets on the L2 side. Any such change would require modifying the shared program. L2-specific logic, such as L1 anchoring and the fixed fields below, lives in the rollup contract, which decides which fields come from storage, which from the operator, and which are constants.
 
@@ -44,22 +44,21 @@ Native rollups prove the same function as L1, and therefore share its block stru
 
 Fields marked **constrained** are validated during execution (wrong value = proof fails). Fields marked **unconstrained** are free inputs chosen by the operator. Fields marked **fixed** have a constant value for L2.
 
-The unconstrained fields (`fee_recipient`, `prev_randao`, `parent_beacon_block_root`) correspond to the [`PayloadAttributes`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L86) that on L1 are trusted to come from the consensus layer. The EL never validates them; it accepts whatever the CL provides. Since native rollups have no CL, these become free inputs for the operator. `timestamp` is also CL-provided on L1 but additionally constrained by the EL (`> parent_header.timestamp`).
+The unconstrained fields (`fee_recipient`, `prev_randao`, `parent_beacon_block_root`) correspond to the [`PayloadAttributes`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py) that on L1 are trusted to come from the consensus layer. The EL never validates them; it accepts whatever the CL provides. Since native rollups have no CL, these become free inputs for the operator. `timestamp` is also CL-provided on L1 but additionally constrained by the EL (`> parent_header.timestamp`).
 
 ### StatelessInput
 
-[`StatelessInput`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L165): input to `verify_stateless_new_payload`.
+[`StatelessInput`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py): input to `verify_stateless_new_payload`.
 
 | Field | Expected source | Notes |
 |-------|-----------------|-------|
 | `new_payload_request` | see below | |
-| `witness` | offchain | [`ExecutionWitness`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L27): MPT node preimages, contract bytecodes, ancestor headers. Used by the prover, never posted to L1 |
+| `witness` | offchain | [`ExecutionWitness`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py): MPT node preimages, contract bytecodes, ancestor headers. Used by the prover, never posted to L1 |
 | `chain_config` | storage (`chain_id`) + EIP-8357 registry (activation timestamp) | L2 chain configuration; see below |
-| `public_keys` | offchain | Pre-recovered ECDSA keys to avoid expensive recovery in the ZK circuit |
 
 ### ChainConfig
 
-The current L1 zkEVM [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L130-L159) has the following logical shape:
+The current L1 zkEVM [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py) has the following logical shape:
 
 ```text
 ChainConfig {
@@ -79,7 +78,7 @@ A native rollup builds its L2 `ChainConfig` from the L2 `chain_id` stored in its
 
 ### NewPayloadRequest
 
-[`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L63) (inside `StatelessInput`):
+[`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py) (inside `StatelessInput`):
 
 | Field | Constrained | Expected source | Notes |
 |-------|-------------|-----------------|-------|
@@ -90,7 +89,7 @@ A native rollup builds its L2 `ChainConfig` from the L2 `chain_id` stored in its
 
 ### ExecutionPayload
 
-[`ExecutionPayload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L29) (inside `NewPayloadRequest`):
+[`ExecutionPayload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py) (inside `NewPayloadRequest`):
 
 | Field | Constrained | Expected source | Notes |
 |-------|-------------|-----------------|-------|
@@ -112,6 +111,8 @@ A native rollup builds its L2 `ChainConfig` from the L2 `chain_id` stored in its
 | `blob_gas_used` | fixed | constant | 0: L2 does not support blob transactions, and any blob transaction would make the computed value mismatch |
 | `excess_blob_gas` | fixed | constant | 0 for L2 |
 | `block_access_list` | yes | calldata + blobs | Canonical RLP bytes defined by [EIP-7928](https://eips.ethereum.org/EIPS/eip-7928). `block_access_list_root` in calldata, full bytes in [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) payload blobs |
+| `slot_number` | fixed | constant | TBD: the L2 value is not defined yet. L2 contracts read it with `SLOTNUM` ([EIP-7843](https://eips.ethereum.org/EIPS/eip-7843)) |
+| `payload_blob_count` | yes | calldata | Header field added by [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142): the number of payload blobs. The contract reads that many `BLOBHASH` values |
 
 The BAL has two distinct commitments. Let `block_access_list = RLP.encode(BAL)`, as defined by EIP-7928:
 
@@ -122,15 +123,15 @@ The BAL has two distinct commitments. Let `block_access_list = RLP.encode(BAL)`,
 
 ## Proof statement
 
-The L2 proof shows that [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L321) succeeded for the L2 block. Its public output is the full [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L197):
+The L2 proof shows that [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py) succeeded for the L2 block. Its public output is the full [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py):
 
-- `new_payload_request_root`: the root of the [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L66) for that L2 block, computed via [`compute_new_payload_request_root`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L229)
+- `new_payload_request_root`: the root of the [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py) for that L2 block, computed via [`compute_new_payload_request_root`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py)
 - `successful_validation`: whether the state transition succeeded
-- `chain_config`: the complete [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L130-L159) used during execution (see [PR #2342](https://github.com/ethereum/execution-specs/pull/2342))
+- `chain_config`: the complete [`ChainConfig`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py) used during execution (see [PR #2342](https://github.com/ethereum/execution-specs/pull/2342))
 
 The EIP-8288 dependency's `data_hash` is the `hash_tree_root` of this result, the `validation_result_root`.
 
-**Why the full result.** `ChainConfig` is part of [`StatelessInput`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py#L165) but not part of [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py#L63) or the block header. If the public output were only the `new_payload_request_root`, the prover could freely choose it as a private input. In particular, choosing another `chain_id` would enable cross-chain transaction replay: for typed transactions ([EIP-2930](https://eips.ethereum.org/EIPS/eip-2930) and later), [`recover_sender`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/transactions.py#L665) uses the transaction's own `tx.chain_id` for signature recovery, not `block_env.chain_id`, so transactions from any chain would execute successfully. Including the complete `chain_config` binds both the rollup's stored L2 chain ID and the activation timestamp of the selected fork. The activation acts as an additional guard, since stateless validation rejects a payload that predates the active fork.
+**Why the full result.** `ChainConfig` is part of [`StatelessInput`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py) but not part of [`NewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py) or the block header. If the public output were only the `new_payload_request_root`, the prover could freely choose it as a private input. In particular, choosing another `chain_id` would enable cross-chain transaction replay: for typed transactions ([EIP-2930](https://eips.ethereum.org/EIPS/eip-2930) and later), [`recover_sender`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/transactions.py) uses the transaction's own `tx.chain_id` for signature recovery, not `block_env.chain_id`, so transactions from any chain would execute successfully. Including the complete `chain_config` binds both the rollup's stored L2 chain ID and the activation timestamp of the selected fork. The activation acts as an additional guard, since stateless validation rejects a payload that predates the active fork.
 
 ## Root computation
 
@@ -138,7 +139,7 @@ The rollup contract must reconstruct the expected `validation_result_root` and c
 
 1. **Compute `new_payload_request_root` from `NewPayloadRequestHeader`.** The mandatory-proof model requires a compact header because neither validators nor the contract have the full transaction list or BAL. SSZ defines [root-equivalent summaries](https://github.com/ethereum/consensus-specs/blob/master/ssz/simple-serialize.md#summaries-and-expansions): variable-sized payload fields can be replaced by their `hash_tree_root` without changing the root of the enclosing object. Consequently, `hash_tree_root(NewPayloadRequestHeader) == hash_tree_root(NewPayloadRequest)`. [`NewPayloadRequestHeader`](https://github.com/ethereum/consensus-specs/issues/5076) was removed from the current optional EIP-8025 flow only because validators still receive the full payload; this proposal assumes its return for mandatory proofs. The root itself follows the zkEVM [`SszNewPayloadRequest`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_ssz.py) schema. Merged [execution-specs PR #3248](https://github.com/ethereum/execution-specs/pull/3248) aligns that schema with Gloas's EIP-7688 progressive merkleization, which changes `new_payload_request_root` while leaving its SSZ serialization unchanged. This proposal targets that progressive root.
 
-2. **Hash the full `StatelessValidationResult`**: build the L2 `ChainConfig` as described in [ChainConfig](#chainconfig), and compute `hash_tree_root` of the [`SszStatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_ssz.py#L254-L259) containing `new_payload_request_root` (from step 1), `successful_validation = true`, and that `chain_config`. The result is the `validation_result_root`.
+2. **Hash the full `StatelessValidationResult`**: build the L2 `ChainConfig` as described in [ChainConfig](#chainconfig), and compute `hash_tree_root` of the [`SszStatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless_ssz.py) containing `new_payload_request_root` (from step 1), `successful_validation = true`, and that `chain_config`. The result is the `validation_result_root`.
 
 The contract has access to every field needed for step 1:
 
@@ -148,7 +149,7 @@ The contract has access to every field needed for step 1:
 | `transactions_root` | Operator calldata (constrained: proven by the L2 proof) |
 | `withdrawals_root` | Known constant (empty for L2) |
 | `block_access_list_root` | Operator calldata: `hash_tree_root(ProgressiveByteList(block_access_list))` (constrained by the L2 proof) |
-| `slot_number` | TBD: its L2 interpretation must be defined |
+| `slot_number` | Constant (value TBD) |
 | `versioned_hashes` | `BLOBHASH` from the transaction's blobs |
 | `parent_beacon_block_root` | Computed onchain (L1 anchor) |
 | `execution_requests` | Known constant (empty for L2) |
@@ -183,7 +184,8 @@ contract NativeRollup {
     }
 
     uint8 constant LEANSTARK_SCHEME = 0x11; // EIP-8288
-    address constant EVM_VK_REGISTRY = 0x0000709b303ef147cee6c13f3af6c5a402da8357; // EIP-8357
+    address constant EVM_VK_REGISTRY = 0x0000709b303EF147cee6C13f3Af6C5A402Da8357; // EIP-8357
+    uint64 constant L2_SLOT_NUMBER = 0; // TBD
 
     // L2 chain state tracked onchain
     bytes32 public blockHash;
@@ -247,6 +249,7 @@ contract NativeRollup {
             blobGasUsed:         0,                       // fixed for L2
             excessBlobGas:       0,                       // fixed for L2
             blockAccessListRoot: params.blockAccessListRoot, // constrained (proven)
+            slotNumber:          L2_SLOT_NUMBER,          // fixed for L2 (value TBD)
             payloadBlobCount:    params.payloadBlobCount,
             // NewPayloadRequest fields
             versionedHashes:     getVersionedHashes(params.payloadBlobCount),
