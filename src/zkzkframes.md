@@ -24,10 +24,10 @@ The EIP was merged as a Draft in September 2026 and supports two schemes: LeanSP
 A native rollup update declares exactly one dependency:
 
 ```text
-(LEANSTARK_SCHEME, validation_result_root, verification_key_hash)
+(LEANSTARK_SCHEME, public_input_root, verification_key_hash)
 ```
 
-- `validation_result_root` is the `hash_tree_root` of the `StatelessValidationResult` produced by proving the L2 block with L1's stateless validation program, as defined in the [Specification](./specification.md#proof-statement).
+- `public_input_root` is the root of the public output produced by proving the L2 block with L1's stateless validation program, committed as EIP-8025's `PublicInput`, as defined in the [Specification](./specification.md#proof-statement).
 - `verification_key_hash` is the hash of the EVM program's verification key selected from the [EIP-8357 registry](./evm_vk_registry.md), either the current entry or a pinned one.
 
 A LeanSTARK proof is a proof of a program running on [leanVM](https://github.com/leanEthereum/leanVM). This book assumes that L1 uses the same zkVM for its own execution proofs, so the L1 stateless validation program is proven on leanVM directly. leanVM's planned move to RISC-V ([leanVM #277](https://github.com/leanEthereum/leanVM/pull/277)) points in this direction: it would run the same guest programs that EIP-8025's zkVMs run today, once it supports their standard target and interface, including cryptographic accelerators, and continuations for block-sized runs. Declaring a dependency means requiring it, so the native proof is always a single mandatory 1-of-1 proof.
@@ -36,7 +36,7 @@ A minimal self-paying transaction looks like this:
 
 ```text
 frame 0: VERIFY      target = sender, flags = APPROVE_EXECUTION_AND_PAYMENT
-frame 1: DEP_VERIFY  data = (LEANSTARK_SCHEME, validation_result_root, verification_key_hash)
+frame 1: DEP_VERIFY  data = (LEANSTARK_SCHEME, public_input_root, verification_key_hash)
 frame 2: SENDER      target = NativeRollup, data = advance(params, dependency_frame_index = 1)
 ```
 
