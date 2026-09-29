@@ -166,7 +166,7 @@ contract NativeRollup {
     }
 
     uint8 constant LEANSTARK_SCHEME = 0x11; // EIP-8288
-    address constant EVM_VK_REGISTRY = 0x0000709b303EF147cee6C13f3Af6C5A402Da8357; // EIP-8357
+    address constant EVM_VK_REGISTRY = 0x00005e9c1447C1A05A642ec9eB76D9C125468357; // EIP-8357
     uint64 constant L2_SLOT_NUMBER = 0; // TBD
 
     // L2 chain state tracked onchain

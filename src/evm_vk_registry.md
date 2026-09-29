@@ -20,17 +20,17 @@ EIP-8357 is a draft Core EIP that tells contracts which verification key L1 has 
 
 ## Motivation
 
-EIP-8288 verifies each proof dependency against an explicitly supplied `verification_key_hash`, a hash of the STARK verification key. It does not tell contracts which hashes L1 recognizes as its own EVM program, which one is current, or when each became active. A native rollup that hard-coded these values would have to upgrade through its own governance at every L1 feature fork, or remain on an older EVM: exactly the [governance risk](./introduction.md#governance-risk) native rollups are meant to remove.
+EIP-8288 verifies each proof dependency against an explicitly supplied `verification_key_hash`, a hash of the STARK verification key. It does not tell contracts which hashes L1 recognizes as its own EVM program, which one is current, or which input schema each program accepts. A native rollup that hard-coded these values would have to upgrade through its own governance at every L1 feature fork, or remain on an older EVM: exactly the [governance risk](./introduction.md#governance-risk) native rollups are meant to remove.
 
 EIP-8357 records these values once, in shared L1 state that every contract can read. Verifiers keep accepting exact hashes, while each rollup chooses whether to follow the current entry or pin a historical one.
 
 ## How the registry works
 
-The registry is an ordinary EVM contract at a fixed address, `0x0000709b303ef147cee6c13f3af6c5a402da8357`. Anyone can deploy it through the [EIP-7997](https://eips.ethereum.org/EIPS/eip-7997) deterministic factory with a fixed salt, so the address is bound to the exact bytecode.
+The registry is an ordinary EVM contract at a fixed address, `0x00005e9c1447c1a05a642ec9eb76d9c125468357`. Anyone can deploy it through the [EIP-7997](https://eips.ethereum.org/EIPS/eip-7997) deterministic factory with a fixed salt, so the address is bound to the exact bytecode.
 
 Its state is:
 
-- a mapping from each registered `verification_key_hash` to the activation timestamp of the L1 feature fork whose EVM semantics it represents; and
+- a mapping from each registered `verification_key_hash` to the `schema_id` of the stateless input its program accepts, which also selects the fork rules the program executes (see [Specification](./specification.md#statelessinput)); and
 - the current `verification_key_hash`.
 
 Entries are append-only: a registered hash is never deleted, overwritten, or revoked.
@@ -40,23 +40,21 @@ Entries are append-only: a registered hash is never deleted, overwritten, or rev
 - zero requests the current entry;
 - a nonzero value requests that exact registered hash.
 
-The registry returns `verification_key_hash || activation_timestamp`, and reverts if no such entry exists.
+The registry returns `verification_key_hash || schema_id`, and reverts if no such entry exists.
 
 **Updates.** Only `SYSTEM_ADDRESS` can update the registry, and only in the first block of a hard fork, before any transactions are processed:
 
-- a 64-byte registration adds a new hash with its activation timestamp and makes it current;
-- a 32-byte reactivation makes a previously registered hash current again, keeping its original activation timestamp.
+- a 64-byte registration adds a new hash with its `schema_id` and makes it current;
+- a 32-byte reactivation makes a previously registered hash current again, keeping its `schema_id`.
 
-Each new or reactivated hash is specified by its own Core EIP, which names the L1 feature fork whose EVM semantics it represents. The fork that activates EIP-8357 also registers the initial hash. The system call's gas does not count toward the block, and the block is invalid if the call fails.
+Each new or reactivated hash is specified by its own Core EIP, which names the L1 feature fork whose EVM semantics it represents and the `schema_id` its program accepts. The fork that activates EIP-8357 also registers the initial hash. The system call's gas does not count toward the block, and the block is invalid if the call fails.
 
 ## How native rollups use it
 
 A native rollup reads the registry when it advances its L2 state and uses the result in two places:
 
 - it requires the EIP-8288 dependency in the transaction to carry the returned `verification_key_hash`; and
-- it builds the L2 `ChainConfig` from its own chain ID and the returned activation timestamp, with the block-number coordinate absent.
-
-The second point replaces the assumption, made elsewhere in this book, of an EVM environmental interface that exposes L1's `ChainConfig`.
+- it uses the returned `schema_id` to reconstruct the proof's public output, which commits to it (see [Proof statement](./specification.md#proof-statement)).
 
 Each rollup chooses one of two policies:
 
