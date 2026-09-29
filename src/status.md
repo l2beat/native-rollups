@@ -34,7 +34,7 @@
 | [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) Block-in-Blobs | L2 block data in blobs | Proposed for Hegotá |
 | [EIP-7928](https://eips.ethereum.org/EIPS/eip-7928) block-level access lists | Part of every proven payload | Scheduled for Glamsterdam |
 | [EIP-7997](https://eips.ethereum.org/EIPS/eip-7997) deterministic factory | Deploying the EIP-8357 registry | Scheduled for Glamsterdam |
-| [EIP-7805](https://eips.ethereum.org/EIPS/eip-7805) FOCIL | Optional: [forced transactions](./forced_transactions.md) through inclusion lists | Scheduled for Hegotá |
+| [EIP-7805](https://eips.ethereum.org/EIPS/eip-7805) FOCIL | [Forced transactions](./forced_transactions.md) through L2 inclusion lists, once the L1 stateless validation program supports it | Scheduled for Hegotá |
 | [EIP-7864](https://eips.ethereum.org/EIPS/eip-7864) binary state tree | Optional: cheaper storage proofs for [messaging](./messaging.md) | Draft |
 
 ## The case for native rollups
