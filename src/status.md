@@ -60,7 +60,7 @@ How will upgrades work with the zkEVM? Suppose a bug is found: how do nodes upgr
 ## Next steps
 
 1. Rebase the native rollup proof of concept on Glamsterdam, and then on Hegotá.
-2. Follow leanVM's move to RISC-V, so that the zkVM shared by L1 execution proofs and EIP-8288 can prove the L1 stateless validation program.
+2. Follow leanVM's move to RISC-V, so that the zkVM shared by L1 execution proofs and EIP-8288 can prove the L1 stateless validation program and verify proofs of arbitrary programs, which LeanSTARK dependencies require (see [EIP-8288 open issues](./zkzkframes.md#open-issues)).
 3. Specify how the mandatory L1 proof binds and absorbs the EIP-8288 aggregate.
 4. Make the proof aggregation design concrete.
 5. Build a proof of concept of native rollups using zkzkframes and the EVM verification key registry.
