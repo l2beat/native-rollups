@@ -143,9 +143,16 @@ contract NativeRollupTest is Test {
         r.advance(_params(i), 1);
     }
 
+    event BlockAdded(uint64 indexed number, bytes32 blockHash);
+
     function test_advancesThroughChain() public {
         for (uint256 i = 0; json.keyExists(_block(i)); i++) {
-            _advance(rollup, i, K1);
+            _setL1Context(i);
+            rollup.setDependency(LEANSTARK, _publicInputRoot(i), K1);
+            NativeRollup.BlockParams memory p = _params(i);
+            vm.expectEmit(address(rollup));
+            emit BlockAdded(uint64(i + 1), p.blockHash);
+            rollup.advance(p, 1);
             assertEq(rollup.blockNumber(), i + 1);
             assertEq(rollup.blockHash(), json.readBytes32(string.concat(_block(i), ".header.blockHash")));
             assertEq(rollup.stateRoot(), json.readBytes32(string.concat(_block(i), ".header.stateRoot")));

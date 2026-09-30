@@ -211,6 +211,10 @@ contract NativeRollup {
     // hash is proven.
     event L1MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
 
+    // Emitted for each L2 block, so that L2 nodes can find the transaction
+    // that carries it and its blobs.
+    event BlockAdded(uint64 indexed number, bytes32 blockHash);
+
     function sendMessage(address to, bytes calldata data) external payable {
         uint256 index = l1Messages.count;
         l1Messages.insert(keccak256(abi.encodePacked(msg.sender, to, msg.value, keccak256(data), index)));
@@ -273,6 +277,7 @@ contract NativeRollup {
         blockNumber = blockNumber + 1;
         anchorBlockNumber = params.anchorBlockNumber;
         stateRootHistory[blockNumber % STATE_ROOT_HISTORY] = params.stateRoot;
+        emit BlockAdded(uint64(blockNumber), params.blockHash);
     }
 
     function anchor(uint256 number) internal view returns (bytes32 hash) {
@@ -306,6 +311,10 @@ L2 block data is encoded into blobs following [EIP-8142](https://eips.ethereum.o
 
 **Data availability guarantee.** EIP-8288 proves correctness, not availability, so the L2 data travels in blobs. Following EIP-8142's zkEVM path, the L2 proof derives payload blobs from its private BAL and transaction data and verifies blob/commitment consistency against the public versioned hashes. The `public_input_root` additionally commits, through `new_payload_request_root`, to those versioned hashes, `transactions_root`, and `block_access_list_root`. The contract reconstructs the same root using `BLOBHASH` and the two operator-provided SSZ summaries. DAS ensures the blobs are available. Missing blobs make the L1 block invalid; inconsistent blob data makes the L2 proof invalid; and incorrect summary roots make the contract's root check fail.
 
+EIP-8142 is not in the L1 program yet. execution-specs' stateless program requires `versioned_hashes` to be the blob hashes of the payload's blob transactions, which an L2 block never has, and its `StatelessInput` has no fields for the payload blobs' KZG commitments and proofs, which the zkEVM path takes as private inputs. The design depends on both.
+
+L1 data is enough to rebuild the L2 chain. An L2 node finds each block through the contract's `BlockAdded` event, takes the header fields from the `advance` calldata and the BAL and transactions from the payload blobs, and re-executes the block. The header's `requests_hash` and transactions trie root come from that execution, since the calldata only carries the SSZ roots of the requests and transactions.
+
 ## Open questions
 
 1. **Proof pricing**: covering an L2 proof in the mandatory L1 proof adds work for the L1 prover. EIP-8288 charges a fixed `LEANSTARK_VERIFICATION_GAS` per dependency. Whether that is adequate, or a separate proof gas market is needed, depends on the L1 zkEVM gas model.
@@ -319,3 +328,5 @@ L2 block data is encoded into blobs following [EIP-8142](https://eips.ethereum.o
 5. **Forward compatibility**: the rollup contract reconstructs `new_payload_request_root` with a fork-specific schema and assigns an L2 value to every field. When an L1 fork changes `NewPayloadRequest` or `ExecutionPayload`, as with the recently added `slot_number`, a contract that follows the current registry entry must already know the new schema and the L2 value of each new field. The registry's `schema_id` lets the contract detect such a change, but not handle it. Supporting this without a contract upgrade at every such fork is open.
 
 6. **Recursive L1 execution proofs**: this design assumes L1 proves each block with the stateless validation program, so native rollups reuse that program, its verification key, and its `PublicInput`. EIP-8025 is moving to recursive proofs ([consensus-specs#5566](https://github.com/ethereum/consensus-specs/pull/5566), with the guest drafted in [consensus-specs#5534](https://github.com/ethereum/consensus-specs/pull/5534)), in which one program verifies the previous proof, checks the beacon-chain lineage, and runs the stateless validation function inside itself. L1 would then no longer prove the per-block program on its own, and the key registered in EIP-8357 would belong to a program that L1 approves but does not use. Having the recursive program verify per-block proofs, instead of re-executing blocks, would restore the reuse. The recursive design is still a draft.
+
+7. **Blob granularity**: EIP-8142 encodes each payload into its own blobs, so every L2 block takes at least one blob, 131,072 blob gas, however small it is. On a local frames devnet, L2 blocks of 4 to 5 KB used 3 to 4% of their blob. Rollups today pack many blocks into each blob. Fewer and larger L2 blocks amortize the cost, while sharing blobs across blocks or rollups would need a different encoding than EIP-8142's.

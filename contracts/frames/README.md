@@ -20,7 +20,7 @@ L2 to L1 messages go the other way: the messenger's `sendMessage` locks the valu
 kurtosis run github.com/ethpandaops/ethereum-package --enclave frames --args-file frames/kurtosis.yaml
 ```
 
-Frame transactions work from epoch 1, when the EIP-8141 fork activates.
+Frame transactions work from epoch 1, when the EIP-8141 fork activates. The network runs the four frames-devnet-0 clients. `advance` transactions carry blobs, and on frames-devnet-0 only Nethermind and Reth accept blob-carrying frame transactions, in the EIP-7594 network form. geth rejects that form and accepts the transaction without its blobs, which then makes the payloads it builds invalid until the transaction leaves its pool. ethrex does not support them yet. All four import the resulting blocks.
 
 ## Deploy and advance
 
@@ -43,6 +43,15 @@ uv run --project <execution-specs@devnets/frames/0> python script/frames_operato
 ```
 
 The two scripts use different execution-specs environments: the operator builds L1 frame transactions with the devnet branch, and the L2 runs the merged program. Each `advance` sends one frame transaction: the operator's `VERIFY` frame, the dependency frame, and a `SENDER` frame calling `advance`. `--corrupt-proof` sends an invalid proof, which makes the dependency frame and `advance` fail.
+
+Each L2 block goes to L1 in [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) payload blobs, which `script/block_in_blobs.py` encodes, and `advance` binds their versioned hashes. The L1 program does not implement EIP-8142 yet, so the node derives the payload blobs itself, as `engine_newPayload`'s native variant does, and its mock proof attests to the public input a program with EIP-8142 would output. Pass `--submit-rpc` with a Nethermind or Reth RPC to `advance`.
+
+`script/l2_follower.py` rebuilds the chain from L1 alone. For each `BlockAdded` event, it reads the header fields from the `advance` frame, fetches the payload blobs from the consensus layer's `/eth/v1/beacon/blobs/{slot}`, re-executes the block with execution-specs' `state_transition`, and checks the block hash the contract recorded:
+
+```shell
+uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_follower.py \
+    --l1-rpc <rpc> --beacon <cl-url> --rollup <rollup> --genesis <l2-state>
+```
 
 `advance` anchors the block to the latest L1 block, so it claims every message sent so far. `--withdraw <l1-recipient>:<wei>[:<data>]` also sends an L2 to L1 message, which `claim-l2-message` claims on L1 once the rollup has the block:
 

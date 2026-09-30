@@ -11,6 +11,12 @@ sign the dependency, then sends one frame transaction:
     frame 1  DEFAULT  MockDependencyVerifier(scheme || data_hash || vk_hash || proof)
     frame 2  SENDER   rollup.advance(params, 1)
 
+The transaction carries the block's EIP-8142 payload blobs, so it is sent in
+the EIP-7594 network form with the blobs, their commitments and their cell
+proofs. `--submit-rpc` selects a client that accepts blob-carrying frame
+transactions: on frames-devnet-0, Nethermind and Reth do, while geth and
+ethrex do not.
+
 `claim-l2-message` claims an L2 to L1 message sent with `advance --withdraw`,
 with the L2 node's proofs against the rollup's latest L2 block.
 
@@ -31,6 +37,7 @@ from dataclasses import replace
 import json
 import os
 import subprocess
+import time
 
 from ethereum_types.bytes import Bytes0, Bytes20
 from ethereum_types.numeric import U64, U256, Uint
@@ -48,6 +55,9 @@ from ethereum.forks.amsterdam.transactions.frame_transaction import (
     compute_frame_signature_hash,
 )
 
+from ethereum_rlp import rlp
+
+import block_in_blobs as bib
 from ssz_roots import check_vectors  # noqa: E402
 
 ADVANCE_SIGNATURE = (
@@ -98,6 +108,17 @@ def l2_node(args: argparse.Namespace, *node_args: str) -> dict:
     return json.loads(node.stdout.strip().splitlines()[-1])
 
 
+def wait_for_receipt(rpc: str, tx_hash: str, blocks: int = 40) -> dict:
+    """Polls for the receipt, giving up after `blocks` L1 blocks."""
+    last = int(cast("block-number", "--rpc-url", rpc)) + blocks
+    while int(cast("block-number", "--rpc-url", rpc)) <= last:
+        receipt = json.loads(cast("rpc", "--rpc-url", rpc, "eth_getTransactionReceipt", tx_hash))
+        if receipt:
+            return receipt
+        time.sleep(3)
+    raise SystemExit(f"{tx_hash} not included within {blocks} blocks")
+
+
 def advance(args: argparse.Namespace) -> None:
     rpc = args.rpc
     operator = cast("wallet", "address", "--private-key", args.operator_key)
@@ -133,6 +154,9 @@ def advance(args: argparse.Namespace) -> None:
     p = bundle["params"]
     triple = bytes.fromhex(bundle["triple"][2:])
     proof = bytes.fromhex(bundle["proof"][2:])
+    blobs = [bytes.fromhex(blob[2:]) for blob in bundle["blobs"]]
+    versioned_hashes = tuple(bytes.fromhex(h[2:]) for h in bundle["versionedHashes"])
+    blob_base_fee = int(cast("rpc", "--rpc-url", rpc, "eth_blobBaseFee").strip('"'), 16)
     if args.corrupt_proof:
         proof = bytes([proof[0] ^ 1]) + proof[1:]
 
@@ -187,9 +211,9 @@ def advance(args: argparse.Namespace) -> None:
         fees=TransactionFees(
             max_priority_fee_per_gas=Uint(tip),
             max_fee_per_gas=Uint(2 * base_fee + tip),
-            max_fee_per_blob_gas=U256(0),
+            max_fee_per_blob_gas=U256(2 * blob_base_fee),
         ),
-        blob_versioned_hashes=(),
+        blob_versioned_hashes=versioned_hashes,
     )
     # Sign the canonical hash, then insert the signature as v || r || s.
     sig = sign_hash(args.operator_key, compute_frame_signature_hash(tx))
@@ -201,10 +225,16 @@ def advance(args: argparse.Namespace) -> None:
     )
     tx = replace(tx, signatures=(signature,))
     raw = encode_transaction(tx)
+    # EIP-7594 network form: [tx_payload_body, wrapper_version, blobs, commitments, cell_proofs].
+    commitments = [bib.commitment(blob) for blob in blobs]
+    wrapped = raw[:1] + rlp.encode(
+        [rlp.decode(raw[1:]), b"\x01", blobs, commitments, [p for blob in blobs for p in bib.cell_proofs(blob)]]
+    )
 
     print(
         f"L2 block {bundle['number']} ({bundle['transactions']} transactions, state root {bundle['stateRoot']}), "
-        f"anchor L1 block {anchor_number}, data_hash 0x{triple[32:64].hex()}"
+        f"anchor L1 block {anchor_number}, data_hash 0x{triple[32:64].hex()}, "
+        f"{bundle['payloadBytes']} payload bytes in {len(blobs)} blob(s)"
     )
     for c in bundle["claims"]:
         print(
@@ -213,15 +243,19 @@ def advance(args: argparse.Namespace) -> None:
         )
     for m in bundle["l2Messages"]:
         print(f"sends L2 message {m['index']}: {m['value']} wei from {m['sender']} to {m['to']} on L1")
-    tx_hash = json.loads(cast("publish", "--rpc-url", rpc, hx(raw)))["transactionHash"]
-    print(f"included {tx_hash}")
-    receipt = json.loads(cast("receipt", "--rpc-url", rpc, tx_hash, "--json"))
+    tx_hash = json.loads(cast("rpc", "--rpc-url", args.submit_rpc or rpc, "eth_sendRawTransaction", hx(wrapped)))
+    receipt = wait_for_receipt(rpc, tx_hash)
+    builder = bytes.fromhex(
+        json.loads(cast("rpc", "--rpc-url", rpc, "eth_getBlockByNumber", receipt["blockNumber"], "false"))["extraData"][2:]
+    )
+    print(
+        f"included {tx_hash} in L1 block {int(receipt['blockNumber'], 16)} (built by {builder.decode(errors='replace')}), "
+        f"gas {int(receipt['gasUsed'], 16)}, blob gas {int(receipt.get('blobGasUsed', '0x0'), 16)} "
+        f"at {int(receipt.get('blobGasPrice', '0x0'), 16)} wei"
+    )
     for i, frame in enumerate(receipt.get("frameReceipts", [])):
-        print(
-            f"frame {i}: status {int(frame['status'], 16)}, gas {int(frame['gasUsed'], 16)} "
-            f"({int(frame.get('executionGasUsed', frame['gasUsed']), 16)} execution, "
-            f"{int(frame.get('stateGasUsed', '0x0'), 16)} state)"
-        )
+        execution, state = int(frame["executionGasUsed"], 16), int(frame["stateGasUsed"], 16)
+        print(f"frame {i}: status {int(frame['status'], 16)}, {execution} execution, {state} state gas")
     head = int(call(rpc, args.rollup, "blockNumber()(uint256)").split()[0])
     print(f"rollup at L2 block {head}")
 
@@ -256,6 +290,7 @@ def main() -> None:
     check.add_argument("--vectors", default="test/native_rollup_vectors.json")
     adv = sub.add_parser("advance")
     adv.add_argument("--rpc", required=True)
+    adv.add_argument("--submit-rpc", help="the client to send the blob-carrying transaction to, by default --rpc")
     adv.add_argument("--rollup", required=True)
     adv.add_argument("--verifier", required=True)
     adv.add_argument("--operator-key", required=True)

@@ -108,6 +108,9 @@ abstract contract NativeRollup {
     ///         hash is proven.
     event L1MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
 
+    /// @notice Emitted for each L2 block, so that nodes can find the
+    ///         transactions that carry the L2 blocks and their blobs.
+    event BlockAdded(uint64 indexed number, bytes32 blockHash);
     event L2MessageClaimed(uint256 indexed index, address indexed sender, address indexed to, uint256 value);
 
     function sendMessage(address to, bytes calldata data) external payable {
@@ -198,6 +201,7 @@ abstract contract NativeRollup {
         blockNumber = number;
         anchorBlockNumber = uint64(params.anchorBlockNumber); // a past L1 block, see _anchor
         stateRootHistory[number % STATE_ROOT_HISTORY] = params.stateRoot;
+        emit BlockAdded(number, params.blockHash);
     }
 
     /// @notice The L1 anchor: the hash of a recent L1 block, which the proof

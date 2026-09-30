@@ -30,6 +30,12 @@ the account also sends the requested L2 to L1 messages and random transfers.
 `prove` gives the proofs that claim an L2 to L1 message on L1, against the
 rollup contract's latest L2 block.
 
+Each block goes to L1 in EIP-8142 payload blobs, which encode its BAL and
+transactions. The L1 program does not implement EIP-8142 yet, so the node
+derives the payload blobs itself, as `engine_newPayload`'s native variant
+does, and signs a public input that binds their versioned hashes, as a
+program with EIP-8142 would.
+
 Run with the environment of that execution-specs merge:
 
     uv run --project <execution-specs> python script/l2_node.py genesis --state <file> --l1-rollup <address>
@@ -60,6 +66,7 @@ from ethereum.forks.amsterdam.stateless_guest import deserialize_stateless_input
 from ethereum.forks.amsterdam.stateless_host import deserialize_stateless_output
 from ethereum.utils.ssz import _to_view
 
+import block_in_blobs as bib
 from ssz_roots import container4, payload_root, public_input_root, versioned_hashes_root  # noqa: E402
 
 L2_CHAIN_ID = 8079
@@ -422,9 +429,17 @@ def build(args: argparse.Namespace) -> None:
     assert payload_root(header) == bytes(view.hash_tree_root()), "payload root"
     assert "0x" + bytes(request.parent_beacon_block_root).hex() == args.anchor_hash
     requests_root = bytes(_to_view(request.execution_requests).hash_tree_root())
+
+    # EIP-8142 payload blobs, first in the list of versioned hashes. L2
+    # blocks have no blob transactions, so they are the whole list.
+    assert not request.versioned_hashes, "L2 blocks carry no blob transactions"
+    bal, transactions = bytes(payload.block_access_list), [bytes(tx) for tx in payload.transactions]
+    blobs = bib.execution_payload_data_to_blobs(bal, transactions)
+    versioned_hashes = [bib.versioned_hash(bib.commitment(blob)) for blob in blobs]
+
     np_root = container4(
         payload_root(header),
-        versioned_hashes_root([bytes(h) for h in request.versioned_hashes]),
+        versioned_hashes_root(versioned_hashes),
         bytes(request.parent_beacon_block_root),
         requests_root,
     )
@@ -463,13 +478,16 @@ def build(args: argparse.Namespace) -> None:
                     "blockHash": hx(header["blockHash"]),
                     "transactionsRoot": hx(header["transactionsRoot"]),
                     "blockAccessListRoot": hx(header["blockAccessListRoot"]),
-                    "payloadBlobCount": len(request.versioned_hashes),
+                    "payloadBlobCount": len(blobs),
                     "executionRequestsRoot": hx(requests_root),
                     "anchorBlockNumber": args.anchor_number,
                     "feeRecipient": hx(header["feeRecipient"]),
                     "prevRandao": hx(header["prevRandao"]),
                     "extraData": hx(header["extraData"]),
                 },
+                "payloadBytes": bib.payload_data_length(bal, transactions),
+                "blobs": [hx(blob) for blob in blobs],
+                "versionedHashes": [hx(h) for h in versioned_hashes],
                 "triple": hx(triple),
                 "proof": proof,
             }
