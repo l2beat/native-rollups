@@ -32,7 +32,7 @@ Alternatives that were considered and dropped:
 
 ## L1 to L2 messaging
 
-The rollup contract stores the hash of each L1 to L2 message in its own storage, like the `pendingL1Messages` queue of the reference contract. On L2, a messenger contract verifies a storage proof of the message against the anchored L1 block hash, marks it as claimed, and calls the destination. For the duration of the call, it exposes the original L1 sender so that the destination can authenticate it, as Linea's `sender()` and Taiko's `context()` already do. Alternatively, the sender can be passed directly to the destination contract.
+The rollup contract stores the hash of each L1 to L2 message in its own storage, like the `pendingL1Messages` queue of the reference contract, and emits the full message so that relayers can deliver it. On L2, a messenger contract verifies a storage proof of the message against the anchored L1 block hash, marks it as claimed, and calls the destination. For the duration of the call, it exposes the original L1 sender so that the destination can authenticate it, as Linea's `sender()` and Taiko's `context()` already do. Alternatively, the sender can be passed directly to the destination contract.
 
 Native rollups do not add an unsigned transaction type that executes messages with the L1 sender as `msg.sender`, as the OP and Orbit stacks do. L1 has no such transaction type, so supporting it would require a different program. The cost is that destination contracts must explicitly support the messenger interface for cross-chain authentication, instead of relying on `msg.sender`. Many projects already work this way, and standardizing the interface across projects would reduce this cost.
 

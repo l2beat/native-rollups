@@ -90,10 +90,14 @@ abstract contract NativeRollup {
         stateRootHistory[0] = genesisStateRoot;
     }
 
+    /// @notice Emitted so relayers can deliver the message on L2, where only
+    ///         its hash is proven.
+    event L1MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
+
     function sendMessage(address to, bytes calldata data) external payable {
-        bytes32 messageHash =
-            keccak256(abi.encodePacked(msg.sender, to, msg.value, keccak256(data), pendingL1Messages.length));
-        pendingL1Messages.push(messageHash);
+        uint256 index = pendingL1Messages.length;
+        pendingL1Messages.push(keccak256(abi.encodePacked(msg.sender, to, msg.value, keccak256(data), index)));
+        emit L1MessageSent(index, msg.sender, to, msg.value, data);
     }
 
     function advance(BlockParams calldata params, uint256 dependencyFrameIndex) external {

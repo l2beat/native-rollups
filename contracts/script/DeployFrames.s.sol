@@ -14,7 +14,11 @@ import {MockDependencyVerifier} from "../src/frames/MockDependencyVerifier.sol";
 ///         hash, since no fork on this chain performs the system call.
 ///         Environment: PRIVATE_KEY (deployer and registry admin), PROVER
 ///         (address signing mock proofs), GENESIS_HASH and GENESIS_STATE_ROOT
-///         (the L2 genesis, from `script/l2_node.py genesis`).
+///         (the L2 genesis, from `script/l2_node.py genesis`), and ROLLUP.
+///         The L2 genesis stores the rollup's address in the L2 messenger
+///         while the rollup stores the genesis hash, so the genesis is built
+///         for the address the rollup will have, ROLLUP, which is the
+///         deployer's address at its current nonce plus 3.
 contract DeployFrames is Script {
     bytes20 constant SYSTEM_ADDRESS = hex"fffffffffffffffffffffffffffffffffffffffe";
     // Constructor of the sys-asm registry initcode: copies and returns the
@@ -49,6 +53,7 @@ contract DeployFrames is Script {
             registry,
             address(verifier)
         );
+        require(address(rollup) == vm.envAddress("ROLLUP"), "rollup address differs from the L2 genesis");
 
         vm.stopBroadcast();
 

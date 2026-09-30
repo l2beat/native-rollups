@@ -109,6 +109,8 @@ Amsterdam treats a block as invalid if any of its request system contracts has n
 
 Since the request contracts exist, L2 users can create requests. Requests have no effect on L2, and the value sent with them stays locked in the contracts, so the rollup contract accepts any `execution_requests` whose root the L2 proof binds. Fixing them to empty would let anyone halt the rollup by forcing a transaction that creates a request.
 
+The genesis also holds the [L2 messenger](./messaging.md#l1-to-l2-messaging) with the pre-minted supply of the [gas token](./gas_token_deposits.md). The messenger stores the address of the rollup contract, whose queue it proves messages against, while the rollup contract stores the genesis block hash. The genesis is therefore built for the address the rollup contract will have, for example from the deployer's nonce. `CREATE2` does not break the cycle, since the genesis hash is part of the init code.
+
 ## Proof statement
 
 The L2 proof shows that [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py) succeeded for the L2 block. Its public output is the [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py):
@@ -201,11 +203,14 @@ contract NativeRollup {
     // the anchored L1 block hash.
     bytes32[] public pendingL1Messages;
 
+    // Emitted so that relayers can deliver the message on L2, where only
+    // its hash can be proven.
+    event L1MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
+
     function sendMessage(address to, bytes calldata data) external payable {
-        bytes32 messageHash = keccak256(
-            abi.encodePacked(msg.sender, to, msg.value, keccak256(data), pendingL1Messages.length)
-        );
-        pendingL1Messages.push(messageHash);
+        uint256 index = pendingL1Messages.length;
+        pendingL1Messages.push(keccak256(abi.encodePacked(msg.sender, to, msg.value, keccak256(data), index)));
+        emit L1MessageSent(index, msg.sender, to, msg.value, data);
     }
 
     function advance(BlockParams calldata params, uint256 dependencyFrameIndex) external {

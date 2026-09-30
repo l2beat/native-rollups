@@ -2,10 +2,10 @@
 Operator for a native rollup on an EIP-8141 chain without EIP-8288, such as
 frames-devnet-0 (see FramesNativeRollup).
 
-`advance` anchors the next L2 block to a recent L1 block, has the L2 node
-(`l2_node.py`) build it on the rollup's head, validate it with the L1
-stateless validation program, and sign the dependency, then sends one frame
-transaction:
+`advance` anchors the next L2 block to the latest L1 block, has the L2 node
+(`l2_node.py`) build it on the rollup's head, claiming the L1 messages sent
+up to the anchor, validate it with the L1 stateless validation program, and
+sign the dependency, then sends one frame transaction:
 
     frame 0  VERIFY   the operator's account approves execution and payment
     frame 1  DEFAULT  MockDependencyVerifier(scheme || data_hash || vk_hash || proof)
@@ -91,8 +91,9 @@ def advance(args: argparse.Namespace) -> None:
     entry = cast("call", "--rpc-url", rpc, registry, "0x" + "00" * 32)
     vk_hash, schema_id = "0x" + entry[2:66], int(entry[66:130], 16)
 
-    # Anchor to a recent L1 block the operator already knows.
-    anchor_number = int(cast("block-number", "--rpc-url", rpc)) - 1
+    # Anchor to the latest L1 block, whose hash is available to `advance`
+    # in any later block.
+    anchor_number = int(cast("block-number", "--rpc-url", rpc))
     anchor_hash = cast("block", "--rpc-url", rpc, str(anchor_number), "--field", "hash")
 
     # The L2 node builds the next block on the rollup's head, validates it
@@ -110,6 +111,8 @@ def advance(args: argparse.Namespace) -> None:
             "--l1-chain-id", cast("chain-id", "--rpc-url", rpc),
             "--verifier", args.verifier,
             "--prover-key", args.prover_key,
+            "--l1-rpc", rpc,
+            "--rollup", args.rollup,
         ],
         check=True,
         capture_output=True,
@@ -192,6 +195,11 @@ def advance(args: argparse.Namespace) -> None:
         f"L2 block {bundle['number']} ({bundle['transactions']} transactions, state root {bundle['stateRoot']}), "
         f"anchor L1 block {anchor_number}, data_hash 0x{triple[32:64].hex()}"
     )
+    for c in bundle["claims"]:
+        print(
+            f"claims L1 message {c['index']}: {c['value']} wei from {c['sender']} to {c['to']}, "
+            f"whose L2 balance becomes {c['l2Balance']}"
+        )
     tx_hash = json.loads(cast("publish", "--rpc-url", rpc, hx(raw)))["transactionHash"]
     print(f"included {tx_hash}")
     receipt = json.loads(cast("receipt", "--rpc-url", rpc, tx_hash, "--json"))
