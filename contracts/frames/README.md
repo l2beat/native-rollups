@@ -53,7 +53,7 @@ uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_foll
     --l1-rpc <rpc> --beacon <cl-url> --rollup <rollup> --genesis <l2-state>
 ```
 
-`advance` anchors the block to the latest L1 block, so it claims every message sent so far. `--withdraw <l1-recipient>:<wei>[:<data>]` also sends an L2 to L1 message, which `claim-l2-message` claims on L1 once the rollup has the block:
+`advance` anchors the block to the latest L1 block, so it claims every message sent so far. The L2 node holds the keys of its users' L2 accounts, which `L2_USER_KEYS` sets, comma-separated. `--transfer <from>:<to>:<wei>` sends ETH on L2 from one of them, and `--withdraw <from>:<l1-recipient>:<wei>[:<data>]` sends an L2 to L1 message, which `claim-l2-message` claims on L1 once the rollup has the block:
 
 ```shell
 uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py claim-l2-message \

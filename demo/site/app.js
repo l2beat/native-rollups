@@ -76,7 +76,14 @@ const ago = (t) => {
   const s = Math.max(0, Math.round(Date.now() / 1000 - t));
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
 };
-const hash = (h, full = false) => `<span class="mono" title="${esc(h)}">${esc(full ? h : short(h))}</span>`;
+// Hashes of nothing, which could pass for arbitrary values.
+const EMPTY_HASHES = {
+  "0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855": "the SHA-256 of nothing: no requests (EIP-7685)",
+  "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421": "the root of an empty trie",
+  "0x87b69a306c8e430d0857f7c4ac5e27cecffa1108d43c2e5df7388056fea7a423": "the SSZ root of no execution requests",
+};
+const empty = (h) => (EMPTY_HASHES[h] ? ` <span class="empty-hash">empty: ${EMPTY_HASHES[h]}</span>` : "");
+const hash = (h, full = false) => `<span class="mono" title="${esc(h)}">${esc(full ? h : short(h))}</span>${empty(h)}`;
 // Every link to a block, transaction or address says which chain it is on.
 const net = (chain) => `<span class="net ${chain}">${chain.toUpperCase()}</span>`;
 const l2BlockLink = (n) => `<span class="nowrap">${net("l2")}<a href="#/l2/block/${n}">#${n}</a></span>`;
@@ -109,9 +116,8 @@ function labels() {
   add(c.prover, "Trusted prover key", "mock");
   add(c.operator, "Operator", "");
   add(c.framesHelper, "Frames helper", "");
-  // Alice uses one key, so one address, on both chains.
-  add(c.aliceL1, c.aliceL1 && c.aliceL2 && c.aliceL1.toLowerCase() === c.aliceL2.toLowerCase() ? "Alice" : "Alice on L1", "");
-  if (c.aliceL2 && c.aliceL2.toLowerCase() !== (c.aliceL1 || "").toLowerCase()) add(c.aliceL2, "Alice on L2", "");
+  // Each user has one key, so one address, on both chains.
+  Object.entries(c.users || {}).forEach(([name, a]) => add(a, name, ""));
   return l;
 }
 
@@ -305,7 +311,7 @@ function about() {
         ["Rollup contract", "l1", c.rollup, "real"], ["L2 messenger", "l2", c.l2Messenger, "real"],
         ["Proof checker", "l1", c.verifier, "mock"], ["Key registry", "l1", c.registry, "mock"],
         ["Trusted prover key", "l1", c.prover, "mock"], ["Operator", "l1", c.operator, "shortcut"],
-        ["Alice", "l1", c.aliceL1, ""], ["Alice", "l2", c.aliceL2, ""],
+        ...Object.entries(c.users || {}).flatMap(([name, a]) => [[name, "l1", a, ""], [name, "l2", a, ""]]),
       ].map(([name, chain, a, kind]) => `<tr><td>${name}</td><td>${chain.toUpperCase()}</td>
         <td><a class="mono" href="#/address/${chain}/${a.toLowerCase()}">${a}</a></td><td>${kind ? badge(kind) : ""}</td></tr>`).join("")}
     </tbody></table>
@@ -347,8 +353,8 @@ async function blockPage(route) {
     </ol>
 
     <h2>Transactions</h2>
-    <table><thead><tr><th>#</th><th>Hash</th><th>What it does</th><th>Linked on L1</th><th>From</th><th class="num">Gas used</th><th class="num">Bytes</th></tr></thead><tbody>
-      ${txs.map((t, i) => `<tr><td>${i}</td><td>${l2TxLink(t.hash)}</td><td>${chip(t.kind)}</td><td>${counterpart(t)}</td><td>${addr(t.from, "l2")}</td>
+    <table><thead><tr><th>#</th><th>Hash</th><th>What it does</th><th>Status</th><th>Linked on L1</th><th>From</th><th class="num">Gas used</th><th class="num">Bytes</th></tr></thead><tbody>
+      ${txs.map((t, i) => `<tr><td>${i}</td><td>${l2TxLink(t.hash)}</td><td>${chip(t.kind)}</td><td>${statusText(t.status)}</td><td>${counterpart(t)}</td><td>${addr(t.from, "l2")}</td>
         <td class="num">${num(t.gasUsed)}</td><td class="num">${num(t.bytes)}</td></tr>`).join("")}</tbody></table>
 
     <h2>Header</h2>
@@ -403,6 +409,8 @@ function hexToText(hex) {
 // Addresses
 // ---------------------------------------------------------------------------
 
+const USER_ROLE = `One of the demo's three users. Each uses the same key on L1 and L2, so has the same address on both. Alice and Bob
+  deposit from L1, the three pay each other on L2, and any of them withdraws to L1, Charlie with ETH received only on L2.`;
 const ROLES = {
   "Rollup contract": ["real", "The native rollup's contract on L1. It adds each L2 block whose proof is for exactly that block, stores the L2 chain's head and its last 8,191 state roots, keeps the tree of L1 to L2 messages, holds the ETH deposits escrow, and pays withdrawals."],
   "L2 messenger": ["real", "An L2 contract in the genesis that holds the pre-minted supply of L2 ETH. It releases ETH for deposits, which it proves against L1's message tree, and records withdrawals for L1. Its balance is the ETH that deposits have not released yet."],
@@ -411,7 +419,9 @@ const ROLES = {
   "Trusted prover key": ["mock", "The key that signs the blocks Ethereum's validation program accepted, in place of a zk proof. It never sends transactions."],
   "Operator": ["shortcut", "The account that posts L2 blocks to L1. The rollup contract accepts a valid block from anyone, but this demo has one operator."],
   "Frames helper": ["shortcut", "Lets the rollup contract use EIP-8141's FRAMEPARAM and FRAMEDATACOPY instructions, which Solidity cannot emit yet. The rollup contract deploys it and calls it to read the proof frame. Written in assembly with geas."],
-  Alice: ["", "The demo's user. She uses the same key on L1 and L2, so she has the same address on both."],
+  Alice: ["", USER_ROLE],
+  Bob: ["", USER_ROLE],
+  Charlie: ["", USER_ROLE],
   "Fee recipient": ["", "Receives the L2's priority fees. The operator picks it, as the consensus layer does on L1."],
   "ETH transfer log (EIP-7708)": ["", "Not an account: EIP-7708 makes every ETH transfer emit a log from this address."],
   "Beacon roots contract (EIP-4788)": ["", "On L2, it stores each block's L1 anchor: the hash of an L1 block, which deposit claims prove L1 state against."],
@@ -497,7 +507,7 @@ async function addressPage(route) {
         ${txs.slice(0, 50).map((t) => `<tr><td>${l2TxLink(t.hash)}</td><td>${l2BlockLink(t.block)}</td><td>${chip(t.kind)}</td></tr>`).join("")}</tbody></table>` : '<p class="note">None.</p>'}`;
     }
   }
-  const other = a === (c.aliceL1 || "").toLowerCase() || a === (c.aliceL2 || "").toLowerCase()
+  const other = Object.values(c.users || {}).some((u) => u.toLowerCase() === a)
     ? `<p class="note">The same address on <a href="#/address/${OTHER[chain]}/${a}">${OTHER[chain].toUpperCase()}</a>.</p>` : "";
   const bytecode = chain === "l1" ? l1Code : acc && acc.code;
   const code = sourceSection(a, name, bytecode, chain);
@@ -669,7 +679,7 @@ function value(v, key, ctx = {}) {
   const s = String(v);
   if (/^0x[0-9a-f]{40}$/i.test(s)) return addr(s, chainFor(key, ctx));
   if (key === "value" && /^\d+$/.test(s)) return eth(s);
-  if (/^0x[0-9a-f]*$/i.test(s)) return s.length > 70 ? hash(s) + ` <span class="muted">(${(s.length - 2) / 2} bytes)</span>` : `<span class="mono">${s}</span>`;
+  if (/^0x[0-9a-f]*$/i.test(s)) return s.length > 70 ? hash(s) + ` <span class="muted">(${(s.length - 2) / 2} bytes)</span>` : `<span class="mono">${s}</span>${empty(s)}`;
   return esc(typeof v === "number" ? num(v) : s);
 }
 
@@ -770,6 +780,8 @@ function frameCards(tx, layer) {
   }).join("")}</div>`;
 }
 
+const statusText = (s) => (s === 0 ? `<span class="bad">failed</span>` : `<span class="check">succeeded</span>`);
+
 // The deposit an L2 claim delivers, or the withdrawal an L2 transaction sends.
 function depositOf(tx) {
   const frame = (tx.frames || []).find((f) => f.call && f.call.function === "claimL1Message");
@@ -806,7 +818,9 @@ const L2_SUMMARIES = {
   },
   withdrawal: (tx) => `${addr(tx.from, "l2")} withdraws ${eth(tx.value)} to ${addr(tx.call.args.to, "l1")} on L1. The L2 messenger records the
     message, which can be claimed on L1 once this block is on L1.`,
-  transfer: (tx) => `A plain ETH transfer of ${eth(tx.value)}, background activity of the demo's story.`,
+  transfer: (tx) => tx.status
+    ? `${addr(tx.from, "l2")} pays ${eth(tx.value)} to ${addr(tx.to, "l2")}, in a plain ETH transfer.`
+    : `A plain ETH transfer of ${eth(tx.value)} that <b>failed</b>, so no ETH moved. The transaction is still in the block and paid its fee.`,
 };
 
 async function l2TxPage(route) {
@@ -838,8 +852,9 @@ async function l2TxPage(route) {
       [frame ? "Sender" : "From", addr(tx.from, "l2"), frame ? "The account the transaction acts for." : ""],
       ...(frame ? [["To", frameTargets(tx, "l2"), "A frame transaction has no single recipient: each frame calls its own target."],
         ["Payer", addr(tx.payer, "l2"), "The account whose VERIFY frame approved the payment."]] : [["To", addr(tx.to, "l2"), ""], ["Value", eth(tx.value), ""]]),
+      ["Status", statusText(tx.status), frame ? "A frame transaction is included once a frame approves payment. Each frame then has its own status, below." : ""],
       ["Nonce", tx.nonce, ""],
-      ["Gas used", num(tx.gasUsed), ""],
+      ["Gas used", frame ? num(tx.gasUsed) : `${num(tx.gasUsed)} of ${num(tx.gasLimit)}`, ""],
       ["Size", `${num(tx.bytes)} bytes`, "Its share of the block's blob."],
     ])}
     ${frame ? `<h2>Frames</h2>${frameCards(tx, "L2")}` : tx.call

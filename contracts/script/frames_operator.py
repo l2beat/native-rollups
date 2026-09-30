@@ -150,6 +150,7 @@ def advance(args: argparse.Namespace) -> None:
         "--l1-rpc", rpc,
         "--rollup", args.rollup,
         *[a for w in args.withdraw for a in ("--withdraw", w)],
+        *[a for t in args.transfer for a in ("--transfer", t)],
     )
     p = bundle["params"]
     triple = bytes.fromhex(bundle["triple"][2:])
@@ -336,8 +337,10 @@ def main() -> None:
     adv.add_argument("--corrupt-proof", action="store_true", help="send an invalid mock proof")
     adv.add_argument("--record", help="write what happened to this JSON file")
     adv.add_argument(
-        "--withdraw", action="append", default=[], metavar="TO:WEI[:DATA]", help="send an L2 to L1 message"
+        "--withdraw", action="append", default=[], metavar="FROM:TO:WEI[:DATA]",
+        help="send an L2 to L1 message from one of the L2 node's accounts",
     )
+    adv.add_argument("--transfer", action="append", default=[], metavar="FROM:TO:WEI", help="send ETH on L2 from one of the L2 node's accounts")
     claim = sub.add_parser("claim-l2-message")
     claim.add_argument("--rpc", required=True)
     claim.add_argument("--rollup", required=True)

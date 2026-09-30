@@ -348,7 +348,7 @@ class Explorer:
                     entry = self.index["withdrawals"].setdefault(str(a["index"]), {"index": a["index"]})
                     entry.update({"from": a["sender"], "to": a["to"], "value": a["value"], "l2Tx": tx["hash"], "l2Block": block["number"]})
         block["transactions"] = [
-            {"hash": tx["hash"], "kind": tx["kind"], "from": tx["from"], "gasUsed": tx["gasUsed"], "bytes": tx["bytes"]}
+            {"hash": tx["hash"], "kind": tx["kind"], "from": tx["from"], "gasUsed": tx["gasUsed"], "bytes": tx["bytes"], "status": tx["status"]}
             for tx in transactions
         ]
         self.write(f"l2/blocks/{block['number']}.json", block)

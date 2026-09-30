@@ -15,18 +15,18 @@ The genesis holds the system contracts the Specification requires and the
 `L2Messenger` predeploy with the pre-minted gas token supply, and no funded
 account: all L2 ETH comes from deposits. The node follows the rollup contract
 on L1, rebuilds its message tree from the `L1MessageSent` events, and each
-block claims the L1 messages sent up to its anchor. A claim is a frame
-transaction from the node's L2 account that pays its fee with the claimed
-ETH:
+block claims the L1 messages sent up to its anchor. The node holds the keys
+of its users' L2 accounts, and a claim is a frame transaction from the
+recipient's account that pays its fee with the claimed ETH:
 
     frame 0  DEFAULT  L2Messenger.proveL1MessageRoot(...)  first claim only
     frame 1  DEFAULT  L2Messenger.claimL1Message(message, path)
     frame 2  VERIFY   the account approves execution and payment
 
 The first claim of a block proves the tree's root against the block's anchor,
-and the others only carry their message's path to it. The first deposit to
-the account needs no L2 ETH to claim. Once funded,
-the account also sends the requested L2 to L1 messages and random transfers.
+and the others only carry their message's path to it. A user's first deposit
+needs no L2 ETH to claim. The users' accounts also send the requested
+transfers and L2 to L1 messages.
 `prove` gives the proofs that claim an L2 to L1 message on L1, against the
 rollup contract's latest L2 block.
 
@@ -72,9 +72,9 @@ from ssz_roots import container4, payload_root, public_input_root, versioned_has
 L2_CHAIN_ID = 8079
 L2_GAS_LIMIT = 60_000_000
 LEANSTARK_SCHEME = 0x11
-# The node's L2 account. L2_USER_KEY lets it be a user's own key, the same
-# account the user has on L1.
-USER_KEY = int(os.environ.get("L2_USER_KEY", hex(0x6E61746976652D726F6C6C75702D75736572)), 16)  # "native-rollup-user"
+# The keys of the node's L2 accounts. L2_USER_KEYS, comma-separated, lets
+# them be users' own keys, the accounts the users have on L1.
+USER_KEYS = [int(k, 16) for k in os.environ.get("L2_USER_KEYS", hex(0x6E61746976652D726F6C6C75702D75736572)).split(",")]  # "native-rollup-user"
 FEE_RECIPIENT = Address(0xFEE)
 
 L2_MESSENGER = Address(0x8079000000000000000000000000000000000001)
@@ -86,7 +86,7 @@ CLAIM_GAS_LIMIT = 1_000_000
 # EIP-8141 frame modes and approval scopes.
 DEFAULT_MODE, VERIFY_MODE = 0, 1
 APPROVE_EXECUTION_AND_PAYMENT = 3
-# Balance the account keeps for the fees of its transfers and messages.
+# Balance an account keeps for the fees of its transfers and messages.
 FEE_RESERVE = 10**16
 L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,bytes)")
 L1_MESSAGE_ROOT_SLOT = 3  # root of NativeRollup.l1Messages
@@ -98,10 +98,14 @@ for _ in range(TREE_DEPTH):
 CLAIMED_SLOT = 1  # L2Messenger.claimedBits, 256 flags per slot
 SENT_SLOT = 2  # L2Messenger.sentMessages
 SEND_GAS_LIMIT = 500_000
+# EIP-8037 charges 183,600 state gas to create an account, so a transfer to a
+# new address needs more than the usual 21,000.
+TRANSFER_GAS_LIMIT = 250_000
 
 
-def user() -> EOA:
-    return EOA(key=USER_KEY)
+def users() -> dict:
+    """The node's accounts, by lowercase address."""
+    return {str(eoa).lower(): eoa for eoa in (EOA(key=key) for key in USER_KEYS)}
 
 
 def cast(*args: str) -> str:
@@ -110,12 +114,12 @@ def cast(*args: str) -> str:
 
 def build_chain(state: dict, specs: list) -> dict:
     """Builds the chain from genesis and returns the fixture as JSON."""
-    sender = user()
+    senders = users()
     blocks = []
     for spec in specs:
         claims = [
             Transaction(
-                sender=sender,
+                sender=senders[claim["from"]],
                 frames=[
                     Frame(
                         mode=DEFAULT_MODE,
@@ -134,7 +138,7 @@ def build_chain(state: dict, specs: list) -> dict:
         ]
         messages = [
             Transaction(
-                sender=sender,
+                sender=senders[message["from"]],
                 to=L2_MESSENGER,
                 value=message["value"],
                 data=bytes.fromhex(message["calldata"][2:]),
@@ -147,15 +151,15 @@ def build_chain(state: dict, specs: list) -> dict:
         ]
         transfers = [
             Transaction(
-                sender=sender,
+                sender=senders[sender],
                 to=Address(int(to, 16)),
                 value=value,
-                gas_limit=21_000,
+                gas_limit=TRANSFER_GAS_LIMIT,
                 chain_id=L2_CHAIN_ID,
                 max_fee_per_gas=10**9,
                 max_priority_fee_per_gas=1,
             )
-            for to, value in spec["transfers"]
+            for sender, to, value in spec["transfers"]
         ]
         blocks.append(
             Block(
@@ -348,35 +352,50 @@ def build(args: argparse.Namespace) -> None:
     timestamp = max(int(time.time()), head_timestamp + 1)
     claimed = sum(len(b["claims"]) for b in state["blocks"])
     sent = sum(len(b["l2Messages"]) for b in state["blocks"])
-    # The account only has what deposits gave it. Deposits to it pay for
-    # their own claim, while claiming a message to another account needs
-    # funds first, so claims stop at the first one it cannot pay for.
-    funds = balance(fixture, str(user()))
+    # Accounts only have what deposits and transfers gave them. A deposit to
+    # one of them pays for its own claim, while a deposit to another address
+    # needs an account with funds to claim it, so claims stop at the first one
+    # no account can pay for.
+    funds = {address: balance(fixture, address) for address in users()}
     pending, prove_root, root = l1_messages(args, claimed, timestamp)
     claims = []
     for claim in pending:
-        if int(claim["to"], 16) == int(str(user()), 16):
-            funds += claim["value"]
-        elif funds < FEE_RESERVE:
-            break
+        to = claim["to"].lower()
+        if to in funds:
+            claim["from"] = to
+            funds[to] += claim["value"]
+        else:
+            payer = next((a for a, f in funds.items() if f >= FEE_RESERVE), None)
+            if payer is None:
+                break
+            claim["from"] = payer
         claims.append(claim)
     # The first claim proves the root, unless the messenger already has it.
     if claims and storage(fixture, L2_MESSENGER, PROVEN_ROOT_SLOT.to_bytes(32, "big")) != int.from_bytes(root, "big"):
         claims[0]["calls"].insert(0, prove_root)
     l2_messages = []
     for withdrawal in args.withdraw:
-        to, value, *data = withdrawal.split(":")
+        sender, to, value, *data = withdrawal.split(":")
         data = data[0] if data else "0x"
         calldata = cast("calldata", "sendMessage(address,bytes)", to, data)
-        l2_messages.append({"index": sent + len(l2_messages), "to": to, "value": int(value), "data": data, "calldata": calldata})
+        l2_messages.append(
+            {"index": sent + len(l2_messages), "from": sender.lower(), "to": to, "value": int(value), "data": data, "calldata": calldata}
+        )
+    transfers = []
+    for transfer in args.transfer:
+        sender, to, value = transfer.split(":")
+        transfers.append((sender.lower(), to, int(value)))
 
-    # It sends messages and transfers once they are covered.
-    if sum(m["value"] for m in l2_messages) + FEE_RESERVE > funds:
-        if l2_messages:
-            raise SystemExit(f"the L2 account has {funds} wei, not enough for the L2 to L1 messages")
-        transfers = []
-    else:
-        transfers = [("0x" + os.urandom(20).hex(), int.from_bytes(os.urandom(2), "big")) for _ in range(2)]
+    # Each account must cover what it sends, and keep a reserve for fees.
+    spent = {}
+    for sender, value in [(m["from"], m["value"]) for m in l2_messages] + [(t[0], t[2]) for t in transfers]:
+        if sender not in funds:
+            raise SystemExit(f"{sender} is not one of the node's accounts")
+        spent[sender] = spent.get(sender, 0) + value
+    for sender, value in spent.items():
+        if value + FEE_RESERVE > funds[sender]:
+            raise SystemExit(f"{sender} has {funds[sender]} wei on L2, not enough to send {value}")
+
     spec = {
         "timestamp": timestamp,
         "anchorHash": args.anchor_hash,
@@ -484,9 +503,10 @@ def build(args: argparse.Namespace) -> None:
                     for c in spec["claims"]
                 ],
                 "l2Messages": [
-                    {k: m[k] for k in ("index", "to", "value", "data")} | {"sender": str(user())}
+                    {k: m[k] for k in ("index", "to", "value", "data")} | {"sender": m["from"]}
                     for m in spec["l2Messages"]
                 ],
+                "balances": {address: balance(fixture, address) for address in users()},
                 "params": {
                     "stateRoot": hx(header["stateRoot"]),
                     "receiptsRoot": hx(header["receiptsRoot"]),
@@ -528,7 +548,7 @@ def prove(args: argparse.Namespace) -> None:
     print(
         json.dumps(
             {
-                "message": {k: message[k] for k in ("index", "to", "value", "data")} | {"sender": str(user())},
+                "message": {k: message[k] for k in ("index", "to", "value", "data")} | {"sender": message["from"]},
                 "blockNumber": head(fixture)[1],
                 "stateRoot": fixture["blocks"][-1]["blockHeader"]["stateRoot"],
                 "accountProof": account_proof,
@@ -557,8 +577,10 @@ def main() -> None:
     b.add_argument("--l1-rpc", required=True)
     b.add_argument("--rollup", required=True)
     b.add_argument(
-        "--withdraw", action="append", default=[], metavar="TO:WEI[:DATA]", help="send an L2 to L1 message"
+        "--withdraw", action="append", default=[], metavar="FROM:TO:WEI[:DATA]",
+        help="send an L2 to L1 message from one of the node's accounts",
     )
+    b.add_argument("--transfer", action="append", default=[], metavar="FROM:TO:WEI", help="send ETH from one of the node's accounts")
     p = sub.add_parser("prove")
     p.add_argument("--state", required=True)
     p.add_argument("--head-hash", required=True)

@@ -3,10 +3,11 @@ Runs the native rollup demo on the local frames devnet (`contracts/frames/`).
 
 Each episode deploys a fresh rollup, starts a follower that rebuilds the L2
 chain from L1 on its own, then advances the rollup with a scripted story:
-Alice deposits from L1, her L2 account claims the deposit and pays for the
-claim with it, she pays random addresses on L2, withdraws to L1 and claims
-the withdrawal there. Every step is recorded in `demo/data/session.json`,
-which `demo/server.py` serves to the site. After `--blocks` L2 blocks the
+Alice and Bob deposit from L1, and each deposit pays for its own claim on
+L2. The users pay each other on L2, and Charlie, who never deposits,
+withdraws ETH received on L2 to L1 and claims it there. Every step is
+recorded in `demo/data/session.json`, which `demo/server.py` serves to the
+site. After `--blocks` L2 blocks the
 episode ends and a new one starts, since the L2 node rebuilds its chain from
 genesis for every block.
 
@@ -19,6 +20,7 @@ environments, as the README of `contracts/frames/` describes.
 import argparse
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -32,13 +34,20 @@ DATA = os.path.join(ROOT, "demo", "data")
 
 # ethereum-package's prefunded development keys.
 OPERATOR_KEY = "0xbcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31"
-ALICE_L1_KEY = "0x39725efee3fb28614de3bacaffe4cc4bd8c436257e2c8bb887c4b5c4be45e76d"
+# Each user has one key, so one address, on both chains.
+USER_KEYS = {
+    "Alice": "0x39725efee3fb28614de3bacaffe4cc4bd8c436257e2c8bb887c4b5c4be45e76d",
+    "Bob": "0x53321db7c1e331d93a11a41d16f004d7ff63972ec8ec7c25db329728ceeb1710",
+    "Charlie": "0xab63b23eb7941c1251757e24b3d2350d2bc05c3c388d06f8fe6feafefb1e8c70",
+}
 L2_MESSENGER = "0x8079000000000000000000000000000000000001"
+ETH = 10**18
+# What a user keeps on L2 for fees, above the L2 node's own reserve.
+RESERVE = ETH // 20
 
 
 def run(cmd: list, cwd: str = CONTRACTS) -> str:
-    # Alice uses the same key on L2, so she has the same address on both chains.
-    out = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env={**os.environ, "L2_USER_KEY": ALICE_L1_KEY})
+    out = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env={**os.environ, "L2_USER_KEYS": ",".join(USER_KEYS.values())})
     if out.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd[:6])}...: {(out.stderr or out.stdout).strip()[-600:]}")
     return out.stdout
@@ -61,8 +70,9 @@ class Episode:
         self.state = os.path.join(DATA, "l2_state.json")
         self.record = os.path.join(DATA, "record.json")
         self.session = {"episode": number, "startedAt": int(time.time()), "contracts": {}, "events": []}
-        self.withdrawals = 0
+        self.withdrawals = []  # the recipient of each withdrawal, in order
         self.claimed = 0
+        self.balances = {}  # each user's L2 balance after the last L2 block
         self.follower = None
 
     # Recording
@@ -94,12 +104,11 @@ class Episode:
         found = dict(re.findall(r"^\s+(registry|verifier|rollup|helper)\s+(0x[0-9a-fA-F]{40})", out.stdout, re.M))
         if out.returncode != 0 or found.get("rollup", "").lower() != rollup.lower():
             raise RuntimeError(f"deployment failed: {out.stdout[-600:]} {out.stderr[-600:]}")
-        alice = cast("wallet", "address", "--private-key", ALICE_L1_KEY)
+        self.users = {name: cast("wallet", "address", "--private-key", key) for name, key in USER_KEYS.items()}
         self.contracts = {
             "rollup": found["rollup"], "verifier": found["verifier"], "registry": found["registry"],
             "framesHelper": found["helper"], "l2Messenger": L2_MESSENGER, "prover": prover["address"],
-            "operator": deployer, "aliceL1": alice,
-            "aliceL2": alice, "l2GenesisHash": genesis["genesisHash"],
+            "operator": deployer, "users": self.users, "l2GenesisHash": genesis["genesisHash"],
         }
         self.session["contracts"] = self.contracts
         self.event("deployed", "Deployed a new rollup on L1", contracts=self.contracts)
@@ -125,19 +134,35 @@ class Episode:
 
     # Story steps
 
-    def deposit(self, amount: str) -> None:
+    def deposit(self, user: str, amount: str) -> None:
         receipt = json.loads(cast(
-            "send", "--rpc-url", self.args.rpc, "--private-key", ALICE_L1_KEY, "--json", "--timeout", "120",
-            self.contracts["rollup"], "sendMessage(address,bytes)", self.contracts["aliceL2"], "0x", "--value", amount,
+            "send", "--rpc-url", self.args.rpc, "--private-key", USER_KEYS[user], "--json", "--timeout", "120",
+            self.contracts["rollup"], "sendMessage(address,bytes)", self.users[user], "0x", "--value", amount,
         ))
         self.event(
-            "deposit", f"Alice deposits {amount.replace('ether', ' ETH')} from L1",
-            amount=amount, **{"from": self.contracts["aliceL1"]}, to=self.contracts["aliceL2"],
+            "deposit", f"{user} deposits {amount.replace('ether', ' ETH')} from L1",
+            amount=amount, **{"from": self.users[user]}, to=self.users[user],
             l1={"txHash": receipt["transactionHash"], "block": int(receipt["blockNumber"], 16),
                 "gasUsed": int(receipt["gasUsed"], 16)},
         )
 
-    def advance(self, withdraw: str | None = None) -> None:
+    def spendable(self, user: str) -> int:
+        return max(0, self.balances.get(self.users[user].lower(), 0) - RESERVE)
+
+    def payments(self, count: int, exclude: str | None = None) -> list:
+        """Up to `count` payments between users, each a small part of what
+        its sender can spend."""
+        out = []
+        for _ in range(count):
+            senders = [u for u in USER_KEYS if u != exclude and self.spendable(u) > ETH // 100]
+            if not senders:
+                break
+            sender = random.choice(senders)
+            to = random.choice([u for u in USER_KEYS if u != sender])
+            out.append((sender, to, self.spendable(sender) * random.randint(2, 12) // 100 // 10**14 * 10**14))
+        return out
+
+    def advance(self, withdraw: tuple | None = None, pay: list | None = None) -> None:
         a = self.args
         cmd = [
             "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "advance",
@@ -147,45 +172,53 @@ class Episode:
             "--record", self.record,
         ]
         if withdraw:
-            wei = int(float(withdraw.replace("ether", "")) * 10**18)
-            cmd += ["--withdraw", f"{self.contracts['aliceL1']}:{wei}"]
+            user, amount = withdraw
+            cmd += ["--withdraw", f"{self.users[user]}:{self.users[user]}:{amount}"]
+        for sender, to, amount in pay or self.payments(1 if withdraw else 2, exclude=withdraw and withdraw[0]):
+            cmd += ["--transfer", f"{self.users[sender]}:{self.users[to]}:{amount}"]
         run(cmd)
         record = json.load(open(self.record))
-        self.withdrawals += len(record["l2"]["l2Messages"])
+        self.withdrawals += [m["to"] for m in record["l2"]["l2Messages"]]
+        self.balances = {a.lower(): v for a, v in record["l2"]["balances"].items()}
         n = record["l2"]["number"]
         self.event("advance", f"L2 block {n} is on L1", **{k: v for k, v in record.items() if k != "type"})
 
     def claim(self) -> None:
         a = self.args
+        # The recipient claims, though anyone could.
+        user = next(u for u, address in self.users.items() if address.lower() == self.withdrawals[self.claimed].lower())
         run([
             "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "claim-l2-message",
-            "--rpc", a.rpc, "--rollup", self.contracts["rollup"], "--key", ALICE_L1_KEY,
+            "--rpc", a.rpc, "--rollup", self.contracts["rollup"], "--key", USER_KEYS[user],
             "--index", str(self.claimed), "--l2-state", self.state, "--zkevm-specs", a.zkevm_specs,
             "--record", self.record,
         ])
         record = json.load(open(self.record))
         self.claimed += 1
         value = record["message"]["value"] / 10**18
-        self.event("claimL2Message", f"Alice claims her {value:g} ETH withdrawal on L1",
+        self.event("claimL2Message", f"{user} claims a {value:g} ETH withdrawal on L1",
                    **{k: v for k, v in record.items() if k != "type"})
 
     def step(self, i: int) -> None:
         """The story: the first steps show each flow once, then they recur."""
         opening = [
-            lambda: self.deposit("1ether"),
+            lambda: self.deposit("Alice", "1ether"),
+            lambda: self.deposit("Bob", "0.5ether"),
             lambda: self.advance(),
-            lambda: self.advance(),
-            lambda: self.advance(withdraw="0.2ether"),
+            lambda: self.advance(pay=[("Alice", "Charlie", 3 * ETH // 10)]),
+            lambda: self.advance(withdraw=("Charlie", 2 * ETH // 10)),
             lambda: self.claim(),
         ]
         if i < len(opening):
             return opening[i]()
-        if self.claimed < self.withdrawals:
+        if self.claimed < len(self.withdrawals):
             return self.claim()
         if i % 6 == 0:
-            return self.deposit("0.5ether")
+            return self.deposit(random.choice(["Alice", "Bob"]), "0.5ether")
         if i % 9 == 0:
-            return self.advance(withdraw="0.1ether")
+            rich = max(USER_KEYS, key=self.spendable)
+            if self.spendable(rich) > ETH // 10:
+                return self.advance(withdraw=(rich, self.spendable(rich) // 4 // 10**15 * 10**15))
         return self.advance()
 
     def l2_blocks(self) -> int:
