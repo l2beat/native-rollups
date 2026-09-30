@@ -22,7 +22,8 @@ contract L2Messenger {
     uint256 internal constant L1_QUEUE_SLOT = 3;
 
     address public l1Rollup;
-    mapping(uint256 => bool) public claimed;
+    // L1->L2 messages already delivered, as a bitmap (see Messages).
+    mapping(uint256 => uint256) internal claimedBits;
     bytes32[] public sentMessages;
     address internal transient currentL1Sender;
 
@@ -30,6 +31,10 @@ contract L2Messenger {
     /// @notice Emitted so the message can be claimed on L1, where only its
     ///         hash is proven.
     event L2MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
+
+    function claimed(uint256 index) external view returns (bool) {
+        return Messages.isClaimed(claimedBits, index);
+    }
 
     /// @notice The L1 sender of the message being delivered.
     function l1Sender() external view returns (address) {
@@ -57,13 +62,12 @@ contract L2Messenger {
         bytes[] calldata accountProof,
         bytes[] calldata storageProof
     ) external {
-        require(!claimed[m.index], "already claimed");
+        Messages.markClaimed(claimedBits, m.index);
         require(keccak256(l1Header) == _anchor(anchorTimestamp), "header is not the anchor");
         bytes calldata l1StateRoot = MptProof.listItem(l1Header, 3);
         require(l1StateRoot.length == 32, "invalid header");
         Messages.requireQueued(m, bytes32(l1StateRoot), l1Rollup, L1_QUEUE_SLOT, accountProof, storageProof);
 
-        claimed[m.index] = true;
         currentL1Sender = m.sender;
         (bool ok,) = m.to.call{value: m.value}(m.data);
         currentL1Sender = address(0);

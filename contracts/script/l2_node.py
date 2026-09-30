@@ -76,7 +76,7 @@ APPROVE_EXECUTION_AND_PAYMENT = 3
 FEE_RESERVE = 10**16
 L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,bytes)")
 QUEUE_SLOT = 3  # NativeRollup.pendingL1Messages
-CLAIMED_SLOT = 1  # L2Messenger.claimed
+CLAIMED_SLOT = 1  # L2Messenger.claimedBits, 256 flags per slot
 SENT_SLOT = 2  # L2Messenger.sentMessages
 SEND_GAS_LIMIT = 500_000
 
@@ -329,8 +329,8 @@ def build(args: argparse.Namespace) -> None:
     fixture = build_chain(state, state["blocks"] + [spec])
     block = fixture["blocks"][-1]
     for claim in spec["claims"]:
-        key = keccak256(claim["index"].to_bytes(32, "big") + CLAIMED_SLOT.to_bytes(32, "big"))
-        if storage(fixture, L2_MESSENGER, key) != 1:
+        key = keccak256((claim["index"] >> 8).to_bytes(32, "big") + CLAIMED_SLOT.to_bytes(32, "big"))
+        if not storage(fixture, L2_MESSENGER, key) >> (claim["index"] & 0xFF) & 1:
             raise SystemExit(f"the claim of L1 message {claim['index']} failed")
     if storage(fixture, L2_MESSENGER, SENT_SLOT.to_bytes(32, "big")) != sent + len(l2_messages):
         raise SystemExit("sending an L2 to L1 message failed")

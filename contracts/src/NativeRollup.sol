@@ -79,9 +79,9 @@ abstract contract NativeRollup {
     // block hash.
     bytes32[] public pendingL1Messages;
 
-    // L2->L1 messages already delivered, and the sender of the one being
-    // delivered.
-    mapping(uint256 => bool) public claimedL2Messages;
+    // L2->L1 messages already delivered, as a bitmap (see Messages), and the
+    // sender of the one being delivered.
+    mapping(uint256 => uint256) internal claimedL2MessageBits;
     address internal transient currentL2Sender;
 
     constructor(
@@ -128,6 +128,10 @@ abstract contract NativeRollup {
         return stateRootHistory[l2BlockNumber % STATE_ROOT_HISTORY];
     }
 
+    function claimedL2Messages(uint256 index) external view returns (bool) {
+        return Messages.isClaimed(claimedL2MessageBits, index);
+    }
+
     /// @notice The L2 sender of the message being delivered.
     function l2Sender() external view returns (address) {
         require(currentL2Sender != address(0), "no message");
@@ -148,10 +152,9 @@ abstract contract NativeRollup {
         bytes[] calldata accountProof,
         bytes[] calldata storageProof
     ) external {
-        require(!claimedL2Messages[m.index], "already claimed");
+        Messages.markClaimed(claimedL2MessageBits, m.index);
         Messages.requireQueued(m, stateRootAt(l2BlockNumber), l2Messenger, L2_QUEUE_SLOT, accountProof, storageProof);
 
-        claimedL2Messages[m.index] = true;
         currentL2Sender = m.sender;
         (bool ok,) = m.to.call{value: m.value}(m.data);
         currentL2Sender = address(0);

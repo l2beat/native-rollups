@@ -17,6 +17,20 @@ struct Message {
 ///         receiving side proves the queue entry against a state root of the
 ///         sending chain.
 library Messages {
+    /// @notice Marks message `index` claimed in a bitmap of 256 flags per
+    ///         slot, which creates a new slot once per 256 messages instead
+    ///         of once per message, and reverts if it already was.
+    function markClaimed(mapping(uint256 => uint256) storage bitmap, uint256 index) internal {
+        uint256 bit = 1 << (index & 0xff);
+        uint256 word = bitmap[index >> 8];
+        require(word & bit == 0, "already claimed");
+        bitmap[index >> 8] = word | bit;
+    }
+
+    function isClaimed(mapping(uint256 => uint256) storage bitmap, uint256 index) internal view returns (bool) {
+        return bitmap[index >> 8] & (1 << (index & 0xff)) != 0;
+    }
+
     function hash(address sender, address to, uint256 value, bytes calldata data, uint256 index)
         internal
         pure
