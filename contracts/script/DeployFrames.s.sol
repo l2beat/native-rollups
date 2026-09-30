@@ -13,7 +13,8 @@ import {MockDependencyVerifier} from "../src/frames/MockDependencyVerifier.sol";
 ///         replaced by the deployer, which registers one EVM verification key
 ///         hash, since no fork on this chain performs the system call.
 ///         Environment: PRIVATE_KEY (deployer and registry admin), PROVER
-///         (address signing mock proofs).
+///         (address signing mock proofs), GENESIS_HASH and GENESIS_STATE_ROOT
+///         (the L2 genesis, from `script/l2_node.py genesis`).
 contract DeployFrames is Script {
     bytes20 constant SYSTEM_ADDRESS = hex"fffffffffffffffffffffffffffffffffffffffe";
     // Constructor of the sys-asm registry initcode: copies and returns the
@@ -41,8 +42,8 @@ contract DeployFrames is Script {
         FramesNativeRollup rollup = new FramesNativeRollup(
             L2_CHAIN_ID,
             L2_GAS_LIMIT,
-            keccak256("frames-devnet L2 genesis block"),
-            keccak256("frames-devnet L2 genesis state"),
+            vm.envBytes32("GENESIS_HASH"),
+            vm.envBytes32("GENESIS_STATE_ROOT"),
             NativeRollup.VkPolicy.FollowCurrent,
             bytes32(0),
             registry,
