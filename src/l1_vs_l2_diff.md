@@ -6,6 +6,7 @@
 
 - [Blob-carrying transactions](#blob-carrying-transactions)
 - [RANDAO](#randao)
+- [Slot number](#slot-number)
 - [Beacon roots storage](#beacon-roots-storage)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
@@ -19,6 +20,10 @@ Rollups have no consensus layer that handles blobs, so they cannot support blob-
 ## RANDAO
 
 `prev_randao` is an unconstrained field: the rollup contract takes it from the operator or fixes it. Existing rollups differ: Orbit stack chains return the constant `1`, OP stack chains return the value from the latest L1 block synced on L2, Linea returns `2`, Scroll returns `0`, and ZKsync returns `2500000000000000`.
+
+## Slot number
+
+`slot_number` is a fixed constant for L2, whose value is still to be defined (see [Specification](./specification.md#executionpayload)), so the `SLOTNUM` opcode ([EIP-7843](https://eips.ethereum.org/EIPS/eip-7843)) returns the same value in every block.
 
 ## Beacon roots storage
 
