@@ -499,6 +499,7 @@ const L2_SUMMARIES = {
 async function l2TxPage(route) {
   const tx = await object(`l2/txs/${route.hash}`);
   if (!tx) return `<h1>L2 transaction</h1><p class="note">Not found. The follower may not have rebuilt its block yet.</p>`;
+  const block = await object(`l2/blocks/${tx.block}`);
   const w = tx.kind === "withdrawal" && withdrawalOf(tx);
   const d = tx.kind === "deposit claim" && depositOf(tx);
   const frame = tx.type === 6;
@@ -517,6 +518,8 @@ async function l2TxPage(route) {
     ${fields([
       ["Hash", hash(tx.hash, true), "Rebuilt by the follower from the L1 blob that carried its block."],
       ["Block", l2BlockLink(tx.block), ""],
+      ["Posted on L1", block ? `${l1TxLink(block.l1.tx)} <span class="muted">in L1 block ${num(block.l1.block)}</span>` : "",
+        "The L1 transaction that added this transaction's block. Its blob carries this transaction's bytes, which is where the follower read them from."],
       ...linked,
       ["Type", frame ? "0x06, frame transaction" : `0x0${tx.type}, EIP-1559`, frame ? "EIP-8141: a list of frames, each a call with its own mode and gas." : ""],
       [frame ? "Sender" : "From", addr(tx.from), frame ? "The account the transaction acts for." : ""],
