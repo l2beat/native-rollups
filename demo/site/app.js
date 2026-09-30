@@ -63,7 +63,11 @@ async function refresh() {
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const short = (h) => (h && h.length > 18 ? `${h.slice(0, 10)}…${h.slice(-6)}` : h || "");
 const num = (n) => Number(n).toLocaleString("en-US");
-const eth = (wei) => `${(Number(wei) / 1e18).toLocaleString("en-US", { maximumFractionDigits: 6 })} ETH`;
+// Amounts in ETH, or in wei when too small to show in ETH.
+const eth = (wei) => {
+  const n = Number(wei);
+  return n > 0 && n < 1e12 ? `${n.toLocaleString("en-US")} wei` : `${(n / 1e18).toLocaleString("en-US", { maximumFractionDigits: 6 })} ETH`;
+};
 const badge = (kind, text) => `<span class="badge ${kind}">${text || kind}</span>`;
 const pct = (x) => `${(100 * x).toFixed(x < 0.1 ? 1 : 0)}%`;
 const ago = (t) => {
@@ -85,6 +89,13 @@ function labels() {
     "0xfffffffffffffffffffffffffffffffffffffffe": ["ETH transfer log (EIP-7708)", ""],
     "0x000f3df6d732807ef1319fb7b8bb8522d0beac02": ["Beacon roots contract (EIP-4788)", ""],
     "0x0000000000000000000000000000000000000fee": ["Fee recipient", ""],
+    "0x00000961ef480eb55e80d19ad83579a64c007002": ["Withdrawal requests (EIP-7002)", ""],
+    "0x0000bbddc7ce488642fb579f8b00f3a590007251": ["Consolidation requests (EIP-7251)", ""],
+    "0x0000bff46984e3725691fa540a8c7589300d8282": ["Builder requests (EIP-8282)", ""],
+    "0x000064d678505ad48f8ccb093bc65613800e8282": ["Builder requests (EIP-8282)", ""],
+    "0x0000f90827f1c53a10cb7a02335b175320002935": ["Block hash history (EIP-2935)", ""],
+    "0x00000000219ab540356cbb839cbe05303d7705fa": ["Beacon deposit contract", ""],
+    "0x0000000000000000000000000000000000008141": ["Expiry verifier (EIP-8141)", ""],
   };
   const add = (a, name, kind) => a && (l[a.toLowerCase()] = [name, kind]);
   add(c.rollup, "Rollup contract", "real");
@@ -149,6 +160,7 @@ function parseRoute() {
   if (parts[0] === "l2" && parts[1] === "block") return { page: "block", n: Number(parts[2]) };
   if (parts[0] === "l2" && parts[1] === "tx") return { page: "l2tx", hash: parts[2] };
   if (parts[0] === "messages") return { page: "messages" };
+  if (parts[0] === "blob") return { page: "blob", n: Number(parts[1]) };
   if (parts[0] === "address") return { page: "address", chain: parts[1], address: (parts[2] || "").toLowerCase() };
   if (parts[0] === "about") return { page: "about" };
   return { page: "missing" };
@@ -161,7 +173,7 @@ async function render() {
     app.innerHTML = `<p class="note">Waiting for the follower's first data. The demo starts by deploying a rollup.</p>`;
     return;
   }
-  const pages = { home, blocks: blockList, l1list: l1List, block: blockPage, l2tx: l2TxPage, l1tx: l1TxPage, messages, about, address: addressPage };
+  const pages = { home, blocks: blockList, l1list: l1List, block: blockPage, l2tx: l2TxPage, l1tx: l1TxPage, messages, about, address: addressPage, blob: blobPage };
   const html = await (pages[route.page] || (() => `<h1>Not found</h1>`))(route);
   if (parseRoute().page === route.page) app.innerHTML = html;
 }
@@ -189,7 +201,7 @@ function blockRows(blocks) {
     <th class="num hide-narrow">Gas used</th><th>Posted in L1 tx</th><th class="hide-narrow">Blob use</th><th>Rebuilt from L1</th></tr></thead><tbody>
     ${blocks.map((b) => `<tr><td>${l2BlockLink(b.number)}</td><td class="hide-narrow">${ago(b.timestamp)}</td>
       <td class="num">${b.transactions}</td><td>${contents(b.kinds)}</td><td class="num hide-narrow">${num(b.gasUsed)}</td>
-      <td>${l1TxLink(b.l1Tx)} <span class="muted">in ${num(b.l1Block)}</span></td><td class="hide-narrow">${fill(b.payloadBytes)}</td>
+      <td>${l1TxLink(b.l1Tx)} <span class="muted">in ${num(b.l1Block)}</span></td><td class="hide-narrow"><a href="#/blob/${b.number}">${fill(b.payloadBytes)}</a></td>
       <td><span class="check">✓</span></td></tr>`).join("")}</tbody></table>`;
 }
 
@@ -363,8 +375,7 @@ async function blockPage(route) {
       ["Blob", hash(b.l1.blobVersionedHashes[0], true), "Its versioned hash. The contract reads it with BLOBHASH and binds it into the proof's input."],
       ["Blob use", `${num(b.payloadBytes)} of ${num(BLOB_USABLE_BYTES)} bytes<div class="fill"><span style="width:${Math.max(0.4, (100 * b.payloadBytes) / BLOB_USABLE_BYTES)}%"></span></div>`, "EIP-8142 gives every block its own blobs, however small the block."],
     ])}
-    <p><button class="button" data-decode="${b.number}">Fetch and decode the blob from the beacon node</button></p>
-    ${state.blobs[b.number] ? decodedBlob(state.blobs[b.number]) : ""}
+    <p><a class="button" href="#/blob/${b.number}">View the blob: decoded and raw →</a></p>
 
     ${rec ? `<h2>On the operator's side</h2>
     <div class="callout"><p>What the operator's node did before posting the block. None of it is on L1, and the follower's
@@ -398,6 +409,12 @@ const ROLES = {
   "Fee recipient": ["", "Receives the L2's priority fees. The operator picks it, as the consensus layer does on L1."],
   "ETH transfer log (EIP-7708)": ["", "Not an account: EIP-7708 makes every ETH transfer emit a log from this address."],
   "Beacon roots contract (EIP-4788)": ["", "On L2, it stores each block's L1 anchor: the hash of an L1 block, which deposit claims prove L1 state against."],
+  "Withdrawal requests (EIP-7002)": ["", "A system contract Ethereum's rules require, so the L2 genesis has it too. The system call after each block reads its queue. Requests do nothing on L2, so the rollup contract accepts any."],
+  "Consolidation requests (EIP-7251)": ["", "A system contract Ethereum's rules require, so the L2 genesis has it too. Requests do nothing on L2, so the rollup contract accepts any."],
+  "Builder requests (EIP-8282)": ["", "One of EIP-8282's two system contracts for builder deposits and exits, which Ethereum's rules require, so the L2 genesis has them too. Requests do nothing on L2."],
+  "Block hash history (EIP-2935)": ["", "Stores recent block hashes. The system call before each block writes the parent's hash, as on L1."],
+  "Beacon deposit contract": ["", "Ethereum's deposit contract for validators, in the L2 genesis for parity with L1. It does nothing on L2."],
+  "Expiry verifier (EIP-8141)": ["", "EIP-8141's contract that a frame can call to give a transaction an expiry. The L2 has it because its rules include EIP-8141."],
 };
 
 async function call(to, selector) {
@@ -687,6 +704,13 @@ function counterpart(tx) {
   return "";
 }
 
+// The targets of a frame transaction, with the frames that call each.
+function frameTargets(tx, chain) {
+  const targets = {};
+  tx.frames.forEach((f, i) => (targets[f.target] = targets[f.target] || []).push(`${i} ${f.mode}`));
+  return Object.entries(targets).map(([t, frames]) => `${addr(t, chain)} <span class="muted">frame ${frames.join(", ")}</span>`).join("<br>");
+}
+
 const L2_SUMMARIES = {
   "deposit claim": (tx) => {
     const claim = tx.frames.find((f) => f.call && f.call.function === "claimL1Message").call.args.message;
@@ -727,7 +751,8 @@ async function l2TxPage(route) {
       ...linked,
       ["Type", frame ? "0x06, frame transaction" : `0x0${tx.type}, EIP-1559`, frame ? "EIP-8141: a list of frames, each a call with its own mode and gas." : ""],
       [frame ? "Sender" : "From", addr(tx.from, "l2"), frame ? "The account the transaction acts for." : ""],
-      ...(frame ? [["Payer", addr(tx.payer, "l2"), "The account whose VERIFY frame approved the payment."]] : [["To", addr(tx.to, "l2"), ""], ["Value", eth(tx.value), ""]]),
+      ...(frame ? [["To", frameTargets(tx, "l2"), "A frame transaction has no single recipient: each frame calls its own target."],
+        ["Payer", addr(tx.payer, "l2"), "The account whose VERIFY frame approved the payment."]] : [["To", addr(tx.to, "l2"), ""], ["Value", eth(tx.value), ""]]),
       ["Nonce", tx.nonce, ""],
       ["Gas used", num(tx.gasUsed), ""],
       ["Size", `${num(tx.bytes)} bytes`, "Its share of the block's blob."],
@@ -776,17 +801,17 @@ async function l1TxPage(route) {
       ["L1 block", `${num(tx.block)} <span class="muted">built by ${esc(tx.builder)}</span>`, frame && tx.blobVersionedHashes.length ? "Only Nethermind and Reth accept blob-carrying frame transactions on this devnet." : ""],
       ["Type", frame ? "0x06, frame transaction" : `0x0${tx.type}`, frame ? "EIP-8141." : ""],
       [frame ? "Sender" : "From", addr(tx.from, "l1"), ""],
-      ...(frame ? [] : [["To", addr(tx.to, "l1"), ""], ["Value", eth(tx.value), ""]]),
+      ...(frame ? [["To", frameTargets(tx, "l1"), "A frame transaction has no single recipient: each frame calls its own target."]] : [["To", addr(tx.to, "l1"), ""], ["Value", eth(tx.value), ""]]),
       ["Status", tx.status ? `<span class="check">succeeded</span>` : `<span class="bad">failed</span>`, ""],
       ["Gas used", `${num(tx.gasUsed)} at ${num(tx.effectiveGasPrice)} wei`, "Includes EIP-8037 state gas for new storage."],
-      ...(tx.blobVersionedHashes.length ? [["Blob", `${hash(tx.blobVersionedHashes[0], true)}<br><span class="muted">${num(tx.blobGasUsed)} blob gas at ${num(tx.blobGasPrice)} wei</span>`, "The L2 block's data, in EIP-8142's encoding."]] : []),
+      ...(tx.blobVersionedHashes.length ? [["Blob", `${hash(tx.blobVersionedHashes[0], true)}<br><span class="muted">${num(tx.blobGasUsed)} blob gas at ${num(tx.blobGasPrice)} wei</span>${tx.l2Block ? `<br><a href="#/blob/${tx.l2Block}">view it decoded and raw →</a>` : ""}`, "The L2 block's data, in EIP-8142's encoding."]] : []),
     ])}
     ${frame ? `<h2>Frames</h2>${frameCards(tx, "L1")}` : tx.call ? `<h2>Call: <code>${tx.call.function}</code></h2>${argTable(tx.call.args, {}, { chain: "l1", fn: tx.call.function })}${codeFor(tx.to, tx.call)}` : ""}
     <h2>Events</h2>${events(tx.logs, "l1")}`;
 }
 
 // ---------------------------------------------------------------------------
-// Blob decoding, from the beacon node
+// Blobs, fetched from the beacon node and decoded here
 // ---------------------------------------------------------------------------
 
 function hexToBytes(hex) {
@@ -796,7 +821,9 @@ function hexToBytes(hex) {
   return out;
 }
 const toHex = (bytes) => "0x" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+const toInt = (bytes) => (bytes.length ? BigInt(toHex(bytes)) : 0n);
 
+// Content start, content length, and next offset of the RLP item at `offset`.
 function rlpItem(bytes, offset) {
   const p = bytes[offset];
   const be = (start, n) => { let v = 0; for (let i = 0; i < n; i++) v = v * 256 + bytes[start + i]; return v; };
@@ -808,57 +835,168 @@ function rlpItem(bytes, offset) {
   return [offset + 1 + n, len, offset + 1 + n + len];
 }
 
-async function decodeBlob(number) {
-  const b = await object(`l2/blocks/${number}`);
-  const versionedHash = b.l1.blobVersionedHashes[0];
-  try {
-    if (!state.beacon) {
-      const [g, spec] = await Promise.all([getJSON("/beacon/eth/v1/beacon/genesis"), getJSON("/beacon/eth/v1/config/spec")]);
-      state.beacon = { genesis: Number(g.data.genesis_time), secondsPerSlot: Number(spec.data.SECONDS_PER_SLOT) };
+// An RLP item as nested arrays of byte strings.
+function rlpDecode(bytes, offset = 0) {
+  const [start, len, next] = rlpItem(bytes, offset);
+  if (bytes[offset] >= 0xc0) {
+    const items = [];
+    for (let o = start; o < start + len;) {
+      const r = rlpDecode(bytes, o);
+      items.push(r.value);
+      o = r.next;
     }
-    const l1Block = await rpc("eth_getBlockByNumber", ["0x" + b.l1.block.toString(16), false]);
-    const slot = Math.floor((parseInt(l1Block.timestamp, 16) - state.beacon.genesis) / state.beacon.secondsPerSlot);
-    const res = await getJSON(`/beacon/eth/v1/beacon/blobs/${slot}?versioned_hashes=${versionedHash}`);
-    const blob = hexToBytes(res.data[0]);
-    const raw = new Uint8Array(4096 * 31);
-    for (let i = 0; i < 4096; i++) raw.set(blob.subarray(32 * i + 1, 32 * i + 32), 31 * i);
-    const u32 = (o) => ((raw[o] << 24) | (raw[o + 1] << 16) | (raw[o + 2] << 8) | raw[o + 3]) >>> 0;
-    const balLength = u32(0), txLength = u32(4);
-    const txs = [];
-    const [start, length] = rlpItem(raw, 8 + balLength);
-    for (let o = start; o < start + length;) {
-      const [s, len, next] = rlpItem(raw, o);
-      txs.push({ type: raw[s], length: len, head: toHex(raw.subarray(s, s + 8)) + "…" });
-      o = next;
-    }
-    state.blobs[number] = { versionedHash, slot, balLength, txLength, txs, head: toHex(blob.subarray(0, 40)) + "…" };
-  } catch (e) {
-    state.blobs[number] = { error: `Could not fetch or decode the blob: ${e}` };
+    return { value: items, next };
   }
-  render();
+  return { value: bytes.subarray(start, start + len), next };
 }
 
-function decodedBlob(d) {
-  if (d.error) return `<pre class="code">${esc(d.error)}</pre>`;
-  const types = { 2: "EIP-1559", 6: "frame" };
-  return `<pre class="code">Blob ${d.versionedHash}, fetched from the beacon node for slot ${d.slot}
-EIP-8142 header: access list ${num(d.balLength)} bytes, transactions ${num(d.txLength)} bytes
-Transactions, an RLP list of ${d.txs.length}:
-${d.txs.map((t, i) => `  ${i}: type 0x${t.type.toString(16).padStart(2, "0")} (${types[t.type] || "?"}), ${num(t.length)} bytes, starting ${t.head}`).join("\n")}
-First bytes of the blob, with a zero byte every 32: ${d.head}</pre>`;
+async function loadBlob(number) {
+  if (state.blobs[number]) return state.blobs[number];
+  const b = await object(`l2/blocks/${number}`);
+  const versionedHash = b.l1.blobVersionedHashes[0];
+  if (!state.beacon) {
+    const [g, spec] = await Promise.all([getJSON("/beacon/eth/v1/beacon/genesis"), getJSON("/beacon/eth/v1/config/spec")]);
+    state.beacon = { genesis: Number(g.data.genesis_time), secondsPerSlot: Number(spec.data.SECONDS_PER_SLOT) };
+  }
+  const l1Block = await rpc("eth_getBlockByNumber", ["0x" + b.l1.block.toString(16), false]);
+  const slot = Math.floor((parseInt(l1Block.timestamp, 16) - state.beacon.genesis) / state.beacon.secondsPerSlot);
+  const url = `/beacon/eth/v1/beacon/blobs/${slot}?versioned_hashes=${versionedHash}`;
+  const res = await getJSON(url);
+  const blob = hexToBytes(res.data[0]);
+  // EIP-8142: 31 bytes in each 32-byte field element, whose first byte is zero.
+  const raw = new Uint8Array(4096 * 31);
+  for (let i = 0; i < 4096; i++) raw.set(blob.subarray(32 * i + 1, 32 * i + 32), 31 * i);
+  const u32 = (o) => ((raw[o] << 24) | (raw[o + 1] << 16) | (raw[o + 2] << 8) | raw[o + 3]) >>> 0;
+  const balLength = u32(0), txLength = u32(4);
+  const bal = raw.subarray(8, 8 + balLength);
+  const txs = [];
+  const [start, length] = rlpItem(raw, 8 + balLength);
+  for (let o = start; o < start + length;) {
+    const [s0, len, next] = rlpItem(raw, o);
+    txs.push(raw.subarray(s0, s0 + len));
+    o = next;
+  }
+  return (state.blobs[number] = { block: b, versionedHash, slot, url, blob, raw, balLength, txLength, bal, txs });
+}
+
+const TX_FIELDS = {
+  2: ["chainId", "nonce", "maxPriorityFeePerGas", "maxFeePerGas", "gasLimit", "to", "value", "data", "accessList", "yParity", "r", "s"],
+  6: ["chainId", "nonce", "sender", "frames", "signatures", "fees", "blobVersionedHashes"],
+};
+const INT_FIELDS = new Set(["chainId", "nonce", "maxPriorityFeePerGas", "maxFeePerGas", "gasLimit", "value", "yParity", "mode", "flags", "execution", "state", "scheme", "maxFeePerBlobGas"]);
+const FRAME_FIELDS = ["mode", "flags", "target", "limits", "value", "data"];
+const SIGNATURE_FIELDS = ["scheme", "signer", "msg", "signature"];
+const FEE_FIELDS = ["maxPriorityFeePerGas", "maxFeePerGas", "maxFeePerBlobGas"];
+
+// A decoded RLP value, with field names where the transaction type defines them.
+function rlpTree(v, names, open = false) {
+  if (!Array.isArray(v)) return "";
+  const item = (x, name) => {
+    if (Array.isArray(x)) {
+      const sub = name === "frames" ? x.map((f, i) => [f, `frame ${i}`, FRAME_FIELDS]) : name === "signatures" ? x.map((f, i) => [f, `signature ${i}`, SIGNATURE_FIELDS])
+        : name === "fees" ? null : name === "limits" ? null : x.map((f, i) => [f, String(i), null]);
+      if (sub === null) return `<details><summary>${esc(name)} <span class="muted">(${x.length} items)</span></summary><div class="rlp">${rlpTree(x, name === "fees" ? FEE_FIELDS : ["execution", "state"], true)}</div></details>`;
+      return `<details ${name === "frames" ? "open" : ""}><summary>${esc(name)} <span class="muted">(list of ${x.length})</span></summary><div class="rlp">${sub.map(([f, n, fields]) => Array.isArray(f) ? `<details><summary>${esc(n)}</summary><div class="rlp">${rlpTree(f, fields, true)}</div></details>` : item(f, n)).join("")}</div></details>`;
+    }
+    const shown = INT_FIELDS.has(name) ? toInt(x).toLocaleString("en-US") : x.length ? toHex(x) : "(empty)";
+    return `<div class="rlp-row"><span class="rlp-name">${esc(name)}</span><span class="mono rlp-value">${shown.length > 140 ? shown.slice(0, 140) + `… (${x.length} bytes)` : shown}</span></div>`;
+  };
+  return v.map((x, i) => item(x, (names && names[i]) || String(i))).join("");
+}
+
+function balIndex(i, block) {
+  const n = block.transactions.length;
+  if (i === 0) return "before the transactions";
+  if (i === n + 1) return "after the transactions";
+  const t = block.transactions[i - 1];
+  return t ? `after tx ${l2TxLink(t.hash)}` : `index ${i}`;
+}
+
+function balTable(bal, block) {
+  const accounts = rlpDecode(bal).value;
+  return `<table><thead><tr><th>Account</th><th>What the block changed or read</th></tr></thead><tbody>
+    ${accounts.map(([address, storage, reads, balances, nonces, codes]) => {
+      const items = [];
+      storage.forEach(([slot, changes]) => changes.forEach(([i, value]) =>
+        items.push(`storage slot <span class="mono">${short(toHex(slot))}</span> set to <span class="mono">${short(toHex(value)) || "0"}</span>, ${balIndex(Number(toInt(i)), block)}`)));
+      reads.forEach((slot) => items.push(`storage slot <span class="mono">${short(toHex(slot))}</span> read`));
+      balances.forEach(([i, value]) => items.push(`balance ${eth(toInt(value).toString())}, ${balIndex(Number(toInt(i)), block)}`));
+      nonces.forEach(([i, value]) => items.push(`nonce ${toInt(value)}, ${balIndex(Number(toInt(i)), block)}`));
+      codes.forEach(([i, code]) => items.push(`code set, ${num(code.length)} bytes, ${balIndex(Number(toInt(i)), block)}`));
+      return `<tr><td>${addr(toHex(address), "l2")}</td><td>${items.join("<br>") || '<span class="muted">accessed, unchanged</span>'}</td></tr>`;
+    }).join("")}</tbody></table>`;
+}
+
+// Each 32-byte field element, colored by what its bytes hold.
+function rawBlob(d) {
+  const regions = [[0, 8, "hdr"], [8, 8 + d.balLength, "bal"], [8 + d.balLength, 8 + d.balLength + d.txLength, "txs"]];
+  const used = 8 + d.balLength + d.txLength;
+  const elements = Math.ceil(used / 31);
+  const lines = [];
+  for (let e = 0; e < elements; e++) {
+    let line = `<span class="fe-index">${String(e).padStart(4, " ")}</span> <span class="fe-zero">00</span>`;
+    for (let k = 0; k < 31; k++) {
+      const p = 31 * e + k;
+      const region = (regions.find(([a, b]) => p >= a && p < b) || [0, 0, "pad"])[2];
+      line += `<span class="fe-${region}">${d.raw[p].toString(16).padStart(2, "0")}</span>`;
+    }
+    lines.push(line);
+  }
+  return `<pre class="code raw">${lines.join("\n")}\n<span class="muted">… ${num(4096 - elements)} more field elements, all zero: the rest of the blob.</span></pre>`;
+}
+
+async function blobPage(route) {
+  let d;
+  try {
+    d = await loadBlob(route.n);
+  } catch (e) {
+    return `<h1>Blob of L2 block #${route.n}</h1><p class="note">Could not fetch the blob from the beacon node: ${esc(e)}</p>`;
+  }
+  const b = d.block;
+  const used = 8 + d.balLength + d.txLength;
+  return `
+    <div class="row-links"><a href="#/l2/block/${b.number}">← L2 block #${b.number}</a></div>
+    <h1>Blob of L2 block #${b.number} ${badge("real")}</h1>
+    <div class="callout"><p>L1 transaction ${l1TxLink(b.l1.tx)} carried this blob, fetched just now from the beacon node. It
+      holds the block's transactions and block access list in EIP-8142's encoding: 31 bytes of data in each 32-byte field
+      element, whose first byte stays zero so that every element is a valid field element for KZG.</p></div>
+    ${fields([
+      ["Versioned hash", hash(d.versionedHash, true), "Commits to the blob. The rollup contract reads it with BLOBHASH and binds it into the proof's input."],
+      ["L1 transaction", l1TxLink(b.l1.tx), ""],
+      ["Where", `L1 block ${num(b.l1.block)}, beacon slot ${num(d.slot)}`, "The consensus layer serves blobs by slot. Nodes keep them for about 18 days."],
+      ["Data", `${num(used)} of ${num(BLOB_USABLE_BYTES)} usable bytes<div class="fill"><span style="width:${Math.max(0.4, (100 * used) / BLOB_USABLE_BYTES)}%"></span></div>`, "The rest is zero padding: every L2 block takes a whole blob."],
+      ["Raw", `<a href="${d.url}" target="_blank">the blob as the beacon node returns it</a>`, "131,072 bytes, as JSON."],
+    ])}
+
+    <h2>Decoded</h2>
+    <h3>EIP-8142 header</h3>
+    ${fields([
+      ["Access list length", `${num(d.balLength)} bytes`, "The first 4 bytes."],
+      ["Transactions length", `${num(d.txLength)} bytes`, "The next 4. The access list comes first so that a node can read it without the transactions."],
+    ])}
+    <h3>Block access list</h3>
+    <p class="section-lead">EIP-7928's list of every account the block touched, and how. Indexes 1 to ${b.transactions.length} are the transactions; 0 and ${b.transactions.length + 1} are the system calls before and after them, such as the one that stores the L1 anchor.</p>
+    ${balTable(d.bal, b)}
+    <h3>Transactions</h3>
+    <p class="section-lead">An RLP list of the block's transactions, each in its EIP-2718 encoding: a type byte, then its fields.</p>
+    ${d.txs.map((tx, i) => {
+      const t = b.transactions[i];
+      const decoded = rlpDecode(tx, 1).value;
+      return `<div class="frame"><div class="frame-head"><span class="idx">Transaction ${i}</span>
+          <span class="mode">type 0x${tx[0].toString(16).padStart(2, "0")}</span>${tx[0] === 6 ? "frame transaction" : tx[0] === 2 ? "EIP-1559" : ""}
+          <span class="muted">${num(tx.length)} bytes</span><span class="status">${t ? l2TxLink(t.hash) : ""}</span></div>
+        <div class="frame-body rlp">${rlpTree(decoded, TX_FIELDS[tx[0]])}</div></div>`;
+    }).join("")}
+
+    <h2>Raw bytes</h2>
+    <p class="section-lead">One line per 32-byte field element. <span class="fe-zero">00</span> is the zero byte that starts each element,
+      then <span class="fe-hdr">header</span>, <span class="fe-bal">access list</span> and <span class="fe-txs">transactions</span>.</p>
+    ${rawBlob(d)}`;
 }
 
 // ---------------------------------------------------------------------------
 // Interaction
 // ---------------------------------------------------------------------------
-
-document.addEventListener("click", (e) => {
-  const decode = e.target.closest("[data-decode]");
-  if (decode) {
-    decode.textContent = "Fetching…";
-    decodeBlob(Number(decode.dataset.decode));
-  }
-});
 
 document.getElementById("search").addEventListener("submit", async (e) => {
   e.preventDefault();

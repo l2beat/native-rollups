@@ -115,6 +115,21 @@ table.fields td.note { color: var(--muted); font-size: 13.5px; }
 .button:hover { border-color: var(--accent); }
 pre.code { font: 12px/1.5 var(--mono); background: var(--soft); padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
 
+/* Blobs */
+.rlp details { margin: 2px 0 2px 0; }
+.rlp details > summary { cursor: pointer; font-size: 13px; }
+.rlp .rlp { padding-left: 16px; border-left: 1px solid var(--line); margin-left: 4px; }
+.rlp-row { display: grid; grid-template-columns: 190px 1fr; gap: 10px; font-size: 13px; padding: 1px 0; }
+.rlp-name { color: var(--muted); }
+.rlp-value { overflow-wrap: anywhere; }
+pre.raw { max-height: 520px; overflow: auto; white-space: pre; font-size: 11.5px; line-height: 1.45; }
+.fe-index { color: #b0ada5; }
+.fe-zero { color: #c9c5bb; }
+.fe-hdr { color: #c92a2a; font-weight: 700; }
+.fe-bal { color: #1c6b8c; }
+.fe-txs { color: #7b2fb5; }
+.fe-pad { color: #c9c5bb; }
+
 /* Code */
 details.code { margin: 10px 0; border: 1px solid var(--line); border-radius: 10px; background: #fdfcf9; }
 details.code > summary { cursor: pointer; padding: 8px 12px; font-size: 13.5px; }
