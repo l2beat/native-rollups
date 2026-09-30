@@ -44,7 +44,7 @@ Native rollups prove the same function as L1, and therefore share its block stru
 
 Fields marked **constrained** are validated during execution (wrong value = proof fails). Fields marked **unconstrained** are free inputs chosen by the operator. Fields marked **fixed** have a constant value for L2.
 
-The unconstrained fields (`fee_recipient`, `prev_randao`, `parent_beacon_block_root`) correspond to the [`PayloadAttributes`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py) that on L1 are trusted to come from the consensus layer. The EL never validates them; it accepts whatever the CL provides. Since native rollups have no CL, these become free inputs for the operator. `timestamp` is also CL-provided on L1 but additionally constrained by the EL (`> parent_header.timestamp`).
+The unconstrained fields (`fee_recipient`, `prev_randao`, `parent_beacon_block_root`) correspond to the [`PayloadAttributes`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py) that on L1 are trusted to come from the consensus layer. The EL never validates them; it accepts whatever the CL provides. Since native rollups have no CL, these become free inputs for the operator. `timestamp` is also CL-provided on L1 but additionally constrained by the EL (`> parent_header.timestamp`). The EL sets no upper bound, so the rollup contract requires `timestamp <= block.timestamp`, as Taiko bounds its L2 timestamps by the proposal's L1 timestamp. Without it, anyone could halt the rollup with a valid block at the maximum `uint64` timestamp, since no block could follow it.
 
 ### StatelessInput
 
@@ -84,7 +84,7 @@ The input carries no fork schedule. The guest reads it as `schema_id || SSZ(Stat
 | `block_number` | yes | storage | Must equal `parent_header.number + 1` |
 | `gas_limit` | yes | storage | Bounds check against parent (1/1024 rule). TBD: ZK gas handling |
 | `gas_used` | yes | calldata | Computed during execution |
-| `timestamp` | yes | calldata | Must be `> parent_header.timestamp` |
+| `timestamp` | yes | calldata | Must be `> parent_header.timestamp`. The contract also requires `<= block.timestamp` |
 | `extra_data` | no | various | Max 32 bytes |
 | `base_fee_per_gas` | yes | calldata | Must match EIP-1559 formula from parent header |
 | `block_hash` | yes | calldata | Computed from header |
@@ -224,7 +224,10 @@ contract NativeRollup {
             readRegistry(vkPolicy == VkPolicy.FollowCurrent ? bytes32(0) : pinnedVkHash);
         require(vkHash == expectedVkHash, "wrong verification key");
 
-        // 3. Compute new_payload_request_root from storage, calldata,
+        // 3. Bound the L2 timestamp by L1 time (see Data layout).
+        require(params.timestamp <= block.timestamp, "timestamp in the future");
+
+        // 4. Compute new_payload_request_root from storage, calldata,
         //    versioned hashes, and the L1 anchor (see Messaging).
         //    Hashing scheme is SSZ hash_tree_root. TBD: onchain library.
         bytes32 npRoot = computeNewPayloadRequestRoot(
@@ -255,12 +258,12 @@ contract NativeRollup {
             executionRequests:   params.executionRequestsRoot // proven, not interpreted
         );
 
-        // 4. Hash the EIP-8025 PublicInput and compare it with the
+        // 5. Hash the EIP-8025 PublicInput and compare it with the
         //    declared dependency.
         bytes32 publicInputRoot = SSZ.hashTreeRootPublicInput(npRoot, true, chainId, schemaId);
         require(dataHash == publicInputRoot, "root mismatch");
 
-        // 5. Update onchain state.
+        // 6. Update onchain state.
         blockHash = params.blockHash;
         stateRoot = params.stateRoot;
         blockNumber = blockNumber + 1;

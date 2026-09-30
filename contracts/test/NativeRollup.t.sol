@@ -115,10 +115,12 @@ contract NativeRollupTest is Test {
     }
 
     /// Sets the L1 context block `i` was proven against: its payload blobs
-    /// and the L1 anchor, the hash of the L1 block the operator chose.
+    /// and the L1 anchor, the hash of the L1 block the operator chose. L1
+    /// time is the block's timestamp, the latest the contract accepts.
     function _setL1Context(uint256 i) internal {
         vm.blobhashes(json.readBytes32Array(string.concat(_block(i), ".versionedHashes")));
         vm.roll(1000 + 10 * i);
+        vm.warp(json.readUint(string.concat(_block(i), ".header.timestamp")));
         vm.setBlockhash(_anchorNumber(i), json.readBytes32(string.concat(_block(i), ".parentBeaconBlockRoot")));
     }
 
@@ -203,6 +205,17 @@ contract NativeRollupTest is Test {
         p.anchorBlockNumber = _anchorNumber(1);
         vm.expectRevert(bytes("anchor not available"));
         rollup.advance(p, 1);
+    }
+
+    /// L2 time cannot run ahead of L1 time. The program only requires
+    /// timestamps to increase, so without this bound anyone could halt the
+    /// rollup with a block at the maximum timestamp.
+    function test_rejectsFutureTimestamp() public {
+        _setL1Context(0);
+        rollup.setDependency(LEANSTARK, _publicInputRoot(0), K1);
+        vm.warp(block.timestamp - 1);
+        vm.expectRevert(bytes("timestamp in the future"));
+        rollup.advance(_params(0), 1);
     }
 
     /// Consecutive L2 blocks can share an anchor.

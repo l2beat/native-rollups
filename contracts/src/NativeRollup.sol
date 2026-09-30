@@ -111,13 +111,18 @@ abstract contract NativeRollup {
             _readRegistry(vkPolicy == VkPolicy.FollowCurrent ? bytes32(0) : pinnedVkHash);
         require(vkHash == expectedVkHash, "wrong verification key");
 
-        // 3. Rebuild the proof's public output from storage, calldata, the
+        // 3. Bound the L2 timestamp by L1 time. The program only requires
+        //    timestamps to increase, so a block at the maximum timestamp
+        //    would halt the rollup: no block could follow it.
+        require(params.timestamp <= block.timestamp, "timestamp in the future");
+
+        // 4. Rebuild the proof's public output from storage, calldata, the
         //    versioned hashes, and the L1 anchor, and compare it with the
         //    declared dependency.
         bytes32 npRoot = _newPayloadRequestRoot(params, _anchor(params.anchorBlockNumber));
         require(dataHash == NativeRollupSsz.publicInputRoot(npRoot, chainId, schemaId), "root mismatch");
 
-        // 4. Update onchain state.
+        // 5. Update onchain state.
         blockHash = params.blockHash;
         stateRoot = params.stateRoot;
         blockNumber = blockNumber + 1;
