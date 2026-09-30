@@ -26,7 +26,8 @@ SOURCES = [
 
 READ_METHODS = {
     "eth_blockNumber", "eth_chainId", "eth_call", "eth_getBalance", "eth_getBlockByNumber",
-    "eth_getTransactionByHash", "eth_getTransactionReceipt", "eth_getLogs", "eth_blobBaseFee",
+    "eth_getTransactionByHash", "eth_getTransactionReceipt", "eth_getLogs", "eth_blobBaseFee", "eth_getCode",
+    "eth_getTransactionCount",
 }
 BEACON_PATHS = ("/eth/v1/beacon/blobs/", "/eth/v1/beacon/genesis", "/eth/v1/config/spec")
 

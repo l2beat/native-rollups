@@ -205,6 +205,7 @@ def index_block(args: argparse.Namespace, explorer: ex.Explorer, d: dict) -> Non
         "recordedHash": d["recordedHash"],
     }
     explorer.add_l2_block(block, transactions)
+    explorer.update_accounts(d["state"], block, transactions)
     explorer.add_l1_tx(advance, "advance", l2Block=block["number"])
 
 
@@ -272,7 +273,7 @@ def rebuild(args: argparse.Namespace, chain: fork.BlockChain, gas_limit: int, lo
         flush=True,
     )
     details = {
-        "header": h, "output": output, "transactions": transactions, "bal": bal, "log": log,
+        "header": h, "output": output, "transactions": transactions, "bal": bal, "log": log, "state": chain.state,
         "recordedHash": "0x" + recorded_hash.hex(),
     }
     return {

@@ -9,7 +9,11 @@
 const BLOB_USABLE_BYTES = 4096 * 31;
 const PAGE = 25;
 const BOOK = "http://127.0.0.1:3000";
-const SELECTORS = { blockNumber: "0x57e871e7" };
+const SELECTORS = {
+  blockNumber: "0x57e871e7", blockHash: "0xf22a195e", stateRoot: "0x9588eca2", l1MessageCount: "0x1214990d",
+  l1MessageRoot: "0xdf06c677", anchorBlockNumber: "0x3cad82ff", chainId: "0x9a8a0592", gasLimit: "0xf68016b7",
+  l2Messenger: "0xf5730a72", evmVkRegistry: "0x369e4ac9", prover: "0x32a8f30f",
+};
 
 const state = { index: null, session: null, l1Head: null, rollupHead: null, cache: {}, blobs: {}, beacon: null, snippets: null };
 
@@ -49,7 +53,7 @@ async function refresh() {
   }
   renderStatus();
   const route = parseRoute();
-  if (["home", "blocks", "l1list", "messages"].includes(route.page)) render();
+  if (["home", "blocks", "l1list", "messages", "address"].includes(route.page)) render();
 }
 
 // ---------------------------------------------------------------------------
@@ -95,13 +99,29 @@ function labels() {
   return l;
 }
 
-// Labels known addresses. Only mocked contracts get a badge, since most are real.
-function addr(a, showBadge = true) {
+// Labels known addresses and links them to their page on `chain`. Only
+// mocked contracts get a badge, since most are real.
+function addr(a, chain, showBadge = true) {
   if (!a) return "";
   const l = labels()[a.toLowerCase()];
-  return l
-    ? `<span title="${esc(a)}">${esc(l[0])} ${showBadge && l[1] === "mock" ? badge("mock") : ""} <span class="mono muted">${short(a)}</span></span>`
-    : hash(a);
+  const text = l
+    ? `${esc(l[0])} <span class="mono muted">${short(a)}</span>`
+    : `<span class="mono">${short(a)}</span>`;
+  return `<a class="addr" href="#/address/${chain}/${a.toLowerCase()}" title="${esc(a)} on ${chain.toUpperCase()}">${text}</a>${showBadge && l && l[1] === "mock" ? " " + badge("mock") : ""}`;
+}
+
+// The chain of an address field: messages have one end on each chain.
+const OTHER = { l1: "l2", l2: "l1" };
+function chainFor(key, ctx = {}) {
+  const c = ctx.chain || "l1";
+  const ends = {
+    L1MessageSent: { sender: "l1", to: "l2" }, L1MessageClaimed: { sender: "l1", to: "l2" },
+    L2MessageSent: { sender: "l2", to: "l1" }, L2MessageClaimed: { sender: "l2", to: "l1" },
+    claimL1Message: { sender: "l1", to: "l2" }, claimL2Message: { sender: "l2", to: "l1" },
+    sendMessage: { to: OTHER[c] }, advance: { feeRecipient: "l2" },
+  };
+  const m = ends[ctx.event] || ends[ctx.fn];
+  return (m && m[key]) || c;
 }
 
 const L2_KINDS = { "deposit claim": "deposit", withdrawal: "withdrawal" };
@@ -129,6 +149,7 @@ function parseRoute() {
   if (parts[0] === "l2" && parts[1] === "block") return { page: "block", n: Number(parts[2]) };
   if (parts[0] === "l2" && parts[1] === "tx") return { page: "l2tx", hash: parts[2] };
   if (parts[0] === "messages") return { page: "messages" };
+  if (parts[0] === "address") return { page: "address", chain: parts[1], address: (parts[2] || "").toLowerCase() };
   if (parts[0] === "about") return { page: "about" };
   return { page: "missing" };
 }
@@ -140,7 +161,7 @@ async function render() {
     app.innerHTML = `<p class="note">Waiting for the follower's first data. The demo starts by deploying a rollup.</p>`;
     return;
   }
-  const pages = { home, blocks: blockList, l1list: l1List, block: blockPage, l2tx: l2TxPage, l1tx: l1TxPage, messages, about };
+  const pages = { home, blocks: blockList, l1list: l1List, block: blockPage, l2tx: l2TxPage, l1tx: l1TxPage, messages, about, address: addressPage };
   const html = await (pages[route.page] || (() => `<h1>Not found</h1>`))(route);
   if (parseRoute().page === route.page) app.innerHTML = html;
 }
@@ -185,11 +206,11 @@ function messageRows(kind) {
   if (!entries.length) return `<p class="note">None yet.</p>`;
   if (kind === "deposits") {
     return `<table><thead><tr><th>#</th><th class="num">Amount</th><th>From (L1)</th><th>To (L2)</th><th>Sent on L1</th><th>Claimed on L2</th></tr></thead><tbody>
-      ${entries.map((d) => `<tr><td>${d.index}</td><td class="num">${d.value ? eth(d.value) : ""}</td><td>${addr(d.from)}</td><td>${addr(d.to)}</td>
+      ${entries.map((d) => `<tr><td>${d.index}</td><td class="num">${d.value ? eth(d.value) : ""}</td><td>${addr(d.from, "l1")}</td><td>${addr(d.to, "l2")}</td>
         <td>${d.l1Tx ? l1TxLink(d.l1Tx) : ""}</td><td>${d.l2Tx ? `${l2TxLink(d.l2Tx)} in ${l2BlockLink(d.l2Block)}` : '<span class="muted">waiting for an L2 block that anchors it</span>'}</td></tr>`).join("")}</tbody></table>`;
   }
   return `<table><thead><tr><th>#</th><th class="num">Amount</th><th>From (L2)</th><th>To (L1)</th><th>Sent on L2</th><th>Claimed on L1</th></tr></thead><tbody>
-    ${entries.map((w) => `<tr><td>${w.index}</td><td class="num">${w.value ? eth(w.value) : ""}</td><td>${addr(w.from)}</td><td>${addr(w.to)}</td>
+    ${entries.map((w) => `<tr><td>${w.index}</td><td class="num">${w.value ? eth(w.value) : ""}</td><td>${addr(w.from, "l2")}</td><td>${addr(w.to, "l1")}</td>
       <td>${w.l2Tx ? `${l2TxLink(w.l2Tx)} in ${l2BlockLink(w.l2Block)}` : ""}</td><td>${w.l1Tx ? l1TxLink(w.l1Tx) : '<span class="muted">not claimed yet</span>'}</td></tr>`).join("")}</tbody></table>`;
 }
 
@@ -262,12 +283,14 @@ function about() {
   const c = (state.session && state.session.contracts) || {};
   return document.getElementById("about").innerHTML + (c.rollup ? `
     <h2>Check it yourself</h2>
-    <table><thead><tr><th>Contract or key</th><th>Address</th><th></th></tr></thead><tbody>
-      <tr><td>Rollup contract (L1)</td><td class="mono">${c.rollup}</td><td>${badge("real")}</td></tr>
-      <tr><td>L2 messenger (L2 predeploy)</td><td class="mono">${c.l2Messenger}</td><td>${badge("real")}</td></tr>
-      <tr><td>Proof checker (L1)</td><td class="mono">${c.verifier}</td><td>${badge("mock")}</td></tr>
-      <tr><td>Key registry (L1)</td><td class="mono">${c.registry}</td><td>${badge("mock")}</td></tr>
-      <tr><td>Trusted prover key</td><td class="mono">${c.prover}</td><td>${badge("mock")}</td></tr>
+    <table><thead><tr><th>Contract or account</th><th>Chain</th><th>Address</th><th></th></tr></thead><tbody>
+      ${[
+        ["Rollup contract", "l1", c.rollup, "real"], ["L2 messenger", "l2", c.l2Messenger, "real"],
+        ["Proof checker", "l1", c.verifier, "mock"], ["Key registry", "l1", c.registry, "mock"],
+        ["Trusted prover key", "l1", c.prover, "mock"], ["Operator", "l1", c.operator, "shortcut"],
+        ["Alice", "l1", c.aliceL1, ""], ["Alice", "l2", c.aliceL2, ""],
+      ].map(([name, chain, a, kind]) => `<tr><td>${name}</td><td>${chain.toUpperCase()}</td>
+        <td><a class="mono" href="#/address/${chain}/${a.toLowerCase()}">${a}</a></td><td>${kind ? badge(kind) : ""}</td></tr>`).join("")}
     </tbody></table>
     <p>Rebuild the chain from L1 yourself, with the follower this explorer runs on:</p>
     <pre class="code">uv run --project &lt;execution-specs projects/zkevm + EIP-8141&gt; python contracts/script/l2_follower.py \\
@@ -308,7 +331,7 @@ async function blockPage(route) {
 
     <h2>Transactions</h2>
     <table><thead><tr><th>#</th><th>Hash</th><th>What it does</th><th>Linked on L1</th><th>From</th><th class="num">Gas used</th><th class="num">Bytes</th></tr></thead><tbody>
-      ${txs.map((t, i) => `<tr><td>${i}</td><td>${l2TxLink(t.hash)}</td><td>${chip(t.kind)}</td><td>${counterpart(t)}</td><td>${addr(t.from)}</td>
+      ${txs.map((t, i) => `<tr><td>${i}</td><td>${l2TxLink(t.hash)}</td><td>${chip(t.kind)}</td><td>${counterpart(t)}</td><td>${addr(t.from, "l2")}</td>
         <td class="num">${num(t.gasUsed)}</td><td class="num">${num(t.bytes)}</td></tr>`).join("")}</tbody></table>
 
     <h2>Header</h2>
@@ -324,7 +347,7 @@ async function blockPage(route) {
       ["Gas used / limit", `${num(b.gasUsed)} / ${num(b.gasLimit)}`, "The limit is fixed when the rollup contract is deployed."],
       ["Base fee", `${num(b.baseFeePerGas)} wei`, "EIP-1559 applies on L2 as on L1."],
       ["L1 anchor", `${hash(b.parentBeaconBlockRoot, true)}<br><span class="muted">L1 block ${num(b.anchorBlockNumber)}</span>`, "The parent_beacon_block_root field, repurposed: the hash of an L1 block the operator picked, which the contract checks with BLOCKHASH. L2 contracts read it through the EIP-4788 contract and prove L1 state against it, as deposit claims do."],
-      ["Fee recipient", addr(b.feeRecipient), "A free input of the operator, set by the consensus layer on L1."],
+      ["Fee recipient", addr(b.feeRecipient, "l2"), "A free input of the operator, set by the consensus layer on L1."],
       ["prev_randao", hash(b.prevRandao, true), "A free input of the operator, so not randomness on L2. The demo uses the hash of the anchor."],
       ["Extra data", `${hash(b.extraData)} <span class="muted">"${esc(hexToText(b.extraData))}"</span>`, "A free input of the operator."],
       ["Withdrawals root", hash(b.withdrawalsRoot, true), "Always empty: the L2 has no beacon chain, and fake withdrawals would mint ETH."],
@@ -358,6 +381,112 @@ async function blockPage(route) {
 function hexToText(hex) {
   const bytes = hex.slice(2).match(/../g) || [];
   return bytes.map((b) => parseInt(b, 16)).map((c) => (c >= 32 && c < 127 ? String.fromCharCode(c) : ".")).join("");
+}
+
+// ---------------------------------------------------------------------------
+// Addresses
+// ---------------------------------------------------------------------------
+
+const ROLES = {
+  "Rollup contract": ["real", "The native rollup's contract on L1. It adds each L2 block whose proof is for exactly that block, stores the L2 chain's head and its last 8,191 state roots, keeps the tree of L1 to L2 messages, holds the ETH deposits escrow, and pays withdrawals."],
+  "L2 messenger": ["real", "An L2 contract in the genesis that holds the pre-minted supply of L2 ETH. It releases ETH for deposits, which it proves against L1's message tree, and records withdrawals for L1. Its balance is the ETH that deposits have not released yet."],
+  "Proof checker": ["mock", "Stands in for EIP-8288. A frame of each L1 transaction that adds a block calls it, and it checks that the trusted prover signed the dependency. With EIP-8288, Ethereum's own proof would cover the dependency instead."],
+  "Key registry": ["mock", "Stands in for the EIP-8357 registry of EVM verification keys. An admin registered the key, where a fork would."],
+  "Trusted prover key": ["mock", "The key that signs the blocks Ethereum's validation program accepted, in place of a zk proof. It never sends transactions."],
+  "Operator": ["shortcut", "The account that posts L2 blocks to L1. The rollup contract accepts a valid block from anyone, but this demo has one operator."],
+  Alice: ["", "The demo's user. She uses the same key on L1 and L2, so she has the same address on both."],
+  "Fee recipient": ["", "Receives the L2's priority fees. The operator picks it, as the consensus layer does on L1."],
+  "ETH transfer log (EIP-7708)": ["", "Not an account: EIP-7708 makes every ETH transfer emit a log from this address."],
+  "Beacon roots contract (EIP-4788)": ["", "On L2, it stores each block's L1 anchor: the hash of an L1 block, which deposit claims prove L1 state against."],
+};
+
+async function call(to, selector) {
+  return rpc("eth_call", [{ to, data: selector }, "latest"]);
+}
+const word = (hex, i = 0) => "0x" + hex.slice(2 + 64 * i, 2 + 64 * (i + 1));
+const wordAddress = (hex) => "0x" + hex.slice(-40);
+const wordNumber = (hex) => parseInt(hex, 16);
+
+async function addressPage(route) {
+  const a = route.address;
+  const chain = route.chain === "l2" ? "l2" : "l1";
+  const c = (state.session && state.session.contracts) || {};
+  const label = labels()[a];
+  const [name, kind] = label || ["Address", ""];
+  const role = ROLES[name];
+  const rows = [];
+  let live = [];
+  let history = "";
+  if (chain === "l1") {
+    const [balance, nonce, code] = await Promise.all([
+      rpc("eth_getBalance", [a, "latest"]), rpc("eth_getTransactionCount", [a, "latest"]), rpc("eth_getCode", [a, "latest"]),
+    ]);
+    rows.push(
+      ["Balance", eth(BigInt(balance).toString()), a === (c.rollup || "").toLowerCase() ? "The escrow: the ETH that deposits locked and withdrawals have not paid out." : ""],
+      ["Nonce", parseInt(nonce, 16), ""],
+      ["Code", code && code !== "0x" ? `${num((code.length - 2) / 2)} bytes` : "none", code && code !== "0x" ? "A contract." : "An account controlled by a key."],
+    );
+    if (a === (c.rollup || "").toLowerCase()) {
+      const r = {};
+      await Promise.all(["blockNumber", "blockHash", "stateRoot", "l1MessageCount", "l1MessageRoot", "anchorBlockNumber", "chainId", "gasLimit", "l2Messenger", "evmVkRegistry"].map(async (k) => (r[k] = await call(a, SELECTORS[k]))));
+      live = [
+        ["L2 head", `block ${l2BlockLink(wordNumber(r.blockNumber))}, ${hash(r.blockHash)}`, "The last L2 block the contract accepted. The next one must build on it."],
+        ["Latest state root", hash(r.stateRoot, true), "Of the head block. The contract keeps the last 8,191, for withdrawals."],
+        ["L1 anchor", `L1 block ${num(wordNumber(r.anchorBlockNumber))}`, "The last anchor. The next block's anchor cannot be older."],
+        ["Messages sent to L2", num(wordNumber(r.l1MessageCount)), "Deposits and other L1 to L2 messages, in the message tree."],
+        ["Message tree root", hash(r.l1MessageRoot, true), "What L2 proves deposits against, through its L1 anchor."],
+        ["Chain ID, gas limit", `${wordNumber(r.chainId)}, ${num(wordNumber(r.gasLimit))}`, "Fixed at deployment."],
+        ["L2 messenger", addr(wordAddress(r.l2Messenger), "l2"), "Whose storage the contract proves withdrawals against."],
+        ["Key registry", addr(wordAddress(r.evmVkRegistry), "l1"), "Where the contract reads the verification key."],
+      ];
+    } else if (a === (c.registry || "").toLowerCase()) {
+      const entry = await call(a, "0x" + "0".repeat(64));
+      live = [
+        ["Current key hash", hash(word(entry), true), "The EVM verification key for the current fork. Proofs must be under it."],
+        ["Schema ID", `0x${wordNumber(word(entry, 1)).toString(16)}`, "The input schema the key's program expects: Amsterdam, revision 1."],
+      ];
+    } else if (a === (c.verifier || "").toLowerCase()) {
+      live = [["Prover", addr(wordAddress(await call(a, SELECTORS.prover)), "l1"), "The only key whose signatures it accepts."]];
+    }
+    const txs = state.index.l1Txs.filter((t) => (t.addresses || []).includes(a)).sort((x, y) => y.block - x.block);
+    history = `<h2>Rollup transactions on L1</h2>${txs.length ? l1Rows(txs.slice(0, 50)) : '<p class="note">None.</p>'}`;
+  } else {
+    const acc = await getJSON(`/api/explorer/l2/accounts/${a}.json`);
+    if (!acc) {
+      rows.push(["State", "not seen yet", "The follower writes an L2 account once a transaction touches it."]);
+    } else {
+      rows.push(
+        ["Balance", acc.exists ? eth(acc.balance) : "0 ETH", "After L2 block " + acc.block + ", as the follower rebuilt it from L1."],
+        ["Nonce", acc.exists ? acc.nonce : 0, ""],
+        ["Code", acc.exists && acc.codeSize ? `${num(acc.codeSize)} bytes` : "none", acc.exists && acc.codeSize ? "A contract." : "An account controlled by a key, or none at all."],
+      );
+      if (acc.state) {
+        live = [
+          ["L1 rollup contract", addr(acc.state.l1Rollup, "l1"), "Whose message tree deposits are proven against. Set in the genesis."],
+          ["Withdrawals sent", num(acc.state.sentMessages), "Messages in its queue, which L1 proves against L2 state roots."],
+          ["Last proven message root", hash(acc.state.provenL1MessageRoot, true), `Proven against the anchor of the L2 block with timestamp ${acc.state.provenAnchorTimestamp}.`],
+        ];
+      }
+      const txs = [...acc.txs].reverse();
+      history = `<h2>L2 transactions</h2>${txs.length ? `<table><thead><tr><th>Transaction</th><th>Block</th><th>What it does</th></tr></thead><tbody>
+        ${txs.slice(0, 50).map((t) => `<tr><td>${l2TxLink(t.hash)}</td><td>${l2BlockLink(t.block)}</td><td>${chip(t.kind)}</td></tr>`).join("")}</tbody></table>` : '<p class="note">None.</p>'}`;
+    }
+  }
+  const other = a === (c.aliceL1 || "").toLowerCase() || a === (c.aliceL2 || "").toLowerCase()
+    ? `<p class="note">The same address on <a href="#/address/${OTHER[chain]}/${a}">${OTHER[chain].toUpperCase()}</a>.</p>` : "";
+  const contracts = contractsAt(a);
+  const code = contracts.length && state.snippets
+    ? `<h2>Code</h2><p class="section-lead">The functions of ${contracts.join(", which extends ")}, from the Solidity sources.</p>
+      ${Object.keys(state.snippets).filter((k) => contracts.includes(k.split(".")[0])).map((k) => codeBlock(k, false, true)).join("")}` : "";
+  return `
+    <h1>${esc(name)} <span class="muted">on ${chain.toUpperCase()}</span> ${kind ? badge(kind) : ""}</h1>
+    <p class="mono">${a}</p>
+    ${role ? `<div class="callout ${role[0] === "mock" ? "mock" : ""}"><p>${role[1]}</p></div>` : ""}
+    ${other}
+    ${fields(rows)}
+    ${live.length ? `<h2>State</h2><p class="section-lead">${chain === "l1" ? "Read from the contract on L1 now." : "From the follower's rebuilt L2 state."}</p>${fields(live)}` : ""}
+    ${history}
+    ${code}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -435,20 +564,20 @@ function codeFor(target, call) {
 // Transactions
 // ---------------------------------------------------------------------------
 
-function value(v, key) {
+function value(v, key, ctx = {}) {
   if (v === null || v === undefined) return "";
   if (Array.isArray(v)) return v.length ? `${v.length} items: ${v.map((x) => hash(x)).join(" ")}` : "empty";
-  if (typeof v === "object") return argTable(v);
+  if (typeof v === "object") return argTable(v, {}, ctx);
   const s = String(v);
-  if (/^0x[0-9a-f]{40}$/i.test(s)) return addr(s);
+  if (/^0x[0-9a-f]{40}$/i.test(s)) return addr(s, chainFor(key, ctx));
   if (key === "value" && /^\d+$/.test(s)) return eth(s);
   if (/^0x[0-9a-f]*$/i.test(s)) return s.length > 70 ? hash(s) + ` <span class="muted">(${(s.length - 2) / 2} bytes)</span>` : `<span class="mono">${s}</span>`;
   return esc(typeof v === "number" ? num(v) : s);
 }
 
-function argTable(args, notes = {}) {
+function argTable(args, notes = {}, ctx = {}) {
   return `<table class="fields"><tbody>${Object.entries(args)
-    .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="value">${value(v, k)}</td><td class="note">${notes[k] || ""}</td></tr>`)
+    .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="value">${value(v, k, ctx)}</td><td class="note">${notes[k] || ""}</td></tr>`)
     .join("")}</tbody></table>`;
 }
 
@@ -462,13 +591,13 @@ const EVENT_NOTES = {
   L2MessageClaimed: "The withdrawal was paid on L1.",
 };
 
-function events(logs) {
+function events(logs, chain) {
   if (!logs || !logs.length) return `<p class="note">No events.</p>`;
   return `<table><thead><tr><th>Event</th><th>From</th><th>Arguments</th></tr></thead><tbody>
     ${logs.map((l) => {
       const e = l.event;
-      return `<tr><td>${e ? `<b>${e.name}</b><br><span class="note">${EVENT_NOTES[e.name] || ""}</span>` : hash(l.topics[0])}</td><td>${addr(l.address)}</td>
-        <td>${e ? Object.entries(e.args).map(([k, v]) => `${esc(k)}: ${value(v, k)}`).join("<br>") : hash(l.data)}</td></tr>`;
+      return `<tr><td>${e ? `<b>${e.name}</b><br><span class="note">${EVENT_NOTES[e.name] || ""}</span>` : hash(l.topics[0])}</td><td>${addr(l.address, chain)}</td>
+        <td>${e ? Object.entries(e.args).map(([k, v]) => `${esc(k)}: ${value(v, k, { chain, event: e.name })}`).join("<br>") : hash(l.data)}</td></tr>`;
     }).join("")}</tbody></table>`;
 }
 
@@ -518,7 +647,8 @@ function frameExplain(f, i, layer) {
     sendMessage: layer === "L1" ? "Adds a message to the rollup contract's message tree, with the ETH it carries held in escrow." : "Records a withdrawal in the L2 messenger's storage, locking its ETH back into the pre-minted supply.",
     claimL2Message: "Proves the withdrawal against a recent L2 state root and pays it from the escrow.",
   };
-  return { text: texts[fn] || "", badges: [badge("real")], extra: f.call ? argTable(f.call.args.params || f.call.args, fn === "advance" ? ADVANCE_NOTES : {}) : "" };
+  const ctx = { chain: layer.toLowerCase(), fn };
+  return { text: texts[fn] || "", badges: [badge("real")], extra: f.call ? argTable(f.call.args.params || f.call.args, fn === "advance" ? ADVANCE_NOTES : {}, ctx) : "" };
 }
 
 function frameCards(tx, layer) {
@@ -526,7 +656,7 @@ function frameCards(tx, layer) {
     const e = frameExplain(f, i, layer);
     const status = f.status === undefined ? "" : f.status === 1 ? `<span class="check">succeeded</span>` : `<span class="bad">failed</span>`;
     return `<div class="frame"><div class="frame-head"><span class="idx">Frame ${i}</span><span class="mode">${f.mode}</span>
-        ${f.call ? `<code>${f.call.function}</code>` : ""} → ${addr(f.target, false)} ${e.badges.join(" ")}<span class="status">${status}</span></div>
+        ${f.call ? `<code>${f.call.function}</code>` : ""} → ${addr(f.target, layer.toLowerCase(), false)} ${e.badges.join(" ")}<span class="status">${status}</span></div>
       <div class="frame-body"><p class="explain">${e.text}</p>
         <div class="gasbar"><span>Flags: ${f.flags.length ? f.flags.join(", ") : "none"}</span>
           <span>Execution gas: ${f.executionGasUsed !== undefined ? num(f.executionGasUsed) + " of " : ""}${num(f.executionGasLimit)}</span>
@@ -534,7 +664,7 @@ function frameCards(tx, layer) {
           ${f.value ? `<span>Value: ${eth(f.value)}</span>` : ""}</div>
         ${e.extra || ""}
         ${f.mode === "VERIFY" && !contractsAt(f.target).length ? defaultCodeBlock() : f.dependency ? codeBlock(snippetKey(f.target, "fallback")) : codeFor(f.target, f.call)}
-        ${f.logs && f.logs.length ? `<h3>Events</h3>${events(f.logs)}` : ""}</div></div>`;
+        ${f.logs && f.logs.length ? `<h3>Events</h3>${events(f.logs, layer.toLowerCase())}` : ""}</div></div>`;
   }).join("")}</div>`;
 }
 
@@ -561,11 +691,11 @@ const L2_SUMMARIES = {
   "deposit claim": (tx) => {
     const claim = tx.frames.find((f) => f.call && f.call.function === "claimL1Message").call.args.message;
     const proves = tx.frames.some((f) => f.call && f.call.function === "proveL1MessageRoot");
-    return `${addr(claim.to)} claims a deposit of ${eth(claim.value)} and pays the fee from it. It is an EIP-8141 frame
+    return `${addr(claim.to, "l2")} claims a deposit of ${eth(claim.value)} and pays the fee from it. It is an EIP-8141 frame
       transaction: the claim frames run first, then the VERIFY frame approves the payment from the balance the claim
       just delivered.${proves ? " As the first claim of its block, it also proves the root of L1's message tree." : ""}`;
   },
-  withdrawal: (tx) => `${addr(tx.from)} withdraws ${eth(tx.value)} to ${addr(tx.call.args.to)} on L1. The L2 messenger records the
+  withdrawal: (tx) => `${addr(tx.from, "l2")} withdraws ${eth(tx.value)} to ${addr(tx.call.args.to, "l1")} on L1. The L2 messenger records the
     message, which can be claimed on L1 once this block is on L1.`,
   transfer: (tx) => `A plain ETH transfer of ${eth(tx.value)}, background activity of the demo's story.`,
 };
@@ -596,15 +726,15 @@ async function l2TxPage(route) {
         "The L1 transaction that added this transaction's block. Its blob carries this transaction's bytes, which is where the follower read them from."],
       ...linked,
       ["Type", frame ? "0x06, frame transaction" : `0x0${tx.type}, EIP-1559`, frame ? "EIP-8141: a list of frames, each a call with its own mode and gas." : ""],
-      [frame ? "Sender" : "From", addr(tx.from), frame ? "The account the transaction acts for." : ""],
-      ...(frame ? [["Payer", addr(tx.payer), "The account whose VERIFY frame approved the payment."]] : [["To", addr(tx.to), ""], ["Value", eth(tx.value), ""]]),
+      [frame ? "Sender" : "From", addr(tx.from, "l2"), frame ? "The account the transaction acts for." : ""],
+      ...(frame ? [["Payer", addr(tx.payer, "l2"), "The account whose VERIFY frame approved the payment."]] : [["To", addr(tx.to, "l2"), ""], ["Value", eth(tx.value), ""]]),
       ["Nonce", tx.nonce, ""],
       ["Gas used", num(tx.gasUsed), ""],
       ["Size", `${num(tx.bytes)} bytes`, "Its share of the block's blob."],
     ])}
     ${frame ? `<h2>Frames</h2>${frameCards(tx, "L2")}` : tx.call
-      ? `<h2>Call: <code>${tx.call.function}</code></h2>${argTable(tx.call.args)}${codeFor(tx.to, tx.call)}<h2>Events</h2>${events(tx.logs)}`
-      : `<h2>Code</h2>${codeFor(tx.to, null)}<h2>Events</h2>${events(tx.logs)}`}`;
+      ? `<h2>Call: <code>${tx.call.function}</code></h2>${argTable(tx.call.args, {}, { chain: "l2", fn: tx.call.function })}${codeFor(tx.to, tx.call)}<h2>Events</h2>${events(tx.logs, "l2")}`
+      : `<h2>Code</h2>${codeFor(tx.to, null)}<h2>Events</h2>${events(tx.logs, "l2")}`}`;
 }
 
 async function l1TxPage(route) {
@@ -617,12 +747,12 @@ async function l1TxPage(route) {
       proof is for exactly this block.`;
   } else if (tx.kind === "deposit") {
     const d = Object.values(state.index.deposits).find((x) => x.l1Tx === tx.hash);
-    summary = `${addr(tx.from)} deposits ${eth(tx.value)} to ${addr(tx.call.args.to)} on L2. The rollup contract adds the message
+    summary = `${addr(tx.from, "l1")} deposits ${eth(tx.value)} to ${addr(tx.call.args.to, "l2")} on L2. The rollup contract adds the message
       to its Merkle tree and keeps the ETH in escrow.${d && d.l2Tx ? ` It was claimed on L2 in ${l2TxLink(d.l2Tx)}, in block ${l2BlockLink(d.l2Block)}.` : ""}`;
   } else if (tx.kind === "withdrawal claim") {
     const m = tx.call.args.message;
     const w = state.index.withdrawals[String(m.index)];
-    summary = `${addr(tx.from)} claims a withdrawal of ${eth(m.value)}. The rollup contract checks the message against the
+    summary = `${addr(tx.from, "l1")} claims a withdrawal of ${eth(m.value)}. The rollup contract checks the message against the
       state root of L2 block ${l2BlockLink(tx.call.args.l2BlockNumber)} with a storage proof, and pays it from the escrow.${w && w.l2Tx ? ` It was sent on L2 in ${l2TxLink(w.l2Tx)}.` : ""}`;
   }
   const frame = !!tx.frames;
@@ -645,14 +775,14 @@ async function l1TxPage(route) {
       ...linked,
       ["L1 block", `${num(tx.block)} <span class="muted">built by ${esc(tx.builder)}</span>`, frame && tx.blobVersionedHashes.length ? "Only Nethermind and Reth accept blob-carrying frame transactions on this devnet." : ""],
       ["Type", frame ? "0x06, frame transaction" : `0x0${tx.type}`, frame ? "EIP-8141." : ""],
-      [frame ? "Sender" : "From", addr(tx.from), ""],
-      ...(frame ? [] : [["To", addr(tx.to), ""], ["Value", eth(tx.value), ""]]),
+      [frame ? "Sender" : "From", addr(tx.from, "l1"), ""],
+      ...(frame ? [] : [["To", addr(tx.to, "l1"), ""], ["Value", eth(tx.value), ""]]),
       ["Status", tx.status ? `<span class="check">succeeded</span>` : `<span class="bad">failed</span>`, ""],
       ["Gas used", `${num(tx.gasUsed)} at ${num(tx.effectiveGasPrice)} wei`, "Includes EIP-8037 state gas for new storage."],
       ...(tx.blobVersionedHashes.length ? [["Blob", `${hash(tx.blobVersionedHashes[0], true)}<br><span class="muted">${num(tx.blobGasUsed)} blob gas at ${num(tx.blobGasPrice)} wei</span>`, "The L2 block's data, in EIP-8142's encoding."]] : []),
     ])}
-    ${frame ? `<h2>Frames</h2>${frameCards(tx, "L1")}` : tx.call ? `<h2>Call: <code>${tx.call.function}</code></h2>${argTable(tx.call.args)}${codeFor(tx.to, tx.call)}` : ""}
-    <h2>Events</h2>${events(tx.logs)}`;
+    ${frame ? `<h2>Frames</h2>${frameCards(tx, "L1")}` : tx.call ? `<h2>Call: <code>${tx.call.function}</code></h2>${argTable(tx.call.args, {}, { chain: "l1", fn: tx.call.function })}${codeFor(tx.to, tx.call)}` : ""}
+    <h2>Events</h2>${events(tx.logs, "l1")}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ from ethereum_rlp import rlp
 from ethereum_types.bytes import Bytes0
 
 from ethereum.crypto.hash import keccak256
+from ethereum.state import EMPTY_CODE_HASH, Address
 from ethereum.forks.amsterdam.blocks import FrameTransactionReceipt, decode_receipt
 from ethereum.forks.amsterdam.transactions import decode_transaction, get_transaction_hash, recover_sender
 from ethereum.forks.amsterdam.transactions.frame_transaction import FrameTransaction
@@ -246,14 +247,33 @@ def l1_transaction(tx: dict, receipt: dict, block: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def addresses(tx: dict) -> list:
+    """The addresses a decoded transaction involves: its sender, target,
+    frame targets and payer, the emitters of its events, and the accounts its
+    ETH transfer logs move ETH between."""
+    found = [tx.get("from"), tx.get("to"), tx.get("payer")] + [f["target"] for f in tx.get("frames") or []]
+    logs = (tx.get("logs") or []) + [log for f in tx.get("frames") or [] for log in f.get("logs") or []]
+    for log in logs:
+        found.append(log["address"])
+        event = log.get("event") or {}
+        if event.get("name") == "Transfer":
+            found += [event["args"]["from"], event["args"]["to"]]
+    out = []
+    for a in found:
+        if a and a.lower() not in out:
+            out.append(a.lower())
+    return out
+
+
 class Explorer:
     def __init__(self, directory: str, rollup: str, messenger: str):
         self.dir = directory
+        self.accounts = {}  # L2 address -> the transactions that involve it
         self.index = {
             "rollup": rollup.lower(), "messenger": messenger.lower(), "l2Blocks": [], "l1Txs": [],
             "deposits": {}, "withdrawals": {},
         }
-        for sub in ("l2/blocks", "l2/txs", "l1/txs"):
+        for sub in ("l2/blocks", "l2/txs", "l1/txs", "l2/accounts"):
             os.makedirs(os.path.join(directory, sub), exist_ok=True)
 
     def write(self, path: str, value) -> None:
@@ -272,7 +292,7 @@ class Explorer:
         self.index["l1Txs"] = [t for t in self.index["l1Txs"] if t["hash"] != tx["hash"]]
         self.index["l1Txs"].append({
             "hash": tx["hash"], "kind": kind, "block": tx["block"], "timestamp": tx["timestamp"],
-            "gasUsed": tx["gasUsed"], **links,
+            "gasUsed": tx["gasUsed"], "addresses": addresses(tx), **links,
         })
         if kind == "deposit":
             for log in tx["logs"]:
@@ -285,6 +305,27 @@ class Explorer:
             index = tx["call"]["args"]["message"]["index"]
             entry = self.index["withdrawals"].setdefault(str(index), {"index": index})
             entry.update({"l1Tx": tx["hash"], "l1Block": tx["block"]})
+
+    def update_accounts(self, state, block: dict, transactions: list) -> None:
+        """Writes the state after `block` of every L2 account it touched."""
+        touched = {block["feeRecipient"].lower()}
+        for tx in transactions:
+            for a in addresses(tx):
+                touched.add(a)
+                self.accounts.setdefault(a, []).append({"hash": tx["hash"], "block": block["number"], "kind": tx["kind"]})
+        for a in touched:
+            account = state.get_account_optional(Address(bytes.fromhex(a[2:])))
+            entry = {"address": a, "block": block["number"], "txs": self.accounts.get(a, [])[-200:], "exists": account is not None}
+            if account is not None:
+                code = b"" if account.code_hash == EMPTY_CODE_HASH else state.get_code(account.code_hash)
+                entry.update({"balance": str(int(account.balance)), "nonce": int(account.nonce), "codeSize": len(code), "codeHash": hx(account.code_hash)})
+            if a == self.index["messenger"]:
+                slot = lambda n: int(state.get_storage(Address(bytes.fromhex(a[2:])), n.to_bytes(32, "big")))  # noqa: E731
+                entry["state"] = {
+                    "l1Rollup": "0x%040x" % slot(0), "sentMessages": slot(2),
+                    "provenAnchorTimestamp": slot(3), "provenL1MessageRoot": "0x%064x" % slot(4),
+                }
+            self.write(f"l2/accounts/{a}.json", entry)
 
     def add_l2_block(self, block: dict, transactions: list) -> None:
         kinds = {}
