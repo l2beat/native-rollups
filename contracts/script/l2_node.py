@@ -75,7 +75,7 @@ APPROVE_EXECUTION_AND_PAYMENT = 3
 # Balance the account keeps for the fees of its transfers and messages.
 FEE_RESERVE = 10**16
 L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,bytes)")
-QUEUE_SLOT = 5  # NativeRollup.pendingL1Messages
+QUEUE_SLOT = 3  # NativeRollup.pendingL1Messages
 CLAIMED_SLOT = 1  # L2Messenger.claimed
 SENT_SLOT = 2  # L2Messenger.sentMessages
 SEND_GAS_LIMIT = 500_000

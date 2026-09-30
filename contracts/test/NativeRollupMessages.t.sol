@@ -35,7 +35,8 @@ contract L1Reverter {
 contract NativeRollupMessagesTest is Test {
     using stdJson for string;
 
-    uint256 constant STATE_ROOT_HISTORY_SLOT = 4;
+    uint256 constant BLOCK_NUMBER_SLOT = 1;
+    uint256 constant STATE_ROOTS_SLOT = 2;
 
     event L1MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
 
@@ -65,7 +66,7 @@ contract NativeRollupMessagesTest is Test {
     }
 
     /// Loads claim `i` and gives the rollup the state root it is proven
-    /// against, as `advance` would have.
+    /// against, as if `advance` had just added that block.
     function _load(uint256 i) internal returns (Claim memory c) {
         string memory k = string.concat(".claims[", vm.toString(i), "]");
         c.m.sender = json.readAddress(string.concat(k, ".message.sender"));
@@ -76,9 +77,10 @@ contract NativeRollupMessagesTest is Test {
         c.blockNumber = json.readUint(string.concat(k, ".blockNumber"));
         c.accountProof = json.readBytesArray(string.concat(k, ".accountProof"));
         c.storageProof = json.readBytesArray(string.concat(k, ".storageProof"));
+        vm.store(address(rollup), bytes32(BLOCK_NUMBER_SLOT), bytes32(c.blockNumber));
         vm.store(
             address(rollup),
-            keccak256(abi.encode(c.blockNumber, STATE_ROOT_HISTORY_SLOT)),
+            keccak256(abi.encode(c.blockNumber % rollup.STATE_ROOT_HISTORY(), STATE_ROOTS_SLOT)),
             json.readBytes32(string.concat(k, ".stateRoot"))
         );
     }
@@ -148,15 +150,24 @@ contract NativeRollupMessagesTest is Test {
         _claim(c);
     }
 
-    /// Proofs only count against a state root the rollup stored.
+    /// Proofs only count against a recent state root the rollup stored.
     function test_rejectsUnknownRoot() public {
         Claim memory c = _load(0);
         c.blockNumber += 1;
-        vm.expectRevert(bytes("unknown L2 block"));
+        vm.expectRevert(bytes("L2 block not in history"));
         _claim(c);
 
         c = _load(0);
-        vm.store(address(rollup), keccak256(abi.encode(c.blockNumber, STATE_ROOT_HISTORY_SLOT)), bytes32(uint256(1)));
+        vm.store(address(rollup), bytes32(BLOCK_NUMBER_SLOT), bytes32(c.blockNumber + rollup.STATE_ROOT_HISTORY()));
+        vm.expectRevert(bytes("L2 block not in history"));
+        _claim(c);
+
+        c = _load(0);
+        vm.store(
+            address(rollup),
+            keccak256(abi.encode(c.blockNumber % rollup.STATE_ROOT_HISTORY(), STATE_ROOTS_SLOT)),
+            bytes32(uint256(1))
+        );
         vm.expectRevert();
         _claim(c);
     }

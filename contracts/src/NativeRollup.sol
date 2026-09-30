@@ -51,6 +51,9 @@ abstract contract NativeRollup {
     bytes32 internal constant EMPTY_LIST_ROOT = 0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b;
     // Storage slot of `L2Messenger.sentMessages`.
     uint256 internal constant L2_QUEUE_SLOT = 2;
+    // Number of recent L2 state roots kept, as EIP-2935 keeps L1 block
+    // hashes. A ring buffer only creates new storage for the first blocks.
+    uint256 public constant STATE_ROOT_HISTORY = 8191;
 
     // The EIP-8357 registry, at 0x00005e9c1447C1A05A642ec9eB76D9C125468357
     // on chains that activate it.
@@ -64,12 +67,12 @@ abstract contract NativeRollup {
 
     // L2 chain state tracked onchain
     bytes32 public blockHash;
-    bytes32 public stateRoot;
-    uint256 public blockNumber;
-    uint256 public anchorBlockNumber;
+    uint64 public blockNumber;
+    uint64 public anchorBlockNumber;
 
-    // L2 state root history (for L2->L1 messaging via state proofs)
-    mapping(uint256 => bytes32) public stateRootHistory;
+    // State roots of the last STATE_ROOT_HISTORY L2 blocks, by block number
+    // modulo STATE_ROOT_HISTORY (for L2->L1 messaging via state proofs).
+    mapping(uint256 => bytes32) internal stateRootHistory;
 
     // L1->L2 message queue. Messages are stored in this contract's storage
     // and become accessible on L2 via storage proofs against the anchored L1
@@ -98,7 +101,6 @@ abstract contract NativeRollup {
         vkPolicy = vkPolicy_;
         pinnedVkHash = pinnedVkHash_;
         blockHash = genesisBlockHash;
-        stateRoot = genesisStateRoot;
         stateRootHistory[0] = genesisStateRoot;
     }
 
@@ -114,6 +116,18 @@ abstract contract NativeRollup {
         emit L1MessageSent(index, msg.sender, to, msg.value, data);
     }
 
+    function stateRoot() external view returns (bytes32) {
+        return stateRootHistory[blockNumber % STATE_ROOT_HISTORY];
+    }
+
+    /// @notice The state root of a recent L2 block.
+    function stateRootAt(uint256 l2BlockNumber) public view returns (bytes32) {
+        require(
+            l2BlockNumber <= blockNumber && blockNumber - l2BlockNumber < STATE_ROOT_HISTORY, "L2 block not in history"
+        );
+        return stateRootHistory[l2BlockNumber % STATE_ROOT_HISTORY];
+    }
+
     /// @notice The L2 sender of the message being delivered.
     function l2Sender() external view returns (address) {
         require(currentL2Sender != address(0), "no message");
@@ -121,8 +135,10 @@ abstract contract NativeRollup {
     }
 
     /// @notice Delivers an L2 to L1 message, proven against the state root of
-    ///         any L2 block since it was sent, and pays its value out of the
-    ///         ETH escrowed by L1 to L2 messages.
+    ///         any recent L2 block since it was sent, and pays its value out
+    ///         of the ETH escrowed by L1 to L2 messages. Sent messages stay in
+    ///         the messenger's storage, so a proof can always use a recent
+    ///         root.
     /// @param accountProof Proof of the L2 messenger's account in that block's
     ///                     state.
     /// @param storageProof Proof of the queue entry in its storage.
@@ -133,9 +149,7 @@ abstract contract NativeRollup {
         bytes[] calldata storageProof
     ) external {
         require(!claimedL2Messages[m.index], "already claimed");
-        bytes32 root = stateRootHistory[l2BlockNumber];
-        require(root != bytes32(0), "unknown L2 block");
-        Messages.requireQueued(m, root, l2Messenger, L2_QUEUE_SLOT, accountProof, storageProof);
+        Messages.requireQueued(m, stateRootAt(l2BlockNumber), l2Messenger, L2_QUEUE_SLOT, accountProof, storageProof);
 
         claimedL2Messages[m.index] = true;
         currentL2Sender = m.sender;
@@ -168,11 +182,11 @@ abstract contract NativeRollup {
         require(dataHash == NativeRollupSsz.publicInputRoot(npRoot, chainId, schemaId), "root mismatch");
 
         // 5. Update onchain state.
+        uint64 number = blockNumber + 1;
         blockHash = params.blockHash;
-        stateRoot = params.stateRoot;
-        blockNumber = blockNumber + 1;
-        anchorBlockNumber = params.anchorBlockNumber;
-        stateRootHistory[blockNumber] = params.stateRoot;
+        blockNumber = number;
+        anchorBlockNumber = uint64(params.anchorBlockNumber); // a past L1 block, see _anchor
+        stateRootHistory[number % STATE_ROOT_HISTORY] = params.stateRoot;
     }
 
     /// @notice The L1 anchor: the hash of a recent L1 block, which the proof
@@ -194,7 +208,7 @@ abstract contract NativeRollup {
         header.receiptsRoot = params.receiptsRoot;
         header.logsBloom = params.logsBloom;
         header.prevRandao = params.prevRandao;
-        header.blockNumber = uint64(blockNumber + 1); // from storage
+        header.blockNumber = blockNumber + 1; // from storage
         header.gasLimit = gasLimit; // fixed
         header.gasUsed = params.gasUsed;
         header.timestamp = params.timestamp;

@@ -149,7 +149,7 @@ contract NativeRollupTest is Test {
             assertEq(rollup.blockNumber(), i + 1);
             assertEq(rollup.blockHash(), json.readBytes32(string.concat(_block(i), ".header.blockHash")));
             assertEq(rollup.stateRoot(), json.readBytes32(string.concat(_block(i), ".header.stateRoot")));
-            assertEq(rollup.stateRootHistory(i + 1), rollup.stateRoot());
+            assertEq(rollup.stateRootAt(i + 1), rollup.stateRoot());
             assertEq(rollup.anchorBlockNumber(), _anchorNumber(i));
         }
     }
@@ -229,6 +229,21 @@ contract NativeRollupTest is Test {
         vm.warp(block.timestamp - 1);
         vm.expectRevert(bytes("timestamp in the future"));
         rollup.advance(_params(0), 1);
+    }
+
+    /// State roots stay available for STATE_ROOT_HISTORY blocks, after which
+    /// their slot is reused.
+    function test_stateRootHistoryWindow() public {
+        _advance(rollup, 0, K1);
+        assertEq(rollup.stateRootAt(0), json.readBytes32(".chain.genesisStateRoot"));
+        assertEq(rollup.stateRootAt(1), json.readBytes32(string.concat(_block(0), ".header.stateRoot")));
+        vm.expectRevert(bytes("L2 block not in history"));
+        rollup.stateRootAt(2);
+
+        // Pretend STATE_ROOT_HISTORY more blocks were added.
+        vm.store(address(rollup), bytes32(uint256(1)), bytes32(1 + rollup.STATE_ROOT_HISTORY()));
+        vm.expectRevert(bytes("L2 block not in history"));
+        rollup.stateRootAt(1);
     }
 
     /// Consecutive L2 blocks can share an anchor.

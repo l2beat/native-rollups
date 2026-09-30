@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {RLPReader} from "../libs/RLPReader.sol";
 import {Message, Messages} from "../libs/Messages.sol";
+import {MptProof} from "../libs/MptProof.sol";
 
 /// @notice L2 predeploy of the book's messaging design. It holds the
 ///         pre-minted supply of the gas token and handles both directions:
@@ -19,7 +19,7 @@ contract L2Messenger {
     // EIP-4788 beacon roots contract, which stores each L2 block's anchor.
     address internal constant BEACON_ROOTS = 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02;
     // Storage slot of `NativeRollup.pendingL1Messages`.
-    uint256 internal constant L1_QUEUE_SLOT = 5;
+    uint256 internal constant L1_QUEUE_SLOT = 3;
 
     address public l1Rollup;
     mapping(uint256 => bool) public claimed;
@@ -59,8 +59,9 @@ contract L2Messenger {
     ) external {
         require(!claimed[m.index], "already claimed");
         require(keccak256(l1Header) == _anchor(anchorTimestamp), "header is not the anchor");
-        bytes32 l1StateRoot = bytes32(RLPReader.readBytes(RLPReader.readList(l1Header)[3]));
-        Messages.requireQueued(m, l1StateRoot, l1Rollup, L1_QUEUE_SLOT, accountProof, storageProof);
+        bytes calldata l1StateRoot = MptProof.listItem(l1Header, 3);
+        require(l1StateRoot.length == 32, "invalid header");
+        Messages.requireQueued(m, bytes32(l1StateRoot), l1Rollup, L1_QUEUE_SLOT, accountProof, storageProof);
 
         claimed[m.index] = true;
         currentL1Sender = m.sender;

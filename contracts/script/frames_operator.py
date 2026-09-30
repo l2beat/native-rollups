@@ -217,7 +217,11 @@ def advance(args: argparse.Namespace) -> None:
     print(f"included {tx_hash}")
     receipt = json.loads(cast("receipt", "--rpc-url", rpc, tx_hash, "--json"))
     for i, frame in enumerate(receipt.get("frameReceipts", [])):
-        print(f"frame {i}: status {int(frame['status'], 16)}, gas {int(frame['gasUsed'], 16)}")
+        print(
+            f"frame {i}: status {int(frame['status'], 16)}, gas {int(frame['gasUsed'], 16)} "
+            f"({int(frame.get('executionGasUsed', frame['gasUsed']), 16)} execution, "
+            f"{int(frame.get('stateGasUsed', '0x0'), 16)} state)"
+        )
     head = int(call(rpc, args.rollup, "blockNumber()(uint256)").split()[0])
     print(f"rollup at L2 block {head}")
 

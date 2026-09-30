@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {RLPReader} from "./RLPReader.sol";
-import {SecureMerkleTrie} from "./SecureMerkleTrie.sol";
+import {MptProof} from "./MptProof.sol";
 
 /// @notice A message between L1 and L2, in either direction.
 struct Message {
@@ -36,18 +35,12 @@ library Messages {
         bytes[] calldata accountProof,
         bytes[] calldata storageProof
     ) internal pure {
-        bytes memory encoded = SecureMerkleTrie.get(abi.encodePacked(account), accountProof, stateRoot);
-        bytes32 storageRoot = bytes32(RLPReader.readBytes(RLPReader.readList(encoded)[2]));
-        bytes32 slot = bytes32(uint256(keccak256(abi.encode(queueSlot))) + m.index);
-        bytes memory entry =
-            RLPReader.readBytes(SecureMerkleTrie.get(abi.encodePacked(slot), storageProof, storageRoot));
-        require(bytes32(_toUint(entry)) == hash(m.sender, m.to, m.value, m.data, m.index), "message not queued");
-    }
-
-    /// @dev Storage values are RLP-encoded with leading zero bytes removed.
-    function _toUint(bytes memory b) private pure returns (uint256 v) {
-        for (uint256 i = 0; i < b.length; i++) {
-            v = (v << 8) | uint8(b[i]);
-        }
+        // The account is [nonce, balance, storage root, code hash].
+        bytes calldata encoded = MptProof.get(stateRoot, keccak256(abi.encodePacked(account)), accountProof);
+        bytes calldata storageRoot = MptProof.listItem(encoded, 2);
+        require(storageRoot.length == 32, "invalid account");
+        uint256 slot = uint256(keccak256(abi.encode(queueSlot))) + m.index;
+        uint256 entry = MptProof.toUint(MptProof.get(bytes32(storageRoot), keccak256(abi.encode(slot)), storageProof));
+        require(bytes32(entry) == hash(m.sender, m.to, m.value, m.data, m.index), "message not queued");
     }
 }

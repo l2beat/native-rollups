@@ -195,7 +195,10 @@ contract NativeRollup {
     VkPolicy public vkPolicy;
     bytes32 public pinnedVkHash;
 
-    // L2 state root history (for L2->L1 messaging via state proofs)
+    // State roots of the last STATE_ROOT_HISTORY L2 blocks, by block number
+    // modulo STATE_ROOT_HISTORY, as EIP-2935 keeps L1 block hashes (for
+    // L2->L1 messaging via state proofs).
+    uint256 constant STATE_ROOT_HISTORY = 8191;
     mapping(uint256 => bytes32) public stateRootHistory;
 
     // L1->L2 message queue. Messages are stored in this contract's
@@ -268,7 +271,7 @@ contract NativeRollup {
         stateRoot = params.stateRoot;
         blockNumber = blockNumber + 1;
         anchorBlockNumber = params.anchorBlockNumber;
-        stateRootHistory[blockNumber] = params.stateRoot;
+        stateRootHistory[blockNumber % STATE_ROOT_HISTORY] = params.stateRoot;
     }
 
     function anchor(uint256 number) internal view returns (bytes32 hash) {
