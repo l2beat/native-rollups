@@ -11,7 +11,7 @@ const PAGE = 25;
 const BOOK = "http://127.0.0.1:3000";
 const SELECTORS = { blockNumber: "0x57e871e7" };
 
-const state = { index: null, session: null, l1Head: null, rollupHead: null, cache: {}, blobs: {}, beacon: null };
+const state = { index: null, session: null, l1Head: null, rollupHead: null, cache: {}, blobs: {}, beacon: null, snippets: null };
 
 // ---------------------------------------------------------------------------
 // Data
@@ -37,6 +37,7 @@ async function object(path) {
 }
 
 async function refresh() {
+  if (!state.snippets) state.snippets = await getJSON("/api/snippets");
   const [index, session, head] = await Promise.all([getJSON("/api/explorer/index.json"), getJSON("/api/session"), rpc("eth_blockNumber")]);
   if (index && state.index && index.rollup !== state.index.rollup) state.cache = {}; // a new episode
   state.index = index;
@@ -153,7 +154,7 @@ function renderStatus() {
       ? `<span class="pill ok">follower rebuilt all ${num(n)} from L1</span>`
       : `<span class="pill warn">follower rebuilt ${num(n)} of ${num(state.rollupHead)}</span>`);
   }
-  if (state.session) pills.push(`<span class="pill">episode ${state.session.episode}</span>`);
+  if (state.session) pills.push(`<a class="pill" href="#/about" title="The demo deploys a fresh rollup every 150 L2 blocks">rollup deployed ${ago(state.session.startedAt)}</a>`);
   document.getElementById("status").innerHTML = pills.join("");
 }
 
@@ -359,6 +360,77 @@ function hexToText(hex) {
 }
 
 // ---------------------------------------------------------------------------
+// Code
+// ---------------------------------------------------------------------------
+
+const escCode = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+const KEYWORDS = "function|returns|return|require|revert|if|else|for|while|emit|external|internal|public|private|view|pure|payable|memory|calldata|storage|override|virtual|constant|immutable|transient|mapping|assembly|unchecked|new|true|false|fallback";
+const TOKENS = new RegExp(`("[^"]*")|\\b(0x[0-9a-fA-F]+|\\d[\\d_]*)\\b|\\b(${KEYWORDS})\\b|\\b(uint\\d*|int\\d*|bytes\\d*|address|bool|string)\\b`, "g");
+
+// A small Solidity highlighter: comments, strings, numbers, keywords, types.
+function highlight(code) {
+  return code.split("\n").map((line) => {
+    const i = line.indexOf("//");
+    const src = i >= 0 ? line.slice(0, i) : line;
+    const body = escCode(src).replace(TOKENS, (m, str, n, kw, ty) =>
+      str ? `<span class="tk-s">${str}</span>` : n ? `<span class="tk-n">${n}</span>` : kw ? `<span class="tk-k">${kw}</span>` : `<span class="tk-t">${ty}</span>`);
+    return body + (i >= 0 ? `<span class="tk-c">${escCode(line.slice(i))}</span>` : "");
+  }).join("\n");
+}
+
+// The contracts deployed at an address, most derived first.
+function contractsAt(target) {
+  const c = (state.session && state.session.contracts) || {};
+  const t = (target || "").toLowerCase();
+  if (t === (c.rollup || "").toLowerCase()) return ["FramesNativeRollup", "NativeRollup"];
+  if (t === (c.l2Messenger || "").toLowerCase()) return ["L2Messenger"];
+  if (t === (c.verifier || "").toLowerCase()) return ["MockDependencyVerifier"];
+  return [];
+}
+
+function snippetKey(target, fn) {
+  return contractsAt(target).map((c) => `${c}.${fn}`).find((k) => state.snippets && state.snippets[k]);
+}
+
+// The code of a function, and collapsed below it the functions it calls,
+// one level deep.
+function codeBlock(key, open = true, nested = false) {
+  const s = state.snippets && state.snippets[key];
+  if (!s) return "";
+  const calls = nested ? [] : s.calls.filter((k) => state.snippets[k]);
+  return `<details class="code" ${open ? "open" : ""}><summary>Code: <b>${esc(key)}</b>
+      <span class="muted">${esc(s.file)}, lines ${s.startLine} to ${s.endLine}</span></summary>
+    <pre class="code">${highlight(s.code)}</pre>
+    ${calls.length ? `<div class="callees"><span class="muted">It calls:</span>${calls.map((k) => codeBlock(k, false, true)).join("")}</div>` : ""}
+  </details>`;
+}
+
+// EIP-8141's default code, which runs for a frame that targets an account without code.
+const DEFAULT_CODE = `- If mode is VERIFY:
+  - Read the allowed approval scope from the flags field:
+    allowed_scope = frame.flags & APPROVE_SCOPE_MASK.
+  - If allowed_scope == APPROVE_SCOPE_NONE, revert.
+  - Let sig_index = 0 if allowed_scope & APPROVE_EXECUTION != 0, else sig_index = 1.
+  - If there is not a SECP256K1 signature sig at index sig_index such that
+    resolved_signer == resolved_target and sig.msg == Bytes(), revert.
+  - Call APPROVE(allowed_scope).
+- If mode is SENDER or DEFAULT:
+  - Return successfully as if calling empty code.`;
+
+function defaultCodeBlock() {
+  return `<details class="code" open><summary>Code: <b>EIP-8141 default code</b>
+      <span class="muted">the protocol's code for an account without code, from the EIP's Behavior section</span></summary>
+    <pre class="code">${escCode(DEFAULT_CODE)}</pre></details>`;
+}
+
+function codeFor(target, call) {
+  const key = call && snippetKey(target, call.function);
+  if (key) return codeBlock(key);
+  if (!contractsAt(target).length) return `<p class="note">No contract code runs: the target is an account without code.</p>`;
+  return "";
+}
+
+// ---------------------------------------------------------------------------
 // Transactions
 // ---------------------------------------------------------------------------
 
@@ -460,6 +532,7 @@ function frameCards(tx, layer) {
           <span>State gas: ${f.stateGasUsed !== undefined ? num(f.stateGasUsed) + " of " : ""}${num(f.stateGasLimit)}</span>
           ${f.value ? `<span>Value: ${eth(f.value)}</span>` : ""}</div>
         ${e.extra || ""}
+        ${f.mode === "VERIFY" && !contractsAt(f.target).length ? defaultCodeBlock() : f.dependency ? codeBlock(snippetKey(f.target, "fallback")) : codeFor(f.target, f.call)}
         ${f.logs && f.logs.length ? `<h3>Events</h3>${events(f.logs)}` : ""}</div></div>`;
   }).join("")}</div>`;
 }
@@ -528,7 +601,9 @@ async function l2TxPage(route) {
       ["Gas used", num(tx.gasUsed), ""],
       ["Size", `${num(tx.bytes)} bytes`, "Its share of the block's blob."],
     ])}
-    ${frame ? `<h2>Frames</h2>${frameCards(tx, "L2")}` : tx.call ? `<h2>Call</h2><p><code>${tx.call.function}</code></p>${argTable(tx.call.args)}<h2>Events</h2>${events(tx.logs)}` : `<h2>Events</h2>${events(tx.logs)}`}`;
+    ${frame ? `<h2>Frames</h2>${frameCards(tx, "L2")}` : tx.call
+      ? `<h2>Call: <code>${tx.call.function}</code></h2>${argTable(tx.call.args)}${codeFor(tx.to, tx.call)}<h2>Events</h2>${events(tx.logs)}`
+      : `<h2>Code</h2>${codeFor(tx.to, null)}<h2>Events</h2>${events(tx.logs)}`}`;
 }
 
 async function l1TxPage(route) {
@@ -575,7 +650,7 @@ async function l1TxPage(route) {
       ["Gas used", `${num(tx.gasUsed)} at ${num(tx.effectiveGasPrice)} wei`, "Includes EIP-8037 state gas for new storage."],
       ...(tx.blobVersionedHashes.length ? [["Blob", `${hash(tx.blobVersionedHashes[0], true)}<br><span class="muted">${num(tx.blobGasUsed)} blob gas at ${num(tx.blobGasPrice)} wei</span>`, "The L2 block's data, in EIP-8142's encoding."]] : []),
     ])}
-    ${frame ? `<h2>Frames</h2>${frameCards(tx, "L1")}` : tx.call ? `<h2>Call: <code>${tx.call.function}</code></h2>${argTable(tx.call.args)}` : ""}
+    ${frame ? `<h2>Frames</h2>${frameCards(tx, "L1")}` : tx.call ? `<h2>Call: <code>${tx.call.function}</code></h2>${argTable(tx.call.args)}${codeFor(tx.to, tx.call)}` : ""}
     <h2>Events</h2>${events(tx.logs)}`;
 }
 
