@@ -6,6 +6,8 @@ libs = ["lib"]
 # `via_ir = true` because some queue tests destructure long tuples on top of
 # already-deep local-variable frames; the legacy pipeline hits stack-too-deep.
 via_ir = true
+optimizer = true
+optimizer_runs = 200
 # NativeRollupSsz tests read their consensus-specs vectors from test/.
 fs_permissions = [{ access = "read", path = "./test" }]
 
