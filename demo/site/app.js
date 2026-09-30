@@ -89,8 +89,9 @@ function labels() {
   add(c.registry, "Key registry", "mock");
   add(c.prover, "Trusted prover key", "mock");
   add(c.operator, "Operator", "");
-  add(c.aliceL1, "Alice on L1", "");
-  add(c.aliceL2, "Alice on L2", "");
+  // Alice uses one key, so one address, on both chains.
+  add(c.aliceL1, c.aliceL1 && c.aliceL2 && c.aliceL1.toLowerCase() === c.aliceL2.toLowerCase() ? "Alice" : "Alice on L1", "");
+  if (c.aliceL2 && c.aliceL2.toLowerCase() !== (c.aliceL1 || "").toLowerCase()) add(c.aliceL2, "Alice on L2", "");
   return l;
 }
 

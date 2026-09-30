@@ -33,13 +33,12 @@ DATA = os.path.join(ROOT, "demo", "data")
 # ethereum-package's prefunded development keys.
 OPERATOR_KEY = "0xbcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31"
 ALICE_L1_KEY = "0x39725efee3fb28614de3bacaffe4cc4bd8c436257e2c8bb887c4b5c4be45e76d"
-# The L2 node's account (`l2_node.user()`), Alice's on L2.
-ALICE_L2 = "0xd41D4cfeC6F4C687C47DBBA185723d168D99c063"
 L2_MESSENGER = "0x8079000000000000000000000000000000000001"
 
 
 def run(cmd: list, cwd: str = CONTRACTS) -> str:
-    out = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    # Alice uses the same key on L2, so she has the same address on both chains.
+    out = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env={**os.environ, "L2_USER_KEY": ALICE_L1_KEY})
     if out.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd[:6])}...: {(out.stderr or out.stdout).strip()[-600:]}")
     return out.stdout
@@ -95,11 +94,12 @@ class Episode:
         found = dict(re.findall(r"^\s+(registry|verifier|rollup|helper)\s+(0x[0-9a-fA-F]{40})", out.stdout, re.M))
         if out.returncode != 0 or found.get("rollup", "").lower() != rollup.lower():
             raise RuntimeError(f"deployment failed: {out.stdout[-600:]} {out.stderr[-600:]}")
+        alice = cast("wallet", "address", "--private-key", ALICE_L1_KEY)
         self.contracts = {
             "rollup": found["rollup"], "verifier": found["verifier"], "registry": found["registry"],
             "framesHelper": found["helper"], "l2Messenger": L2_MESSENGER, "prover": prover["address"],
-            "operator": deployer, "aliceL1": cast("wallet", "address", "--private-key", ALICE_L1_KEY),
-            "aliceL2": ALICE_L2, "l2GenesisHash": genesis["genesisHash"],
+            "operator": deployer, "aliceL1": alice,
+            "aliceL2": alice, "l2GenesisHash": genesis["genesisHash"],
         }
         self.session["contracts"] = self.contracts
         self.event("deployed", "Deployed a new rollup on L1", contracts=self.contracts)
@@ -128,11 +128,11 @@ class Episode:
     def deposit(self, amount: str) -> None:
         receipt = json.loads(cast(
             "send", "--rpc-url", self.args.rpc, "--private-key", ALICE_L1_KEY, "--json", "--timeout", "120",
-            self.contracts["rollup"], "sendMessage(address,bytes)", ALICE_L2, "0x", "--value", amount,
+            self.contracts["rollup"], "sendMessage(address,bytes)", self.contracts["aliceL2"], "0x", "--value", amount,
         ))
         self.event(
             "deposit", f"Alice deposits {amount.replace('ether', ' ETH')} from L1",
-            amount=amount, **{"from": self.contracts["aliceL1"]}, to=ALICE_L2,
+            amount=amount, **{"from": self.contracts["aliceL1"]}, to=self.contracts["aliceL2"],
             l1={"txHash": receipt["transactionHash"], "block": int(receipt["blockNumber"], 16),
                 "gasUsed": int(receipt["gasUsed"], 16)},
         )

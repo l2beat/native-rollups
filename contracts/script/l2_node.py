@@ -72,7 +72,9 @@ from ssz_roots import container4, payload_root, public_input_root, versioned_has
 L2_CHAIN_ID = 8079
 L2_GAS_LIMIT = 60_000_000
 LEANSTARK_SCHEME = 0x11
-USER_KEY = 0x6E61746976652D726F6C6C75702D75736572  # "native-rollup-user"
+# The node's L2 account. L2_USER_KEY lets it be a user's own key, the same
+# account the user has on L1.
+USER_KEY = int(os.environ.get("L2_USER_KEY", hex(0x6E61746976652D726F6C6C75702D75736572)), 16)  # "native-rollup-user"
 FEE_RECIPIENT = Address(0xFEE)
 
 L2_MESSENGER = Address(0x8079000000000000000000000000000000000001)
