@@ -45,11 +45,13 @@ abstract contract NativeRollup {
     }
 
     uint8 internal constant LEANSTARK_SCHEME = 0x11; // EIP-8288
-    address internal constant EVM_VK_REGISTRY = 0x00005e9c1447C1A05A642ec9eB76D9C125468357; // EIP-8357
     uint64 internal constant L2_SLOT_NUMBER = 0; // TBD
     // SSZ root of an empty progressive list: sha256 of 64 zero bytes.
     bytes32 internal constant EMPTY_LIST_ROOT = 0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b;
 
+    // The EIP-8357 registry, at 0x00005e9c1447C1A05A642ec9eB76D9C125468357
+    // on chains that activate it.
+    address public immutable evmVkRegistry;
     uint64 public immutable chainId;
     uint64 public immutable gasLimit;
     VkPolicy public immutable vkPolicy;
@@ -75,8 +77,10 @@ abstract contract NativeRollup {
         bytes32 genesisBlockHash,
         bytes32 genesisStateRoot,
         VkPolicy vkPolicy_,
-        bytes32 pinnedVkHash_
+        bytes32 pinnedVkHash_,
+        address evmVkRegistry_
     ) {
+        evmVkRegistry = evmVkRegistry_;
         chainId = chainId_;
         gasLimit = gasLimit_;
         vkPolicy = vkPolicy_;
@@ -166,7 +170,7 @@ abstract contract NativeRollup {
     }
 
     function _readRegistry(bytes32 query) internal view returns (bytes32 vkHash, uint16 schemaId) {
-        (bool ok, bytes memory out) = EVM_VK_REGISTRY.staticcall(abi.encode(query));
+        (bool ok, bytes memory out) = evmVkRegistry.staticcall(abi.encode(query));
         require(ok && out.length == 64, "registry");
         (bytes32 hash, uint256 schema) = abi.decode(out, (bytes32, uint256));
         return (hash, uint16(schema));

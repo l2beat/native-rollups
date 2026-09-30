@@ -1,0 +1,15 @@
+# A local network with the frames-devnet-0 settings: Gloas from genesis and
+# the EIP-8141 execution fork at epoch 1. Run with:
+#   kurtosis run github.com/ethpandaops/ethereum-package --enclave frames --args-file frames/kurtosis.yaml
+participants:
+  - el_type: geth
+    el_image: ethpandaops/geth:frames-devnet-0
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:unstable
+
+network_params:
+  gloas_fork_epoch: 0
+  heze_fork_epoch: 1
+  frames_enabled: true
+  gas_limit: 200000000
+  genesis_gaslimit: 200000000

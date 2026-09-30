@@ -1,0 +1,50 @@
+;;; EIP-8141 frame introspection for contracts compiled without the frame
+;;; instructions, which solc does not support yet.
+;;;
+;;; 64-byte calldata `param || frameIndex` returns FRAMEPARAM(param, frameIndex).
+;;; 96-byte calldata `frameIndex || offset || length` returns `length` bytes of
+;;; frame `frameIndex`'s data from `offset`, read with FRAMEDATACOPY.
+;;; Any other calldata reverts. Like the instructions themselves, calls only
+;;; succeed inside a frame transaction.
+;;;
+;;; Build: geas -a -no-nl -o frame_introspection.hex frame_introspection.eas
+
+#pragma target "prague"
+
+    calldatasize        ; [cds]
+    push 64             ; [64, cds]
+    eq                  ; [cds==64]
+    jumpi @param        ; []
+    calldatasize        ; [cds]
+    push 96             ; [96, cds]
+    eq                  ; [cds==96]
+    jumpi @data         ; []
+    push 0              ; [0]
+    push 0              ; [0, 0]
+    revert              ; []
+
+param:
+    push 0              ; [0]
+    calldataload        ; [param]
+    push 32             ; [32, param]
+    calldataload        ; [frameIndex, param]
+    #bytes 0xb3         ; FRAMEPARAM: [value]
+    push 0              ; [0, value]
+    mstore              ; []
+    push 32             ; [32]
+    push 0              ; [0, 32]
+    return              ; []
+
+data:
+    push 0              ; [0]
+    calldataload        ; [frameIndex]
+    push 64             ; [64, frameIndex]
+    calldataload        ; [length, frameIndex]
+    push 32             ; [32, length, frameIndex]
+    calldataload        ; [offset, length, frameIndex]
+    push 0              ; [memOffset, offset, length, frameIndex]
+    #bytes 0xb2         ; FRAMEDATACOPY: []
+    push 64             ; [64]
+    calldataload        ; [length]
+    push 0              ; [0, length]
+    return              ; []
