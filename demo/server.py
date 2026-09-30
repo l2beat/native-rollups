@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -84,6 +85,42 @@ def extract_snippets() -> dict:
     return snippets
 
 
+def load_sources(sys_asm: str) -> dict:
+    """The full source files the explorer shows for its contracts: the
+    Solidity sources with the files they import, the frames helper's geas
+    source, and the EIP-8357 registry's source from sys-asm if available."""
+    files = {}
+    src = os.path.join(ROOT, "contracts", "src")
+    for directory, _, names in os.walk(src):
+        for name in names:
+            if name.endswith(".sol"):
+                path = os.path.join(directory, name)
+                text = open(path).read()
+                imports, external = [], []
+                for target in re.findall(r'^import\s*\{[^}]*\}\s*from\s*"([^"]+)";', text, re.M):
+                    if target.startswith("."):
+                        imports.append(os.path.relpath(os.path.normpath(os.path.join(directory, target)), ROOT))
+                    else:
+                        external.append(target)
+                files[os.path.relpath(path, ROOT)] = {"content": text, "imports": imports, "external": external}
+    helper = os.path.join(ROOT, "contracts", "frames", "frame_introspection.eas")
+    files["contracts/frames/frame_introspection.eas"] = {"content": open(helper).read(), "imports": [], "external": []}
+    registry = os.path.join(sys_asm, "src", "verification_key_registry", "main.eas")
+    if os.path.exists(registry):
+        files["sys-asm/src/verification_key_registry/main.eas"] = {"content": open(registry).read(), "imports": [], "external": []}
+    return files
+
+
+def flatten(l2beat: str) -> dict:
+    """The Solidity contracts flattened by L2BEAT's flattener, if an l2beat
+    checkout is available."""
+    out = subprocess.run(["node", os.path.join(DEMO, "flatten.mjs"), l2beat], capture_output=True, text=True, timeout=300)
+    if out.returncode != 0:
+        print(f"flattening failed, showing the separate files: {out.stderr.strip()[-300:]}", flush=True)
+        return {}
+    return json.loads(out.stdout)
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=os.path.join(DEMO, "site"), **kwargs)
@@ -102,6 +139,10 @@ class Handler(SimpleHTTPRequestHandler):
             if not re.fullmatch(r"[a-z0-9/]+(\.json)", relative) or ".." in relative or not os.path.exists(path):
                 return self.send_json(b"null", 404)
             return self.send_json(open(path, "rb").read())
+        if self.path == "/api/flat":
+            return self.send_json(json.dumps(self.server.flat).encode())
+        if self.path == "/api/sources":
+            return self.send_json(json.dumps(self.server.sources).encode())
         if self.path == "/api/snippets":
             return self.send_json(json.dumps(self.server.snippets).encode())
         if self.path in ("/api/session", "/api/follower"):
@@ -135,10 +176,14 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8088)
     parser.add_argument("--rpc", default="http://127.0.0.1:65138")
     parser.add_argument("--beacon", default="http://127.0.0.1:65167")
+    parser.add_argument("--sys-asm", default=os.path.expanduser("~/work/sys-asm"), help="for the EIP-8357 registry's source")
+    parser.add_argument("--l2beat", default=os.path.expanduser("~/work/l2beat"), help="for L2BEAT's flattener")
     args = parser.parse_args()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     server.rpc, server.beacon = args.rpc, args.beacon
     server.snippets = extract_snippets()
+    server.sources = load_sources(args.sys_asm)
+    server.flat = flatten(args.l2beat)
     print(f"demo at http://127.0.0.1:{args.port}", flush=True)
     server.serve_forever()
 

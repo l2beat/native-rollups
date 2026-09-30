@@ -319,6 +319,8 @@ class Explorer:
             if account is not None:
                 code = b"" if account.code_hash == EMPTY_CODE_HASH else state.get_code(account.code_hash)
                 entry.update({"balance": str(int(account.balance)), "nonce": int(account.nonce), "codeSize": len(code), "codeHash": hx(account.code_hash)})
+                if 0 < len(code) <= 32768:
+                    entry["code"] = hx(code)
             if a == self.index["messenger"]:
                 slot = lambda n: int(state.get_storage(Address(bytes.fromhex(a[2:])), n.to_bytes(32, "big")))  # noqa: E731
                 entry["state"] = {

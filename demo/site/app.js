@@ -15,7 +15,7 @@ const SELECTORS = {
   l2Messenger: "0xf5730a72", evmVkRegistry: "0x369e4ac9", prover: "0x32a8f30f",
 };
 
-const state = { index: null, session: null, l1Head: null, rollupHead: null, cache: {}, blobs: {}, beacon: null, snippets: null };
+const state = { index: null, session: null, l1Head: null, rollupHead: null, cache: {}, blobs: {}, beacon: null, snippets: null, sources: null, flat: null };
 
 // ---------------------------------------------------------------------------
 // Data
@@ -42,6 +42,8 @@ async function object(path) {
 
 async function refresh() {
   if (!state.snippets) state.snippets = await getJSON("/api/snippets");
+  if (!state.sources) state.sources = await getJSON("/api/sources");
+  if (!state.flat) state.flat = await getJSON("/api/flat");
   const [index, session, head] = await Promise.all([getJSON("/api/explorer/index.json"), getJSON("/api/session"), rpc("eth_blockNumber")]);
   if (index && state.index && index.rollup !== state.index.rollup) state.cache = {}; // a new episode
   state.index = index;
@@ -75,9 +77,11 @@ const ago = (t) => {
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
 };
 const hash = (h, full = false) => `<span class="mono" title="${esc(h)}">${esc(full ? h : short(h))}</span>`;
-const l2BlockLink = (n) => `<a href="#/l2/block/${n}">#${n}</a>`;
-const l2TxLink = (h) => `<a class="mono" href="#/l2/tx/${h}" title="${h}">${short(h)}</a>`;
-const l1TxLink = (h) => `<a class="mono" href="#/l1/tx/${h}" title="${h}">${short(h)}</a>`;
+// Every link to a block, transaction or address says which chain it is on.
+const net = (chain) => `<span class="net ${chain}">${chain.toUpperCase()}</span>`;
+const l2BlockLink = (n) => `<span class="nowrap">${net("l2")}<a href="#/l2/block/${n}">#${n}</a></span>`;
+const l2TxLink = (h) => `<span class="nowrap">${net("l2")}<a class="mono" href="#/l2/tx/${h}" title="${h}">${short(h)}</a></span>`;
+const l1TxLink = (h) => `<span class="nowrap">${net("l1")}<a class="mono" href="#/l1/tx/${h}" title="${h}">${short(h)}</a></span>`;
 const fill = (bytes) => {
   const x = bytes / BLOB_USABLE_BYTES;
   return `<span class="minifill"><span style="width:${Math.max(2, 100 * x)}%"></span></span>${pct(x)}`;
@@ -104,6 +108,7 @@ function labels() {
   add(c.registry, "Key registry", "mock");
   add(c.prover, "Trusted prover key", "mock");
   add(c.operator, "Operator", "");
+  add(c.framesHelper, "Frames helper", "");
   // Alice uses one key, so one address, on both chains.
   add(c.aliceL1, c.aliceL1 && c.aliceL2 && c.aliceL1.toLowerCase() === c.aliceL2.toLowerCase() ? "Alice" : "Alice on L1", "");
   if (c.aliceL2 && c.aliceL2.toLowerCase() !== (c.aliceL1 || "").toLowerCase()) add(c.aliceL2, "Alice on L2", "");
@@ -118,7 +123,7 @@ function addr(a, chain, showBadge = true) {
   const text = l
     ? `${esc(l[0])} <span class="mono muted">${short(a)}</span>`
     : `<span class="mono">${short(a)}</span>`;
-  return `<a class="addr" href="#/address/${chain}/${a.toLowerCase()}" title="${esc(a)} on ${chain.toUpperCase()}">${text}</a>${showBadge && l && l[1] === "mock" ? " " + badge("mock") : ""}`;
+  return `<span class="nowrap">${net(chain)}<a class="addr" href="#/address/${chain}/${a.toLowerCase()}" title="${esc(a)} on ${chain.toUpperCase()}">${text}</a></span>${showBadge && l && l[1] === "mock" ? " " + badge("mock") : ""}`;
 }
 
 // The chain of an address field: messages have one end on each chain.
@@ -405,6 +410,7 @@ const ROLES = {
   "Key registry": ["mock", "Stands in for the EIP-8357 registry of EVM verification keys. An admin registered the key, where a fork would."],
   "Trusted prover key": ["mock", "The key that signs the blocks Ethereum's validation program accepted, in place of a zk proof. It never sends transactions."],
   "Operator": ["shortcut", "The account that posts L2 blocks to L1. The rollup contract accepts a valid block from anyone, but this demo has one operator."],
+  "Frames helper": ["shortcut", "Lets the rollup contract use EIP-8141's FRAMEPARAM and FRAMEDATACOPY instructions, which Solidity cannot emit yet. The rollup contract deploys it and calls it to read the proof frame. Written in assembly with geas."],
   Alice: ["", "The demo's user. She uses the same key on L1 and L2, so she has the same address on both."],
   "Fee recipient": ["", "Receives the L2's priority fees. The operator picks it, as the consensus layer does on L1."],
   "ETH transfer log (EIP-7708)": ["", "Not an account: EIP-7708 makes every ETH transfer emit a log from this address."],
@@ -434,6 +440,7 @@ async function addressPage(route) {
   const rows = [];
   let live = [];
   let history = "";
+  let l1Code = null, acc = null;
   if (chain === "l1") {
     const [balance, nonce, code] = await Promise.all([
       rpc("eth_getBalance", [a, "latest"]), rpc("eth_getTransactionCount", [a, "latest"]), rpc("eth_getCode", [a, "latest"]),
@@ -443,6 +450,7 @@ async function addressPage(route) {
       ["Nonce", parseInt(nonce, 16), ""],
       ["Code", code && code !== "0x" ? `${num((code.length - 2) / 2)} bytes` : "none", code && code !== "0x" ? "A contract." : "An account controlled by a key."],
     );
+    l1Code = code && code !== "0x" ? code : null;
     if (a === (c.rollup || "").toLowerCase()) {
       const r = {};
       await Promise.all(["blockNumber", "blockHash", "stateRoot", "l1MessageCount", "l1MessageRoot", "anchorBlockNumber", "chainId", "gasLimit", "l2Messenger", "evmVkRegistry"].map(async (k) => (r[k] = await call(a, SELECTORS[k]))));
@@ -468,7 +476,7 @@ async function addressPage(route) {
     const txs = state.index.l1Txs.filter((t) => (t.addresses || []).includes(a)).sort((x, y) => y.block - x.block);
     history = `<h2>Rollup transactions on L1</h2>${txs.length ? l1Rows(txs.slice(0, 50)) : '<p class="note">None.</p>'}`;
   } else {
-    const acc = await getJSON(`/api/explorer/l2/accounts/${a}.json`);
+    acc = await getJSON(`/api/explorer/l2/accounts/${a}.json`);
     if (!acc) {
       rows.push(["State", "not seen yet", "The follower writes an L2 account once a transaction touches it."]);
     } else {
@@ -491,10 +499,8 @@ async function addressPage(route) {
   }
   const other = a === (c.aliceL1 || "").toLowerCase() || a === (c.aliceL2 || "").toLowerCase()
     ? `<p class="note">The same address on <a href="#/address/${OTHER[chain]}/${a}">${OTHER[chain].toUpperCase()}</a>.</p>` : "";
-  const contracts = contractsAt(a);
-  const code = contracts.length && state.snippets
-    ? `<h2>Code</h2><p class="section-lead">The functions of ${contracts.join(", which extends ")}, from the Solidity sources.</p>
-      ${Object.keys(state.snippets).filter((k) => contracts.includes(k.split(".")[0])).map((k) => codeBlock(k, false, true)).join("")}` : "";
+  const bytecode = chain === "l1" ? l1Code : acc && acc.code;
+  const code = sourceSection(a, name, bytecode, chain);
   return `
     <h1>${esc(name)} <span class="muted">on ${chain.toUpperCase()}</span> ${kind ? badge(kind) : ""}</h1>
     <p class="mono">${a}</p>
@@ -504,6 +510,81 @@ async function addressPage(route) {
     ${live.length ? `<h2>State</h2><p class="section-lead">${chain === "l1" ? "Read from the contract on L1 now." : "From the follower's rebuilt L2 state."}</p>${fields(live)}` : ""}
     ${history}
     ${code}`;
+}
+
+// The source file each contract of the demo is built from.
+function mainSource(a) {
+  const c = (state.session && state.session.contracts) || {};
+  const is = (x) => x && a === x.toLowerCase();
+  if (is(c.rollup)) return "contracts/src/frames/FramesNativeRollup.sol";
+  if (is(c.l2Messenger)) return "contracts/src/l2/L2Messenger.sol";
+  if (is(c.verifier)) return "contracts/src/frames/MockDependencyVerifier.sol";
+  if (is(c.framesHelper)) return "contracts/frames/frame_introspection.eas";
+  if (is(c.registry)) return "sys-asm/src/verification_key_registry/main.eas";
+  return null;
+}
+
+// A file and the files it imports, transitively.
+function sourceClosure(main) {
+  const out = [];
+  const visit = (path) => {
+    if (out.includes(path) || !state.sources[path]) return;
+    out.push(path);
+    state.sources[path].imports.forEach(visit);
+  };
+  visit(main);
+  return out;
+}
+
+function sourceFile(path, open) {
+  return sourceView(path, state.sources[path].content, path.endsWith(".eas"), open);
+}
+
+function sourceView(title, content, assembly, open) {
+  const lines = content.replace(/\n$/, "").split("\n");
+  const width = String(lines.length).length;
+  const body = lines.map((line, i) => {
+    const text = assembly
+      ? (line.includes(";") ? escCode(line.slice(0, line.indexOf(";"))) + `<span class="tk-c">${escCode(line.slice(line.indexOf(";")))}</span>` : escCode(line))
+      : highlight(line);
+    return `<span class="ln">${String(i + 1).padStart(width, " ")}</span>${text}`;
+  }).join("\n");
+  return `<details class="code" ${open ? "open" : ""}><summary><b>${esc(title)}</b> <span class="muted">${lines.length} lines</span></summary><pre class="code src">${body}</pre></details>`;
+}
+
+function sourceSection(a, name, bytecode, chain) {
+  const main = state.sources && mainSource(a);
+  const notes = {
+    "sys-asm/src/verification_key_registry/main.eas": "The EIP-8357 registry, from ethereum/sys-asm. The deployed runtime is this program with the admin's address in place of the system address, since no fork on this devnet performs the system call.",
+    "contracts/frames/frame_introspection.eas": "Built with geas into the runtime the rollup contract deploys.",
+  };
+  let html = "";
+  // Solidity contracts, flattened by L2BEAT's flattener.
+  const flatName = main && main.endsWith(".sol") && main.split("/").pop().replace(".sol", "");
+  if (flatName && state.flat && state.flat[flatName]) {
+    html += `<h2>Source</h2>
+      <p class="section-lead">Flattened with <a href="https://github.com/l2beat/l2beat/tree/main/packages/discovery/src/flatten">L2BEAT's flattener</a>,
+        as L2BEAT shows the contracts it tracks: the contract and everything it inherits and uses, in one file. The separate files are in
+        the repository's <code>contracts/src/</code>.</p>
+      ${sourceView(`${flatName}.sol, flattened`, state.flat[flatName], false, true)}`;
+  } else if (main && state.sources[main]) {
+    const files = sourceClosure(main);
+    const external = [...new Set(files.flatMap((p) => state.sources[p].external))];
+    // Contracts open, libraries closed.
+    const isContract = (p) => p.endsWith(".eas") || /^(abstract )?contract /m.test(state.sources[p].content);
+    html += `<h2>Source</h2>
+      <p class="section-lead">${notes[main] || `The contract's source and the files it imports, as in the repository's <code>contracts/</code>.`}${
+        external.length ? ` It also imports ${external.map((e) => `<code>${esc(e)}</code>`).join(", ")}, not shown.` : ""}</p>
+      ${files.map((p) => sourceFile(p, isContract(p))).join("")}`;
+  } else if (bytecode && /EIP-(7002|7251|8282|2935|4788|8141)|deposit contract/.test(name)) {
+    html += `<h2>Source</h2><p class="section-lead">A system contract from Ethereum's specification, whose source is in
+      <a href="https://github.com/ethereum/sys-asm">ethereum/sys-asm</a>. The L2 genesis holds the bytecode EEST uses for L1.</p>`;
+  }
+  if (bytecode) {
+    html += `<details class="code"><summary><b>Runtime bytecode</b> <span class="muted">${num((bytecode.length - 2) / 2)} bytes, read from ${chain === "l1" ? "the L1 node" : "the follower's L2 state"}</span></summary>
+      <pre class="code bytecode">${esc(bytecode)}</pre></details>`;
+  }
+  return html;
 }
 
 // ---------------------------------------------------------------------------
@@ -593,8 +674,12 @@ function value(v, key, ctx = {}) {
 }
 
 function argTable(args, notes = {}, ctx = {}) {
+  // A struct takes the value and note columns, so its own table has room.
+  const nested = (v) => v && typeof v === "object" && !Array.isArray(v);
   return `<table class="fields"><tbody>${Object.entries(args)
-    .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="value">${value(v, k, ctx)}</td><td class="note">${notes[k] || ""}</td></tr>`)
+    .map(([k, v]) => nested(v)
+      ? `<tr><td>${esc(k)}</td><td class="value nested" colspan="2">${value(v, k, ctx)}</td></tr>`
+      : `<tr><td>${esc(k)}</td><td class="value">${value(v, k, ctx)}</td><td class="note">${notes[k] || ""}</td></tr>`)
     .join("")}</tbody></table>`;
 }
 

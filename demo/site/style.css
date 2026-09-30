@@ -93,6 +93,15 @@ tbody tr:hover { background: #fcfbf8; }
 table.fields td:first-child { width: 210px; color: #3a3a3e; font-weight: 600; }
 table.fields td.value { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; width: 38%; }
 table.fields td.note { color: var(--muted); font-size: 13.5px; }
+a.addr { white-space: nowrap; }
+.nowrap { white-space: nowrap; }
+.net { display: inline-block; font: 700 9.5px/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: 0.03em; padding: 2px 4px; border-radius: 4px; margin-right: 4px; vertical-align: 1.5px; }
+.net.l1 { background: #e3e8f4; color: #34487a; }
+.net.l2 { background: #f1e4f7; color: #7b2fb5; }
+table.fields td.value.nested { width: auto; padding: 2px 0; }
+table.fields table.fields { border: none; background: transparent; }
+table.fields table.fields td:first-child { width: 150px; font-weight: 500; }
+table.fields table.fields td.value { width: auto; }
 
 /* Frames */
 .frames { display: grid; gap: 12px; }
@@ -114,6 +123,11 @@ table.fields td.note { color: var(--muted); font-size: 13.5px; }
 .button { display: inline-block; font: inherit; font-size: 14px; padding: 6px 12px; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); background: var(--soft); }
 .button:hover { border-color: var(--accent); }
 pre.code { font: 12px/1.5 var(--mono); background: var(--soft); padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+
+/* Sources */
+pre.src { max-height: 640px; overflow: auto; }
+.ln { display: inline-block; color: #b8b4aa; margin-right: 14px; user-select: none; }
+pre.bytecode { white-space: pre-wrap; word-break: break-all; font-size: 11.5px; }
 
 /* Blobs */
 .rlp details { margin: 2px 0 2px 0; }
