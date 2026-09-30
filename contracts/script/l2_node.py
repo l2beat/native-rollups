@@ -1,26 +1,36 @@
 """
 A minimal L2 node and mock prover for the native rollup.
 
-It builds real L2 blocks under the L1 stateless validation program's rules
-(execution-specs `projects/zkevm`, Amsterdam), validates each block with
-`run_stateless_guest`, and signs the EIP-8288 dependency only for blocks the
-program accepts, as a stand-in for a zkVM proof of that program.
+It builds real L2 blocks under the L1 stateless validation program's rules,
+validates each block with `run_stateless_guest`, and signs the EIP-8288
+dependency only for blocks the program accepts, as a stand-in for a zkVM
+proof of that program. A native rollup runs its L1's rules, and the L1 here
+has EIP-8141 frame transactions, so the program comes from execution-specs
+`projects/zkevm` merged with `eips/bogota/eip-8141`, which EEST labels as the
+`Bogota` pseudo-fork (Amsterdam with EIP-8141).
 
 Blocks are built with EEST's `BlockchainTest`, which is deterministic, so the
 node only stores the inputs of each block and rebuilds the chain from genesis.
-The genesis holds the system contracts the Specification requires, the
-`L2Messenger` predeploy with the pre-minted gas token supply, and one funded
-L2 account. The node follows the rollup contract on L1: each block claims
-the L1 messages sent up to its anchor, with proofs against that anchor, then
-sends the requested L2 to L1 messages and fills up with random transfers, all
-from the funded account. `prove` gives the proofs that claim an L2 to L1
-message on L1, against the rollup contract's latest L2 block.
+The genesis holds the system contracts the Specification requires and the
+`L2Messenger` predeploy with the pre-minted gas token supply, and no funded
+account: all L2 ETH comes from deposits. The node follows the rollup contract
+on L1, and each block claims the L1 messages sent up to its anchor, with
+proofs against that anchor. A claim is a frame transaction from the node's L2
+account that pays its fee with the claimed ETH:
 
-Run with the execution-specs `projects/zkevm` environment:
+    frame 0  DEFAULT  L2Messenger.claimL1Message(...)
+    frame 1  VERIFY   the account approves execution and payment
 
-    uv run --project <execution-specs@projects/zkevm> python script/l2_node.py genesis --state <file> --l1-rollup <address>
-    uv run --project <execution-specs@projects/zkevm> python script/l2_node.py build --state <file> ...
-    uv run --project <execution-specs@projects/zkevm> python script/l2_node.py prove --state <file> ...
+so the first deposit to that account needs no L2 ETH to claim. Once funded,
+the account also sends the requested L2 to L1 messages and random transfers.
+`prove` gives the proofs that claim an L2 to L1 message on L1, against the
+rollup contract's latest L2 block.
+
+Run with the environment of that execution-specs merge:
+
+    uv run --project <execution-specs> python script/l2_node.py genesis --state <file> --l1-rollup <address>
+    uv run --project <execution-specs> python script/l2_node.py build --state <file> ...
+    uv run --project <execution-specs> python script/l2_node.py prove --state <file> ...
 
 `build` prints a JSON bundle that `frames_operator.py` submits.
 """
@@ -34,10 +44,10 @@ import time
 import rlp
 from trie import HexaryTrie
 
-from execution_testing import EOA, Account, Address, Alloc, Environment, Hash, Transaction
+from execution_testing import EOA, Account, Address, Alloc, Environment, Frame, Hash, Transaction
 from execution_testing.client_clis import ExecutionSpecsTransitionTool
 from execution_testing.fixtures.blockchain import BlockchainFixture
-from execution_testing.forks import Amsterdam
+from execution_testing.forks import Bogota
 from execution_testing.specs.blockchain import Block, BlockchainTest
 
 from ethereum.crypto.hash import keccak256
@@ -59,6 +69,11 @@ PREMINT = 10**27
 MESSENGER_ARTIFACT = os.path.join(os.path.dirname(__file__), "..", "out", "L2Messenger.sol", "L2Messenger.json")
 CLAIM_SIGNATURE = "claimL1Message((address,address,uint256,bytes,uint256),uint256,bytes,bytes[],bytes[])"
 CLAIM_GAS_LIMIT = 3_000_000
+# EIP-8141 frame modes and approval scopes.
+DEFAULT_MODE, VERIFY_MODE = 0, 1
+APPROVE_EXECUTION_AND_PAYMENT = 3
+# Balance the account keeps for the fees of its transfers and messages.
+FEE_RESERVE = 10**16
 L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,bytes)")
 QUEUE_SLOT = 5  # NativeRollup.pendingL1Messages
 CLAIMED_SLOT = 1  # L2Messenger.claimed
@@ -82,9 +97,15 @@ def build_chain(state: dict, specs: list) -> dict:
         claims = [
             Transaction(
                 sender=sender,
-                to=L2_MESSENGER,
-                data=bytes.fromhex(claim["calldata"][2:]),
-                gas_limit=CLAIM_GAS_LIMIT,
+                frames=[
+                    Frame(
+                        mode=DEFAULT_MODE,
+                        target=L2_MESSENGER,
+                        data=bytes.fromhex(claim["calldata"][2:]),
+                        gas_limit=CLAIM_GAS_LIMIT,
+                    ),
+                    Frame(mode=VERIFY_MODE, flags=APPROVE_EXECUTION_AND_PAYMENT),
+                ],
                 chain_id=L2_CHAIN_ID,
                 max_fee_per_gas=10**9,
                 max_priority_fee_per_gas=1,
@@ -128,10 +149,9 @@ def build_chain(state: dict, specs: list) -> dict:
             )
         )
     test = BlockchainTest(
-        fork=Amsterdam,
+        fork=Bogota,
         pre=Alloc(
             {
-                user(): Account(balance=10**24),
                 L2_MESSENGER: Account(
                     code=bytes.fromhex(state["messengerCode"][2:]),
                     balance=PREMINT,
@@ -268,23 +288,43 @@ def state_proof(fixture: dict, address: Address, slot: bytes) -> tuple:
 
 def build(args: argparse.Namespace) -> None:
     state = load(args.state)
-    head_hash, head_number, head_timestamp = head(sync(state, args.head_hash))
+    fixture = sync(state, args.head_hash)
+    head_hash, head_number, head_timestamp = head(fixture)
 
     timestamp = max(int(time.time()), head_timestamp + 1)
     claimed = sum(len(b["claims"]) for b in state["blocks"])
     sent = sum(len(b["l2Messages"]) for b in state["blocks"])
+    # The account only has what deposits gave it. Deposits to it pay for
+    # their own claim, while claiming a message to another account needs
+    # funds first, so claims stop at the first one it cannot pay for.
+    funds = balance(fixture, str(user()))
+    claims = []
+    for claim in l1_messages(args, claimed, timestamp):
+        if int(claim["to"], 16) == int(str(user()), 16):
+            funds += claim["value"]
+        elif funds < FEE_RESERVE:
+            break
+        claims.append(claim)
     l2_messages = []
     for withdrawal in args.withdraw:
         to, value, *data = withdrawal.split(":")
         data = data[0] if data else "0x"
         calldata = cast("calldata", "sendMessage(address,bytes)", to, data)
         l2_messages.append({"index": sent + len(l2_messages), "to": to, "value": int(value), "data": data, "calldata": calldata})
+
+    # It sends messages and transfers once they are covered.
+    if sum(m["value"] for m in l2_messages) + FEE_RESERVE > funds:
+        if l2_messages:
+            raise SystemExit(f"the L2 account has {funds} wei, not enough for the L2 to L1 messages")
+        transfers = []
+    else:
+        transfers = [("0x" + os.urandom(20).hex(), int.from_bytes(os.urandom(2), "big")) for _ in range(2)]
     spec = {
         "timestamp": timestamp,
         "anchorHash": args.anchor_hash,
-        "claims": l1_messages(args, claimed, timestamp),
+        "claims": claims,
         "l2Messages": l2_messages,
-        "transfers": [("0x" + os.urandom(20).hex(), int.from_bytes(os.urandom(2), "big")) for _ in range(2)],
+        "transfers": transfers,
     }
     fixture = build_chain(state, state["blocks"] + [spec])
     block = fixture["blocks"][-1]

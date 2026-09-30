@@ -23,7 +23,7 @@ the frame transaction types, and Foundry's `cast` on the PATH:
     uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py \
         advance --rpc <url> --rollup <address> --verifier <address> \
         --operator-key <key> --prover-key <key> \
-        --l2-state <file> --zkevm-specs <execution-specs@projects/zkevm>
+        --l2-state <file> --zkevm-specs <execution-specs@projects/zkevm+eip-8141>
 """
 
 import argparse
@@ -257,7 +257,7 @@ def main() -> None:
     adv.add_argument("--operator-key", required=True)
     adv.add_argument("--prover-key", required=True)
     adv.add_argument("--l2-state", required=True, help="the L2 node's state file")
-    adv.add_argument("--zkevm-specs", required=True, help="an execution-specs checkout of projects/zkevm")
+    adv.add_argument("--zkevm-specs", required=True, help="execution-specs projects/zkevm merged with eips/bogota/eip-8141")
     adv.add_argument("--corrupt-proof", action="store_true", help="send an invalid mock proof")
     adv.add_argument(
         "--withdraw", action="append", default=[], metavar="TO:WEI[:DATA]", help="send an L2 to L1 message"
@@ -268,7 +268,7 @@ def main() -> None:
     claim.add_argument("--key", required=True, help="the L1 account sending the claim")
     claim.add_argument("--index", type=int, required=True)
     claim.add_argument("--l2-state", required=True, help="the L2 node's state file")
-    claim.add_argument("--zkevm-specs", required=True, help="an execution-specs checkout of projects/zkevm")
+    claim.add_argument("--zkevm-specs", required=True, help="execution-specs projects/zkevm merged with eips/bogota/eip-8141")
     args = parser.parse_args()
     if args.command == "check-vectors":
         check_vectors(args.vectors)

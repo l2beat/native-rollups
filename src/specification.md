@@ -109,7 +109,7 @@ Amsterdam treats a block as invalid if any of its request system contracts has n
 
 Since the request contracts exist, L2 users can create requests. Requests have no effect on L2, and the value sent with them stays locked in the contracts, so the rollup contract accepts any `execution_requests` whose root the L2 proof binds. Fixing them to empty would let anyone halt the rollup by forcing a transaction that creates a request.
 
-The genesis also holds the [L2 messenger](./messaging.md#l1-to-l2-messaging) with the pre-minted supply of the [gas token](./gas_token_deposits.md). The messenger stores the address of the rollup contract, whose queue it proves messages against, while the rollup contract stores the genesis block hash. The genesis is therefore built for the address the rollup contract will have, for example from the deployer's nonce. `CREATE2` does not break the cycle, since the genesis hash is part of the init code.
+The genesis also holds the [L2 messenger](./messaging.md#l1-to-l2-messaging) with the pre-minted supply of the [gas token](./gas_token_deposits.md), and no other ETH, so that L1 backs all L2 ETH. The messenger stores the address of the rollup contract, whose queue it proves messages against, while the rollup contract stores the genesis block hash. The genesis is therefore built for the address the rollup contract will have, for example from the deployer's nonce. `CREATE2` does not break the cycle, since the genesis hash is part of the init code.
 
 ## Proof statement
 

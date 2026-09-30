@@ -16,6 +16,8 @@ Rollup users need the L2 gas token to send transactions. Native rollups cannot m
 
 A predeployed L2 contract holds a pre-minted supply of the gas token. When the [messenger](./messaging.md#l1-to-l2-messaging) processes a deposit message from L1, the contract releases the corresponding amount to the recipient. Withdrawals lock tokens back into the contract and send an [L2 to L1 message](./messaging.md#l2-to-l1-messaging).
 
+Claiming a deposit is an L2 transaction, and all L2 ETH starts in the pre-minted supply, so the claimed ETH has to pay for its own claim. [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions allow this: a `DEFAULT` frame claims the message, then a `VERIFY` frame of the recipient approves execution and payment. EIP-8141 collects the fee from the payer only when it approves, and by then the recipient holds the deposit, so later frames can already use the rest. Deposits to contracts that cannot approve payment still need someone else to claim them.
+
 Because the L2 contract only reacts to messages, the L1 side decides what backs the gas token. Custom gas tokens are therefore only a matter of L1 contract design:
 
 - **ETH**: the L1 contract escrows the ETH sent with each message, as Linea does.
@@ -39,4 +41,5 @@ Alternatives that were considered and dropped:
 
 ## Open questions
 
-- **First deposit**: a user with no gas token on L2 cannot pay to claim their first deposit, so someone else has to claim it for them. Linea's messages already carry a fee that pays whoever delivers them on L2, and the same pattern could apply here.
+- **Claims before EIP-8141**: native rollups only have frame transactions once L1 does. Until then, nobody can pay for the first claim, since all L2 ETH starts in the pre-minted supply. Funding an account at genesis would work around it, but L1 would not back that ETH.
+- **Unpaid claims**: the claim frame runs before payment is approved, so the operator executes a failing claim without collecting a fee. Such transactions fall outside the public mempool's validation rules, so the operator needs its own admission check, such as looking up the message on L1 before including the claim.
