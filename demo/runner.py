@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -106,11 +107,14 @@ class Episode:
 
     def start_follower(self) -> None:
         a = self.args
+        explorer = os.path.join(DATA, "explorer")
+        shutil.rmtree(explorer, ignore_errors=True)
         log = open(os.path.join(DATA, "follower.log"), "a")
         self.follower = subprocess.Popen(
             ["uv", "run", "--project", a.zkevm_specs, "python", "script/l2_follower.py",
              "--l1-rpc", a.rpc, "--beacon", a.beacon, "--rollup", self.contracts["rollup"],
-             "--genesis", self.state, "--watch", "--record", os.path.join(DATA, "follower.json")],
+             "--genesis", self.state, "--watch", "--record", os.path.join(DATA, "follower.json"),
+             "--explorer", explorer],
             cwd=CONTRACTS, stdout=log, stderr=subprocess.STDOUT,
         )
 

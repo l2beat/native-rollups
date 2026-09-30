@@ -42,9 +42,12 @@ from ethereum.forks.amsterdam.transactions import decode_transaction
 from ethereum.forks.amsterdam.transactions.frame_transaction import FrameMode
 
 import block_in_blobs as bib
+import explorer as ex
 import l2_node
 
 BLOCK_ADDED = keccak256(b"BlockAdded(uint64,bytes32)")
+L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,bytes)")
+L2_MESSAGE_CLAIMED = keccak256(b"L2MessageClaimed(uint256,address,address,uint256)")
 ADVANCE_SELECTOR = keccak256(
     b"advance((bytes32,bytes32,bytes,uint64,uint64,uint256,bytes32,bytes32,bytes32,uint256,bytes32,uint256,address,bytes32,bytes),uint256)"
 )[:4]
@@ -141,7 +144,8 @@ def write_record(path: str, entry: dict) -> None:
 def follow(args: argparse.Namespace) -> None:
     chain = genesis(args.genesis)
     gas_limit = int(cast("call", "--rpc-url", args.l1_rpc, args.rollup, "gasLimit()(uint64)").split()[0])
-    verified, from_block = [], 0
+    explorer = ex.Explorer(args.explorer, args.rollup, str(l2_node.L2_MESSENGER)) if args.explorer else None
+    verified, from_block, seen = [], 0, set()
     while True:
         logs = rpc(args.l1_rpc, "eth_getLogs", json.dumps({
             "address": args.rollup, "fromBlock": hex(from_block), "toBlock": "latest",
@@ -150,10 +154,16 @@ def follow(args: argparse.Namespace) -> None:
         for log in logs:
             if int(log["topics"][1], 16) <= len(verified):
                 continue
-            verified.append(rebuild(args, chain, gas_limit, log))
+            entry, details = rebuild(args, chain, gas_limit, log)
+            verified.append(entry)
             from_block = int(log["blockNumber"], 16)
+            if explorer:
+                index_block(args, explorer, details)
             if args.record:
                 write_record(args.record, {"rollup": args.rollup, "verified": verified, "updatedAt": int(time.time())})
+        if explorer:
+            index_messages(args, explorer, seen)
+            explorer.save_index()
         if not args.watch:
             break
         time.sleep(args.interval)
@@ -162,7 +172,54 @@ def follow(args: argparse.Namespace) -> None:
     print(f"followed {len(verified)} L2 blocks from L1 data, state root {state_root} matches the rollup contract")
 
 
-def rebuild(args: argparse.Namespace, chain: fork.BlockChain, gas_limit: int, log: dict) -> dict:
+def l1_tx(args: argparse.Namespace, tx_hash: str) -> dict:
+    tx = rpc(args.l1_rpc, "eth_getTransactionByHash", tx_hash)
+    receipt = rpc(args.l1_rpc, "eth_getTransactionReceipt", tx_hash)
+    block = rpc(args.l1_rpc, "eth_getBlockByNumber", tx["blockNumber"], "false")
+    return ex.l1_transaction(tx, receipt, block)
+
+
+def index_block(args: argparse.Namespace, explorer: ex.Explorer, d: dict) -> None:
+    """Writes a rebuilt L2 block, its transactions and the L1 transaction that carried it."""
+    h, output = d["header"], d["output"]
+    transactions, previous = [], 0
+    for raw, receipt in zip(d["transactions"], ex.receipts(output)):
+        gas = int(receipt.cumulative_gas_used) - previous
+        previous = int(receipt.cumulative_gas_used)
+        transactions.append(ex.l2_transaction(raw, receipt, gas, str(l2_node.L2_MESSENGER).lower()))
+    advance = l1_tx(args, d["log"]["transactionHash"])
+    params = next(f["call"]["args"]["params"] for f in advance["frames"] if (f.get("call") or {}).get("function") == "advance")
+    block = {
+        "number": int(h.number), "hash": ex.hx(keccak256(rlp.encode(h))), "parentHash": ex.hx(h.parent_hash),
+        "stateRoot": ex.hx(h.state_root), "receiptsRoot": ex.hx(h.receipt_root),
+        "transactionsRoot": ex.hx(h.transactions_root), "gasUsed": int(h.gas_used), "gasLimit": int(h.gas_limit),
+        "timestamp": int(h.timestamp), "baseFeePerGas": int(h.base_fee_per_gas), "feeRecipient": ex.hx(h.coinbase),
+        "prevRandao": ex.hx(h.prev_randao), "extraData": ex.hx(h.extra_data), "withdrawalsRoot": ex.hx(h.withdrawals_root),
+        "blobGasUsed": int(h.blob_gas_used), "excessBlobGas": int(h.excess_blob_gas),
+        "parentBeaconBlockRoot": ex.hx(h.parent_beacon_block_root), "requestsHash": ex.hx(h.requests_hash),
+        "blockAccessListHash": ex.hx(h.block_access_list_hash), "slotNumber": int(h.slot_number),
+        "anchorBlockNumber": params["anchorBlockNumber"], "balBytes": len(d["bal"]),
+        "payloadBytes": bib.payload_data_length(d["bal"], d["transactions"]),
+        "sszRoots": {k: params[k] for k in ("transactionsRoot", "blockAccessListRoot", "executionRequestsRoot")},
+        "l1": {"tx": advance["hash"], "block": advance["block"], "blobVersionedHashes": advance["blobVersionedHashes"]},
+        "recordedHash": d["recordedHash"],
+    }
+    explorer.add_l2_block(block, transactions)
+    explorer.add_l1_tx(advance, "advance", l2Block=block["number"])
+
+
+def index_messages(args: argparse.Namespace, explorer: ex.Explorer, seen: set) -> None:
+    """Indexes the L1 transactions that send deposits and claim withdrawals."""
+    for topic, kind in ((L1_MESSAGE_SENT, "deposit"), (L2_MESSAGE_CLAIMED, "withdrawal claim")):
+        for log in rpc(args.l1_rpc, "eth_getLogs", json.dumps({
+            "address": args.rollup, "fromBlock": "0x0", "toBlock": "latest", "topics": ["0x" + topic.hex()],
+        })):
+            if log["transactionHash"] not in seen:
+                seen.add(log["transactionHash"])
+                explorer.add_l1_tx(l1_tx(args, log["transactionHash"]), kind)
+
+
+def rebuild(args: argparse.Namespace, chain: fork.BlockChain, gas_limit: int, log: dict) -> tuple:
     """Rebuilds and applies the L2 block that `log` announces."""
     number = int(log["topics"][1], 16)
     recorded_hash = bytes.fromhex(log["data"][2:66])
@@ -214,6 +271,10 @@ def rebuild(args: argparse.Namespace, chain: fork.BlockChain, gas_limit: int, lo
         f"and a {len(bal)}-byte BAL from {len(blobs)} blob(s), re-executed, hash 0x{rebuilt_hash.hex()} matches",
         flush=True,
     )
+    details = {
+        "header": h, "output": output, "transactions": transactions, "bal": bal, "log": log,
+        "recordedHash": "0x" + recorded_hash.hex(),
+    }
     return {
         "number": number,
         "l1Block": int(log["blockNumber"], 16),
@@ -224,7 +285,7 @@ def rebuild(args: argparse.Namespace, chain: fork.BlockChain, gas_limit: int, lo
         "balBytes": len(bal),
         "blobs": len(blobs),
         "match": True,
-    }
+    }, details
 
 
 def main() -> None:
@@ -236,6 +297,7 @@ def main() -> None:
     parser.add_argument("--watch", action="store_true", help="keep following new L2 blocks")
     parser.add_argument("--interval", type=float, default=4, help="seconds between polls with --watch")
     parser.add_argument("--record", help="keep the verified blocks in this JSON file")
+    parser.add_argument("--explorer", help="write the decoded blocks and transactions to this directory")
     follow(parser.parse_args())
 
 

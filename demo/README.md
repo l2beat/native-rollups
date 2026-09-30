@@ -1,8 +1,10 @@
 # Native rollup demo
 
-A live page that shows the native rollup of `contracts/` running on a local copy of frames-devnet-0: each L2 block from its transactions to an independent node rebuilding it from L1, the ETH moving between L1 and L2, the costs, and what is real and what is mocked.
+An annotated explorer for the native rollup of `contracts/`, running on a local copy of frames-devnet-0. It lists every L2 block and the rollup's L1 transactions, breaks each transaction down frame by frame with decoded calls and events, links deposits and withdrawals across both chains, and notes on every field what it is, where it comes from, and whether it is real, mocked, or a shortcut of the demo.
 
-- `runner.py` deploys a rollup and advances it with a scripted story, recording every step in `data/session.json`. A follower rebuilds the chain from L1 on its own and records what it verified in `data/follower.json`. After 150 L2 blocks, it starts a new episode.
+Its L2 data comes from the follower, which rebuilds every block from L1 alone, and it reads live chain state directly from the L1 and beacon nodes.
+
+- `runner.py` deploys a rollup and advances it with a scripted story, recording the operator's side of every step in `data/session.json`. A follower rebuilds the chain from L1 on its own and writes the decoded blocks and transactions to `data/explorer/`. After 150 L2 blocks, it starts a new episode.
 - `server.py` serves `site/`, the records, and read-only access to the L1 node and the beacon node, so that the page reads the chain itself.
 - `site/` is a static page with no build step.
 

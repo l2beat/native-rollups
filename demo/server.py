@@ -9,6 +9,7 @@ chain itself instead of trusting the records.
 import argparse
 import json
 import os
+import re
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -34,6 +35,12 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path.startswith("/api/explorer/"):
+            relative = self.path[len("/api/explorer/"):]
+            path = os.path.join(DATA, "explorer", relative)
+            if not re.fullmatch(r"[a-z0-9/]+(\.json)", relative) or ".." in relative or not os.path.exists(path):
+                return self.send_json(b"null", 404)
+            return self.send_json(open(path, "rb").read())
         if self.path in ("/api/session", "/api/follower"):
             path = os.path.join(DATA, self.path.split("/")[-1] + ".json")
             return self.send_json(open(path, "rb").read() if os.path.exists(path) else b"null")
