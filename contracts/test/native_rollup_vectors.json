@@ -150,5 +150,111 @@
       "newPayloadRequestRoot": "0x53a22d7ca85ab6da350ee47e848d60bb1d930ba7c52538ef910b09c7de4b72b4",
       "publicInputRoot": "0x08ebaf51adb07661ebc5deeda6e357e3a16bebd7e00b7b90dba8cd6b5d9afe40"
     }
-  ]
+  ],
+  "chain": {
+    "genesisHash": "0x4d617171e5c221742d7460722ff08a9f7697e5427a41bfd1c0f4cb8f2272bb4a",
+    "genesisStateRoot": "0xe478fbed93f6560a8429b0e71c2c8100834429680c231567c2006e4065ff936f",
+    "gasLimit": 60000000,
+    "blocks": [
+      {
+        "header": {
+          "parentHash": "0x4d617171e5c221742d7460722ff08a9f7697e5427a41bfd1c0f4cb8f2272bb4a",
+          "feeRecipient": "0xf246f98bda926edc0da8cba7fbe6974d44211458",
+          "stateRoot": "0x11dd5eab665fb362743a3921f0ec37257efc849b2ab1c1db5c1513a47112caa4",
+          "receiptsRoot": "0x30d59c861effb6975d15ccffd472a5f7bf347146b9bae05830c9f6c6050570ea",
+          "logsBloom": "0xc0b988130fc95641843e3354e3249deb193e7cc32e2e873f833eed128299a1463cfd5b163186b9cd0a5395e3212524370c1baf6f0d1ebe9e52b3cba495116f3b5a74716e814e54d551059bde06d822e7cabd79add408a48f43674765cd170d41c5db50fefc8987d57b2f74f68959b17455d9d52059618575553ff92d2ded9f44fc4cf268c70c9e698d04eddbfccef277c75fd6f26f658df9b65f082bc8814e07c748713034bc50c8b8d68a1b1cc5e3ea0c1cc5a4ab14959cd00f1b19a066f2cbbd87b2e2b5fe3201ceee26cc82bd3ffe3188829735d87ba3317be4944b03d2d81230b050f408033077d77b77afec64a120d932f00a7e9192f75f0788dbfcdd48",
+          "prevRandao": "0x8b1fb4b6be0d6be01deb9e1c47c00da3af6e7fe861c9e96b0b56fee68c096b9f",
+          "blockNumber": 1,
+          "gasLimit": 60000000,
+          "gasUsed": 338398584,
+          "timestamp": 12084527942,
+          "extraData": "0x",
+          "baseFeePerGas": "0x984f1c97acb3c22b684c",
+          "blockHash": "0x887ea46116245f25f9c61af5bdcb3f9b55d1fd75d0e6b907c2febeeaa1be5cd7",
+          "transactionsRoot": "0x8451a547dcf3e8cefe254454940d95c753ff307c162120845a0fdcfc2088ca07",
+          "withdrawalsRoot": "0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b",
+          "blobGasUsed": 0,
+          "excessBlobGas": 0,
+          "blockAccessListRoot": "0x263c3473d4b01016c90580d95b168c9a8b72541b819dbf415a96af429a0c339d",
+          "slotNumber": 0
+        },
+        "versionedHashes": [
+          "0x019ec44a017bcbd8ee5d5a76d07be62524813ef05f9a083ddfeba4a8b9fa7ee4"
+        ],
+        "parentBeaconBlockRoot": "0xa36d7b0604f5e2ec8342a4f17a2d7127e21414759e787a1e13c0dc73fafa795a",
+        "executionRequestsRoot": "0x87b69a306c8e430d0857f7c4ac5e27cecffa1108d43c2e5df7388056fea7a423",
+        "payloadRoot": "0x9d4b27ea0dcd90be8f597c426aff80b8bf1748ae8a2a9dbf9d15cb90e64dad40",
+        "versionedHashesRoot": "0x0214cf14cd68c75699f2fe935c7a74e59e4f67a1f5e7b392f66be3bfd3f40a67",
+        "newPayloadRequestRoot": "0x39ea1b21d92c3241b137823f3fff0701d376bc082df5693dfd09fac5e231f00a",
+        "publicInputRoot": "0xed936d1217c6ec564dccfcb335668434a6e5cedbc3b3eabc481e739ad4be9f73",
+        "payloadBlobCount": 1
+      },
+      {
+        "header": {
+          "parentHash": "0x887ea46116245f25f9c61af5bdcb3f9b55d1fd75d0e6b907c2febeeaa1be5cd7",
+          "feeRecipient": "0x5d6e726c106ebe0fe47e4cbbc4ee2fc941a31d79",
+          "stateRoot": "0x27c58655eca9e106a819f3605392df9fae4aeca08b591dc16614e717a96e0782",
+          "receiptsRoot": "0x86040b8f7c8962d7510a534cbf042dd2cdf8d7a48cb2314b14b76a9065d5ab70",
+          "logsBloom": "0x77293d78cd8fa6a244043972e3a0cb6d38d8b7a0ae8afc22b556a7ade6199eb0d54f1e1655a1b027302260d6ca4cb98d9755da3b5aaf4cb522d1229e3dca8ce88c5163d425a8ba697a40703e55863b170eceb75f0bca948b0909c06100e8425647a76c7180bc1edec76bfef733a7423636d2a2f204cedbe4812621b71145d54628e12946477000d9ae5e2546725a7fdeb8e12bd03e0b5fb00eaa213e1d2e736d983d687684ea5e0f468caeaa0e0fe47e69ed1508f02798b7e802f340399c1674b8010ffc0772029f8785b30e1781e7f41d9695fb5d62b17bc086172f1e351bd4cb58afdfa6cc8ca50e06d85b3ef3d08efe36e1c21a4ab9cc22f2031626c56fe0",
+          "prevRandao": "0xe20db512146f4ab0ec69a4ebed1ec7e1f7cfc94fcb876d0cbfa530b713095c79",
+          "blockNumber": 2,
+          "gasLimit": 60000000,
+          "gasUsed": 10454339,
+          "timestamp": 5089967782,
+          "extraData": "0x2f48886ab48b0b5ba2887e3f",
+          "baseFeePerGas": "0x6ce376085c9b06ca42bc",
+          "blockHash": "0x9e20c88f3805ba67fc7c280b6288fbcb9485743bbf1d3627cb8c3cdbecb3fc58",
+          "transactionsRoot": "0xbdbffcff05966a4ba0ebb500c7cc4c3ea0d952a174740a90224c7f5d93983aa5",
+          "withdrawalsRoot": "0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b",
+          "blobGasUsed": 0,
+          "excessBlobGas": 0,
+          "blockAccessListRoot": "0x910e9c2a7ca73782e06a97a31e1345d64a671aee4a96bd5d2b40e6e7bb365e07",
+          "slotNumber": 0
+        },
+        "versionedHashes": [
+          "0x01bf1f892ab809164b1d76754de52caec0b06be1ef9cf70cebb74890fe3afcbd",
+          "0x014d29ce4ac9e372c792fb45bdae8acdca13ebf880a75f6f2ad2c3bd1e3d4d20",
+          "0x018c6acd88b0c8c3d9832fc3708c39375280f48f3e81c4c9865beb0a030b0b39"
+        ],
+        "parentBeaconBlockRoot": "0x1b8384e11ee27e2e181c962a595207f72562e96d026814b26a3b40adb3340da4",
+        "executionRequestsRoot": "0xcaafd64edb41195810b5fdd1fbad9c2cc27775b07c1b3f5ae9e4c51c1515078c",
+        "payloadRoot": "0x7823b8ccfe7fa67c440b9fbff4728b8b7ef64287390345c77d2e59933630d006",
+        "versionedHashesRoot": "0x95ad1502a1c15b81b523c885a771d6f13516342957f86295ba1d3cda9a26ee02",
+        "newPayloadRequestRoot": "0x8320ed14781ea3a1accde8627c7c9ef68badf7b32d1f9eefe35ec07934982cc7",
+        "publicInputRoot": "0xd5ccb63fd3aaade9e9d8f5c04d84aefa3b72d603388b37980270b62311602598",
+        "payloadBlobCount": 3
+      },
+      {
+        "header": {
+          "parentHash": "0x9e20c88f3805ba67fc7c280b6288fbcb9485743bbf1d3627cb8c3cdbecb3fc58",
+          "feeRecipient": "0x945338052ae82afaf140a5bd3dbfe2e2addb614a",
+          "stateRoot": "0x51f2ae9af5ffa3d8eede7edfb3d4a6e89444cf1f9e7b4d65e68dd2312a56888a",
+          "receiptsRoot": "0x81bccf20bc993a71368f154852ebc310916989ab1b386e812f739cfbbecc2557",
+          "logsBloom": "0x414d0009453e24888b541d41d4b2b05de40b2fca9e0337fd75f8b64dddccdd8033b9d8570e41163f499555860c8a0469fe725fbfe8e29a8b4c42360882d209fa70b4368007a86ed4d1834744dde97cae2b97661b7485aff2b05edc437a49f9319d581e2570a1b8b736ccf0d34c8d7de26ba3bbc777f59420d2bbb9f1fefb63771b4fe57c2907aa2b31ced96db7861cfe67a3890a8a37626efca5ea75d92a4439fb00d1f7c5608ed1a7f4f923b7f03ce327d35a1c01bad22b66416a05f19f22f80255810224f2e72c08d31dfb51628459d5204d092355241ab418dddff579690e627bb24c90e93511a285f5602cbc10618ca0320025f87afc61c2fbaa5d0fe87f",
+          "prevRandao": "0x673745ad61a0b34228f9d044783a06c11d9b5480d8538629626a44efb3687486",
+          "blockNumber": 3,
+          "gasLimit": 60000000,
+          "gasUsed": 143224390,
+          "timestamp": 12917927126,
+          "extraData": "0xaec9a67f99fe9b624b6581701a8fa58a8228ea60e6d883f5e84bf1acd97c65e1",
+          "baseFeePerGas": "0x43461dd1a58147dec6f3",
+          "blockHash": "0xc6e7911d3325f9ba0cc9926957972736c01aee4d631dad9c0ec2c702cd04e9e8",
+          "transactionsRoot": "0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b",
+          "withdrawalsRoot": "0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b",
+          "blobGasUsed": 0,
+          "excessBlobGas": 0,
+          "blockAccessListRoot": "0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b",
+          "slotNumber": 0
+        },
+        "versionedHashes": [],
+        "parentBeaconBlockRoot": "0x33d1020ecf354fe745a580bcabbc338977f89f4f0a84e0011aa148c2c99352a7",
+        "executionRequestsRoot": "0x87b69a306c8e430d0857f7c4ac5e27cecffa1108d43c2e5df7388056fea7a423",
+        "payloadRoot": "0xe88fb23b5cfead4a2cd3e14213cf3a8a5ffa0a666a8713328aeac3cc07075e48",
+        "versionedHashesRoot": "0xdba9671bac9513c9482f1416a53aabd2c6ce90d5a5f865ce5a55c775325c9136",
+        "newPayloadRequestRoot": "0xbbe35c9b69719e8758ef5814cca01fa197fee5f038db7b410eed07667e9d66e1",
+        "publicInputRoot": "0x2706cbdad83ddfb9fea08ea86c3fc24a68a5b6e39b5902102619a17bb36c5447",
+        "payloadBlobCount": 0
+      }
+    ]
+  }
 }

@@ -21,6 +21,7 @@ rng = random.Random(8079)
 
 CHAIN_ID = 8079
 SCHEMA_ID = 0x1501
+GAS_LIMIT = 60_000_000
 
 
 def rand_bytes(n: int) -> bytes:
@@ -31,16 +32,25 @@ def hx(b: bytes) -> str:
     return "0x" + bytes(b).hex()
 
 
-def build(n_txs: int, bal_len: int, extra_len: int, n_blobs: int, requests: bool) -> dict:
+def build(
+    n_txs: int,
+    bal_len: int,
+    extra_len: int,
+    n_blobs: int,
+    requests: bool,
+    parent_hash: bytes | None = None,
+    block_number: int | None = None,
+    gas_limit: int | None = None,
+) -> dict:
     payload = spec.ExecutionPayload(
-        parent_hash=spec.Hash32(rand_bytes(32)),
+        parent_hash=spec.Hash32(parent_hash or rand_bytes(32)),
         fee_recipient=spec.ExecutionAddress(rand_bytes(20)),
         state_root=spec.Bytes32(rand_bytes(32)),
         receipts_root=spec.Bytes32(rand_bytes(32)),
         logs_bloom=spec.LogsBloom.decode_bytes(rand_bytes(256)),
         prev_randao=spec.Bytes32(rand_bytes(32)),
-        block_number=spec.Uint64(rng.getrandbits(40)),
-        gas_limit=spec.Uint64(rng.getrandbits(30)),
+        block_number=spec.Uint64(rng.getrandbits(40) if block_number is None else block_number),
+        gas_limit=spec.Uint64(rng.getrandbits(30) if gas_limit is None else gas_limit),
         gas_used=spec.Uint64(rng.getrandbits(29)),
         timestamp=spec.Uint64(rng.getrandbits(34)),
         extra_data=spec.ExtraData.decode_bytes(rand_bytes(extra_len)),
@@ -126,6 +136,19 @@ def main() -> None:
         build(n_txs=40, bal_len=5000, extra_len=32, n_blobs=6, requests=True),
         build(n_txs=1, bal_len=31, extra_len=31, n_blobs=17, requests=False),
     ]
+    # A chain the rollup contract advances through: each block extends the
+    # previous one, with the gas limit and slot number the contract fixes.
+    genesis_hash = rand_bytes(32)
+    genesis_state_root = rand_bytes(32)
+    blocks = []
+    parent = genesis_hash
+    for number, shape in enumerate(
+        [(2, 100, 0, 1, False), (5, 800, 12, 3, True), (0, 0, 32, 0, False)], start=1
+    ):
+        block = build(*shape, parent_hash=parent, block_number=number, gas_limit=GAS_LIMIT)
+        block["payloadBlobCount"] = len(block["versionedHashes"])
+        blocks.append(block)
+        parent = bytes.fromhex(block["header"]["blockHash"][2:])
     print(
         json.dumps(
             {
@@ -133,6 +156,12 @@ def main() -> None:
                 "schemaId": SCHEMA_ID,
                 "emptyListRoot": hx(spec.hash_tree_root(spec.Withdrawals())),
                 "cases": cases,
+                "chain": {
+                    "genesisHash": hx(genesis_hash),
+                    "genesisStateRoot": hx(genesis_state_root),
+                    "gasLimit": GAS_LIMIT,
+                    "blocks": blocks,
+                },
             },
             indent=2,
         )
