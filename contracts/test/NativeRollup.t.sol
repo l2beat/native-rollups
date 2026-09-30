@@ -20,8 +20,20 @@ contract TestNativeRollup is NativeRollup {
         bytes32 genesisStateRoot,
         VkPolicy vkPolicy_,
         bytes32 pinnedVkHash_,
-        address evmVkRegistry_
-    ) NativeRollup(chainId_, gasLimit_, genesisBlockHash, genesisStateRoot, vkPolicy_, pinnedVkHash_, evmVkRegistry_) {}
+        address evmVkRegistry_,
+        address l2Messenger_
+    )
+        NativeRollup(
+            chainId_,
+            gasLimit_,
+            genesisBlockHash,
+            genesisStateRoot,
+            vkPolicy_,
+            pinnedVkHash_,
+            evmVkRegistry_,
+            l2Messenger_
+        )
+    {}
 
     function setDependency(uint8 scheme, bytes32 dataHash, bytes32 vkHash) external {
         depScheme = scheme;
@@ -77,7 +89,8 @@ contract NativeRollupTest is Test {
             json.readBytes32(".chain.genesisStateRoot"),
             policy,
             pinned,
-            REGISTRY
+            REGISTRY,
+            address(0)
         );
     }
 

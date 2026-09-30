@@ -10,6 +10,8 @@ The L2 blocks are real. `script/l2_node.py` builds them under the L1 stateless v
 
 L1 to L2 messages follow the book's [messaging](../../src/messaging.md#l1-to-l2-messaging) and [gas token](../../src/gas_token_deposits.md) designs. The genesis holds the `L2Messenger` predeploy with a pre-minted supply of the gas token. The node reads the `L1MessageSent` events of the rollup contract, and each block claims the messages sent up to its anchor, with the anchor's header and `eth_getProof` proofs of their `pendingL1Messages` entries. A funded genesis account pays for the claims, standing in for the book's open question of who claims a user's first deposit.
 
+L2 to L1 messages go the other way: the messenger's `sendMessage` locks the value back into its supply and appends the message hash to `sentMessages`, and the rollup contract's `claimL2Message` proves that entry against a state root in `stateRootHistory` and pays the value out of its escrow. The node sends messages from the funded account on request, and builds the proofs from the L2 state of the rollup's latest block.
+
 ## Local network
 
 ```shell
@@ -38,4 +40,12 @@ uv run --project <execution-specs@devnets/frames/0> python script/frames_operato
     --l2-state <l2-state> --zkevm-specs <execution-specs@projects/zkevm>
 ```
 
-The two scripts use different execution-specs branches, since the frame transaction types only exist on the devnet branch and the L2 runs the zkEVM project's program. `advance` anchors the block to the latest L1 block, so it claims every message sent so far. Each `advance` sends one frame transaction: the operator's `VERIFY` frame, the dependency frame, and a `SENDER` frame calling `advance`. `--corrupt-proof` sends an invalid proof, which makes the dependency frame and `advance` fail.
+The two scripts use different execution-specs branches, since the frame transaction types only exist on the devnet branch and the L2 runs the zkEVM project's program. Each `advance` sends one frame transaction: the operator's `VERIFY` frame, the dependency frame, and a `SENDER` frame calling `advance`. `--corrupt-proof` sends an invalid proof, which makes the dependency frame and `advance` fail.
+
+`advance` anchors the block to the latest L1 block, so it claims every message sent so far. `--withdraw <l1-recipient>:<wei>[:<data>]` also sends an L2 to L1 message, which `claim-l2-message` claims on L1 once the rollup has the block:
+
+```shell
+uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py claim-l2-message \
+    --rpc <rpc> --rollup <rollup> --key <key> --index <index> \
+    --l2-state <l2-state> --zkevm-specs <execution-specs@projects/zkevm>
+```

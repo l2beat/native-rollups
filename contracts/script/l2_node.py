@@ -12,13 +12,15 @@ The genesis holds the system contracts the Specification requires, the
 `L2Messenger` predeploy with the pre-minted gas token supply, and one funded
 L2 account. The node follows the rollup contract on L1: each block claims
 the L1 messages sent up to its anchor, with proofs against that anchor, then
-fills up with random transfers from the funded account, which also pays for
-the claims.
+sends the requested L2 to L1 messages and fills up with random transfers, all
+from the funded account. `prove` gives the proofs that claim an L2 to L1
+message on L1, against the rollup contract's latest L2 block.
 
 Run with the execution-specs `projects/zkevm` environment:
 
     uv run --project <execution-specs@projects/zkevm> python script/l2_node.py genesis --state <file> --l1-rollup <address>
     uv run --project <execution-specs@projects/zkevm> python script/l2_node.py build --state <file> ...
+    uv run --project <execution-specs@projects/zkevm> python script/l2_node.py prove --state <file> ...
 
 `build` prints a JSON bundle that `frames_operator.py` submits.
 """
@@ -28,6 +30,9 @@ import json
 import os
 import subprocess
 import time
+
+import rlp
+from trie import HexaryTrie
 
 from execution_testing import EOA, Account, Address, Alloc, Environment, Hash, Transaction
 from execution_testing.client_clis import ExecutionSpecsTransitionTool
@@ -57,6 +62,8 @@ CLAIM_GAS_LIMIT = 3_000_000
 L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,bytes)")
 QUEUE_SLOT = 5  # NativeRollup.pendingL1Messages
 CLAIMED_SLOT = 1  # L2Messenger.claimed
+SENT_SLOT = 2  # L2Messenger.sentMessages
+SEND_GAS_LIMIT = 500_000
 
 
 def user() -> EOA:
@@ -84,6 +91,19 @@ def build_chain(state: dict, specs: list) -> dict:
             )
             for claim in spec["claims"]
         ]
+        messages = [
+            Transaction(
+                sender=sender,
+                to=L2_MESSENGER,
+                value=message["value"],
+                data=bytes.fromhex(message["calldata"][2:]),
+                gas_limit=SEND_GAS_LIMIT,
+                chain_id=L2_CHAIN_ID,
+                max_fee_per_gas=10**9,
+                max_priority_fee_per_gas=1,
+            )
+            for message in spec["l2Messages"]
+        ]
         transfers = [
             Transaction(
                 sender=sender,
@@ -98,7 +118,7 @@ def build_chain(state: dict, specs: list) -> dict:
         ]
         blocks.append(
             Block(
-                txs=claims + transfers,
+                txs=claims + messages + transfers,
                 timestamp=spec["timestamp"],
                 parent_beacon_block_root=Hash(spec["anchorHash"]),
                 slot_number=0,
@@ -203,25 +223,67 @@ def genesis(args: argparse.Namespace) -> None:
     print(json.dumps({"genesisHash": header["hash"], "genesisStateRoot": header["stateRoot"]}))
 
 
-def build(args: argparse.Namespace) -> None:
-    state = load(args.state)
-
-    # Keep the pending block only if the rollup accepted it.
+def sync(state: dict, head_hash: str) -> dict:
+    """Keeps the pending block only if the rollup accepted it, and returns
+    the chain at the rollup's head."""
     if state["pending"] is not None:
-        if head(build_chain(state, state["blocks"] + [state["pending"]]))[0] == args.head_hash:
+        if head(build_chain(state, state["blocks"] + [state["pending"]]))[0] == head_hash:
             state["blocks"].append(state["pending"])
         state["pending"] = None
     fixture = build_chain(state, state["blocks"])
-    head_hash, head_number, head_timestamp = head(fixture)
-    if head_hash != args.head_hash:
-        raise SystemExit(f"L2 node at {head_hash}, rollup at {args.head_hash}")
+    if head(fixture)[0] != head_hash:
+        raise SystemExit(f"L2 node at {head(fixture)[0]}, rollup at {head_hash}")
+    return fixture
+
+
+def secure_trie(entries: dict) -> HexaryTrie:
+    trie = HexaryTrie({})
+    for key, value in entries.items():
+        trie[keccak256(key)] = value
+    return trie
+
+
+def state_proof(fixture: dict, address: Address, slot: bytes) -> tuple:
+    """Account and storage proofs, in `eth_getProof` form, against the
+    state root of the fixture's last block."""
+    storage_tries = {}
+    accounts = {}
+    for addr, account in fixture["postState"].items():
+        storage = secure_trie(
+            {int(k, 16).to_bytes(32, "big"): rlp.encode(int(v, 16)) for k, v in account["storage"].items() if int(v, 16)}
+        )
+        key = bytes.fromhex(addr[2:])
+        storage_tries[key] = storage
+        accounts[key] = rlp.encode(
+            [int(account["nonce"], 16), int(account["balance"], 16), storage.root_hash, keccak256(bytes.fromhex(account["code"][2:]))]
+        )
+    state = secure_trie(accounts)
+    header = fixture["blocks"][-1]["blockHeader"] if fixture["blocks"] else fixture["genesisBlockHeader"]
+    assert "0x" + state.root_hash.hex() == header["stateRoot"], "state root"
+    target = bytes(address)
+    account_proof = [rlp.encode(node) for node in state.get_proof(keccak256(target))]
+    storage_proof = [rlp.encode(node) for node in storage_tries[target].get_proof(keccak256(slot))]
+    return ["0x" + n.hex() for n in account_proof], ["0x" + n.hex() for n in storage_proof]
+
+
+def build(args: argparse.Namespace) -> None:
+    state = load(args.state)
+    head_hash, head_number, head_timestamp = head(sync(state, args.head_hash))
 
     timestamp = max(int(time.time()), head_timestamp + 1)
     claimed = sum(len(b["claims"]) for b in state["blocks"])
+    sent = sum(len(b["l2Messages"]) for b in state["blocks"])
+    l2_messages = []
+    for withdrawal in args.withdraw:
+        to, value, *data = withdrawal.split(":")
+        data = data[0] if data else "0x"
+        calldata = cast("calldata", "sendMessage(address,bytes)", to, data)
+        l2_messages.append({"index": sent + len(l2_messages), "to": to, "value": int(value), "data": data, "calldata": calldata})
     spec = {
         "timestamp": timestamp,
         "anchorHash": args.anchor_hash,
         "claims": l1_messages(args, claimed, timestamp),
+        "l2Messages": l2_messages,
         "transfers": [("0x" + os.urandom(20).hex(), int.from_bytes(os.urandom(2), "big")) for _ in range(2)],
     }
     fixture = build_chain(state, state["blocks"] + [spec])
@@ -230,6 +292,8 @@ def build(args: argparse.Namespace) -> None:
         key = keccak256(claim["index"].to_bytes(32, "big") + CLAIMED_SLOT.to_bytes(32, "big"))
         if storage(fixture, L2_MESSENGER, key) != 1:
             raise SystemExit(f"the claim of L1 message {claim['index']} failed")
+    if storage(fixture, L2_MESSENGER, SENT_SLOT.to_bytes(32, "big")) != sent + len(l2_messages):
+        raise SystemExit("sending an L2 to L1 message failed")
 
     # Validate the block with the L1 stateless validation program.
     input_bytes = bytes.fromhex(block["statelessInputBytes"][2:])
@@ -296,6 +360,10 @@ def build(args: argparse.Namespace) -> None:
                     {k: c[k] for k in ("index", "sender", "to", "value")} | {"l2Balance": balance(fixture, c["to"])}
                     for c in spec["claims"]
                 ],
+                "l2Messages": [
+                    {k: m[k] for k in ("index", "to", "value", "data")} | {"sender": str(user())}
+                    for m in spec["l2Messages"]
+                ],
                 "params": {
                     "stateRoot": hx(header["stateRoot"]),
                     "receiptsRoot": hx(header["receiptsRoot"]),
@@ -320,6 +388,30 @@ def build(args: argparse.Namespace) -> None:
     )
 
 
+def prove(args: argparse.Namespace) -> None:
+    """Proves L2 to L1 message `index` against the rollup's latest L2 block."""
+    state = load(args.state)
+    fixture = sync(state, args.head_hash)
+    json.dump(state, open(args.state, "w"), indent=2)
+    messages = [m for b in state["blocks"] for m in b["l2Messages"]]
+    if args.index >= len(messages):
+        raise SystemExit(f"L2 to L1 message {args.index} is not in an L2 block the rollup has")
+    message = messages[args.index]
+    slot = int.from_bytes(keccak256(SENT_SLOT.to_bytes(32, "big")), "big") + args.index
+    account_proof, storage_proof = state_proof(fixture, L2_MESSENGER, slot.to_bytes(32, "big"))
+    print(
+        json.dumps(
+            {
+                "message": {k: message[k] for k in ("index", "to", "value", "data")} | {"sender": str(user())},
+                "blockNumber": head(fixture)[1],
+                "stateRoot": fixture["blocks"][-1]["blockHeader"]["stateRoot"],
+                "accountProof": account_proof,
+                "storageProof": storage_proof,
+            }
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -338,8 +430,15 @@ def main() -> None:
     b.add_argument("--prover-key", required=True)
     b.add_argument("--l1-rpc", required=True)
     b.add_argument("--rollup", required=True)
+    b.add_argument(
+        "--withdraw", action="append", default=[], metavar="TO:WEI[:DATA]", help="send an L2 to L1 message"
+    )
+    p = sub.add_parser("prove")
+    p.add_argument("--state", required=True)
+    p.add_argument("--head-hash", required=True)
+    p.add_argument("--index", type=int, required=True)
     args = parser.parse_args()
-    genesis(args) if args.command == "genesis" else build(args)
+    {"genesis": genesis, "build": build, "prove": prove}[args.command](args)
 
 
 if __name__ == "__main__":

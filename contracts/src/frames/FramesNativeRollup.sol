@@ -23,8 +23,20 @@ contract FramesNativeRollup is NativeRollup {
         VkPolicy vkPolicy_,
         bytes32 pinnedVkHash_,
         address evmVkRegistry_,
+        address l2Messenger_,
         address dependencyVerifier_
-    ) NativeRollup(chainId_, gasLimit_, genesisBlockHash, genesisStateRoot, vkPolicy_, pinnedVkHash_, evmVkRegistry_) {
+    )
+        NativeRollup(
+            chainId_,
+            gasLimit_,
+            genesisBlockHash,
+            genesisStateRoot,
+            vkPolicy_,
+            pinnedVkHash_,
+            evmVkRegistry_,
+            l2Messenger_
+        )
+    {
         dependencyVerifier = dependencyVerifier_;
         framesHelper = Frames.deployHelper();
     }

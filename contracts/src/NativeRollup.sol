@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
 import {NativeRollupSsz} from "./NativeRollupSsz.sol";
+import {Message, Messages} from "./libs/Messages.sol";
 
 /// @title NativeRollup
 /// @notice The rollup contract of the book's Specification. Each `advance`
@@ -48,6 +49,8 @@ abstract contract NativeRollup {
     uint64 internal constant L2_SLOT_NUMBER = 0; // TBD
     // SSZ root of an empty progressive list: sha256 of 64 zero bytes.
     bytes32 internal constant EMPTY_LIST_ROOT = 0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b;
+    // Storage slot of `L2Messenger.sentMessages`.
+    uint256 internal constant L2_QUEUE_SLOT = 2;
 
     // The EIP-8357 registry, at 0x00005e9c1447C1A05A642ec9eB76D9C125468357
     // on chains that activate it.
@@ -56,6 +59,8 @@ abstract contract NativeRollup {
     uint64 public immutable gasLimit;
     VkPolicy public immutable vkPolicy;
     bytes32 public immutable pinnedVkHash;
+    // The L2 messenger predeploy, whose queue holds the L2 to L1 messages.
+    address public immutable l2Messenger;
 
     // L2 chain state tracked onchain
     bytes32 public blockHash;
@@ -71,6 +76,11 @@ abstract contract NativeRollup {
     // block hash.
     bytes32[] public pendingL1Messages;
 
+    // L2->L1 messages already delivered, and the sender of the one being
+    // delivered.
+    mapping(uint256 => bool) public claimedL2Messages;
+    address internal transient currentL2Sender;
+
     constructor(
         uint64 chainId_,
         uint64 gasLimit_,
@@ -78,9 +88,11 @@ abstract contract NativeRollup {
         bytes32 genesisStateRoot,
         VkPolicy vkPolicy_,
         bytes32 pinnedVkHash_,
-        address evmVkRegistry_
+        address evmVkRegistry_,
+        address l2Messenger_
     ) {
         evmVkRegistry = evmVkRegistry_;
+        l2Messenger = l2Messenger_;
         chainId = chainId_;
         gasLimit = gasLimit_;
         vkPolicy = vkPolicy_;
@@ -94,10 +106,43 @@ abstract contract NativeRollup {
     ///         its hash is proven.
     event L1MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
 
+    event L2MessageClaimed(uint256 indexed index, address indexed sender, address indexed to, uint256 value);
+
     function sendMessage(address to, bytes calldata data) external payable {
         uint256 index = pendingL1Messages.length;
-        pendingL1Messages.push(keccak256(abi.encodePacked(msg.sender, to, msg.value, keccak256(data), index)));
+        pendingL1Messages.push(Messages.hash(msg.sender, to, msg.value, data, index));
         emit L1MessageSent(index, msg.sender, to, msg.value, data);
+    }
+
+    /// @notice The L2 sender of the message being delivered.
+    function l2Sender() external view returns (address) {
+        require(currentL2Sender != address(0), "no message");
+        return currentL2Sender;
+    }
+
+    /// @notice Delivers an L2 to L1 message, proven against the state root of
+    ///         any L2 block since it was sent, and pays its value out of the
+    ///         ETH escrowed by L1 to L2 messages.
+    /// @param accountProof Proof of the L2 messenger's account in that block's
+    ///                     state.
+    /// @param storageProof Proof of the queue entry in its storage.
+    function claimL2Message(
+        Message calldata m,
+        uint256 l2BlockNumber,
+        bytes[] calldata accountProof,
+        bytes[] calldata storageProof
+    ) external {
+        require(!claimedL2Messages[m.index], "already claimed");
+        bytes32 root = stateRootHistory[l2BlockNumber];
+        require(root != bytes32(0), "unknown L2 block");
+        Messages.requireQueued(m, root, l2Messenger, L2_QUEUE_SLOT, accountProof, storageProof);
+
+        claimedL2Messages[m.index] = true;
+        currentL2Sender = m.sender;
+        (bool ok,) = m.to.call{value: m.value}(m.data);
+        currentL2Sender = address(0);
+        require(ok, "delivery failed");
+        emit L2MessageClaimed(m.index, m.sender, m.to, m.value);
     }
 
     function advance(BlockParams calldata params, uint256 dependencyFrameIndex) external {
@@ -140,27 +185,28 @@ abstract contract NativeRollup {
     }
 
     function _newPayloadRequestRoot(BlockParams calldata params, bytes32 anchor) internal view returns (bytes32) {
-        NativeRollupSsz.ExecutionPayloadHeader memory header = NativeRollupSsz.ExecutionPayloadHeader({
-            parentHash: blockHash, // from storage
-            feeRecipient: params.feeRecipient,
-            stateRoot: params.stateRoot,
-            receiptsRoot: params.receiptsRoot,
-            logsBloom: params.logsBloom,
-            prevRandao: params.prevRandao,
-            blockNumber: uint64(blockNumber + 1), // from storage
-            gasLimit: gasLimit, // fixed
-            gasUsed: params.gasUsed,
-            timestamp: params.timestamp,
-            extraData: params.extraData,
-            baseFeePerGas: params.baseFeePerGas,
-            blockHash: params.blockHash,
-            transactionsRoot: params.transactionsRoot, // constrained (proven)
-            withdrawalsRoot: EMPTY_LIST_ROOT, // no withdrawals on L2
-            blobGasUsed: 0, // fixed for L2
-            excessBlobGas: 0, // fixed for L2
-            blockAccessListRoot: params.blockAccessListRoot, // constrained (proven)
-            slotNumber: L2_SLOT_NUMBER // fixed for L2 (value TBD)
-        });
+        // Assigned field by field: a struct literal keeps all 19 values on the
+        // stack at once.
+        NativeRollupSsz.ExecutionPayloadHeader memory header;
+        header.parentHash = blockHash; // from storage
+        header.feeRecipient = params.feeRecipient;
+        header.stateRoot = params.stateRoot;
+        header.receiptsRoot = params.receiptsRoot;
+        header.logsBloom = params.logsBloom;
+        header.prevRandao = params.prevRandao;
+        header.blockNumber = uint64(blockNumber + 1); // from storage
+        header.gasLimit = gasLimit; // fixed
+        header.gasUsed = params.gasUsed;
+        header.timestamp = params.timestamp;
+        header.extraData = params.extraData;
+        header.baseFeePerGas = params.baseFeePerGas;
+        header.blockHash = params.blockHash;
+        header.transactionsRoot = params.transactionsRoot; // constrained (proven)
+        header.withdrawalsRoot = EMPTY_LIST_ROOT; // no withdrawals on L2
+        header.blobGasUsed = 0; // fixed for L2
+        header.excessBlobGas = 0; // fixed for L2
+        header.blockAccessListRoot = params.blockAccessListRoot; // constrained (proven)
+        header.slotNumber = L2_SLOT_NUMBER; // fixed for L2 (value TBD)
         return NativeRollupSsz.newPayloadRequestRoot(
             NativeRollupSsz.executionPayloadRoot(header),
             NativeRollupSsz.versionedHashesRoot(_versionedHashes(params.payloadBlobCount)),

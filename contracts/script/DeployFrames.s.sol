@@ -30,6 +30,8 @@ contract DeployFrames is Script {
 
     uint64 constant L2_CHAIN_ID = 8079;
     uint64 constant L2_GAS_LIMIT = 60_000_000;
+    // The messenger predeploy of `script/l2_node.py`'s genesis.
+    address constant L2_MESSENGER = 0x8079000000000000000000000000000000000001;
 
     function run() external {
         uint256 key = vm.envUint("PRIVATE_KEY");
@@ -51,6 +53,7 @@ contract DeployFrames is Script {
             NativeRollup.VkPolicy.FollowCurrent,
             bytes32(0),
             registry,
+            L2_MESSENGER,
             address(verifier)
         );
         require(address(rollup) == vm.envAddress("ROLLUP"), "rollup address differs from the L2 genesis");

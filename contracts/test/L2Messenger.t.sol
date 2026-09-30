@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 
 import {L2Messenger} from "../src/l2/L2Messenger.sol";
+import {Message} from "../src/libs/Messages.sol";
 
 /// @dev A destination that records how the messenger called it.
 contract Recorder {
@@ -34,7 +35,7 @@ contract L2MessengerTest is Test {
     address constant BEACON_ROOTS = 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02;
 
     struct Claim {
-        L2Messenger.L1Message m;
+        Message m;
         uint256 timestamp;
         bytes header;
         bytes[] accountProof;
@@ -54,9 +55,9 @@ contract L2MessengerTest is Test {
     function decode(bytes calldata data)
         external
         pure
-        returns (L2Messenger.L1Message memory, uint256, bytes memory, bytes[] memory, bytes[] memory)
+        returns (Message memory, uint256, bytes memory, bytes[] memory, bytes[] memory)
     {
-        return abi.decode(data[4:], (L2Messenger.L1Message, uint256, bytes, bytes[], bytes[]));
+        return abi.decode(data[4:], (Message, uint256, bytes, bytes[], bytes[]));
     }
 
     /// Loads claim `i` and anchors its L1 block, as the L2 block's EIP-4788

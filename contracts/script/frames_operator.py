@@ -11,6 +11,9 @@ sign the dependency, then sends one frame transaction:
     frame 1  DEFAULT  MockDependencyVerifier(scheme || data_hash || vk_hash || proof)
     frame 2  SENDER   rollup.advance(params, 1)
 
+`claim-l2-message` claims an L2 to L1 message sent with `advance --withdraw`,
+with the L2 node's proofs against the rollup's latest L2 block.
+
 `check-vectors` checks the Python root computation against the
 consensus-specs vectors that the Solidity tests use.
 
@@ -51,6 +54,7 @@ ADVANCE_SIGNATURE = (
     "advance((bytes32,bytes32,bytes,uint64,uint64,uint256,bytes32,bytes32,"
     "bytes32,uint256,bytes32,uint256,address,bytes32,bytes),uint256)"
 )
+CLAIM_L2_MESSAGE_SIGNATURE = "claimL2Message((address,address,uint256,bytes,uint256),uint256,bytes[],bytes[])"
 DEPENDENCY_FRAME_INDEX = 1
 
 
@@ -81,6 +85,19 @@ def hx(b: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 
+def l2_node(args: argparse.Namespace, *node_args: str) -> dict:
+    node = subprocess.run(
+        [
+            "uv", "run", "--project", args.zkevm_specs, "python",
+            os.path.join(os.path.dirname(__file__), "l2_node.py"), *node_args,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(node.stdout.strip().splitlines()[-1])
+
+
 def advance(args: argparse.Namespace) -> None:
     rpc = args.rpc
     operator = cast("wallet", "address", "--private-key", args.operator_key)
@@ -98,27 +115,21 @@ def advance(args: argparse.Namespace) -> None:
 
     # The L2 node builds the next block on the rollup's head, validates it
     # with the stateless program, and signs the dependency.
-    node = subprocess.run(
-        [
-            "uv", "run", "--project", args.zkevm_specs, "python",
-            os.path.join(os.path.dirname(__file__), "l2_node.py"), "build",
-            "--state", args.l2_state,
-            "--head-hash", head_hash,
-            "--anchor-number", str(anchor_number),
-            "--anchor-hash", anchor_hash,
-            "--schema-id", str(schema_id),
-            "--vk-hash", vk_hash,
-            "--l1-chain-id", cast("chain-id", "--rpc-url", rpc),
-            "--verifier", args.verifier,
-            "--prover-key", args.prover_key,
-            "--l1-rpc", rpc,
-            "--rollup", args.rollup,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+    bundle = l2_node(
+        args, "build",
+        "--state", args.l2_state,
+        "--head-hash", head_hash,
+        "--anchor-number", str(anchor_number),
+        "--anchor-hash", anchor_hash,
+        "--schema-id", str(schema_id),
+        "--vk-hash", vk_hash,
+        "--l1-chain-id", cast("chain-id", "--rpc-url", rpc),
+        "--verifier", args.verifier,
+        "--prover-key", args.prover_key,
+        "--l1-rpc", rpc,
+        "--rollup", args.rollup,
+        *[a for w in args.withdraw for a in ("--withdraw", w)],
     )
-    bundle = json.loads(node.stdout.strip().splitlines()[-1])
     p = bundle["params"]
     triple = bytes.fromhex(bundle["triple"][2:])
     proof = bytes.fromhex(bundle["proof"][2:])
@@ -200,6 +211,8 @@ def advance(args: argparse.Namespace) -> None:
             f"claims L1 message {c['index']}: {c['value']} wei from {c['sender']} to {c['to']}, "
             f"whose L2 balance becomes {c['l2Balance']}"
         )
+    for m in bundle["l2Messages"]:
+        print(f"sends L2 message {m['index']}: {m['value']} wei from {m['sender']} to {m['to']} on L1")
     tx_hash = json.loads(cast("publish", "--rpc-url", rpc, hx(raw)))["transactionHash"]
     print(f"included {tx_hash}")
     receipt = json.loads(cast("receipt", "--rpc-url", rpc, tx_hash, "--json"))
@@ -207,6 +220,29 @@ def advance(args: argparse.Namespace) -> None:
         print(f"frame {i}: status {int(frame['status'], 16)}, gas {int(frame['gasUsed'], 16)}")
     head = int(call(rpc, args.rollup, "blockNumber()(uint256)").split()[0])
     print(f"rollup at L2 block {head}")
+
+
+def claim_l2_message(args: argparse.Namespace) -> None:
+    rpc = args.rpc
+    head_hash = call(rpc, args.rollup, "blockHash()(bytes32)")
+    p = l2_node(args, "prove", "--state", args.l2_state, "--head-hash", head_hash, "--index", str(args.index))
+    m = p["message"]
+    before = int(cast("balance", "--rpc-url", rpc, m["to"]))
+    receipt = json.loads(
+        cast(
+            "send", "--rpc-url", rpc, "--private-key", args.key, "--json", args.rollup, CLAIM_L2_MESSAGE_SIGNATURE,
+            f"({m['sender']},{m['to']},{m['value']},{m['data']},{m['index']})",
+            str(p["blockNumber"]),
+            "[" + ",".join(p["accountProof"]) + "]",
+            "[" + ",".join(p["storageProof"]) + "]",
+        )
+    )
+    print(
+        f"L2 message {m['index']} proven against L2 block {p['blockNumber']} "
+        f"({len(p['accountProof'])} + {len(p['storageProof'])} proof nodes): "
+        f"status {int(receipt['status'], 16)}, gas {int(receipt['gasUsed'], 16)}, "
+        f"{m['to']} received {int(cast('balance', '--rpc-url', rpc, m['to'])) - before} wei"
+    )
 
 
 def main() -> None:
@@ -223,11 +259,23 @@ def main() -> None:
     adv.add_argument("--l2-state", required=True, help="the L2 node's state file")
     adv.add_argument("--zkevm-specs", required=True, help="an execution-specs checkout of projects/zkevm")
     adv.add_argument("--corrupt-proof", action="store_true", help="send an invalid mock proof")
+    adv.add_argument(
+        "--withdraw", action="append", default=[], metavar="TO:WEI[:DATA]", help="send an L2 to L1 message"
+    )
+    claim = sub.add_parser("claim-l2-message")
+    claim.add_argument("--rpc", required=True)
+    claim.add_argument("--rollup", required=True)
+    claim.add_argument("--key", required=True, help="the L1 account sending the claim")
+    claim.add_argument("--index", type=int, required=True)
+    claim.add_argument("--l2-state", required=True, help="the L2 node's state file")
+    claim.add_argument("--zkevm-specs", required=True, help="an execution-specs checkout of projects/zkevm")
     args = parser.parse_args()
     if args.command == "check-vectors":
         check_vectors(args.vectors)
-    else:
+    elif args.command == "advance":
         advance(args)
+    else:
+        claim_l2_message(args)
 
 
 if __name__ == "__main__":
