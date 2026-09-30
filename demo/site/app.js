@@ -281,6 +281,7 @@ async function blockPage(route) {
   const b = await object(`l2/blocks/${route.n}`);
   if (!b) return `<h1>L2 block #${route.n}</h1><p class="note">The follower has not rebuilt this block yet.</p>`;
   const rec = state.session && state.session.events.find((e) => e.type === "advance" && e.l2.number === b.number);
+  const txs = await Promise.all(b.transactions.map((t) => object(`l2/txs/${t.hash}`)));
   const kinds = {};
   b.transactions.forEach((t) => (kinds[t.kind] = (kinds[t.kind] || 0) + 1));
   const matches = b.hash === b.recordedHash;
@@ -304,8 +305,8 @@ async function blockPage(route) {
     </ol>
 
     <h2>Transactions</h2>
-    <table><thead><tr><th>#</th><th>Hash</th><th>What it does</th><th>From</th><th class="num">Gas used</th><th class="num">Bytes</th></tr></thead><tbody>
-      ${b.transactions.map((t, i) => `<tr><td>${i}</td><td>${l2TxLink(t.hash)}</td><td>${chip(t.kind)}</td><td>${addr(t.from)}</td>
+    <table><thead><tr><th>#</th><th>Hash</th><th>What it does</th><th>Linked on L1</th><th>From</th><th class="num">Gas used</th><th class="num">Bytes</th></tr></thead><tbody>
+      ${txs.map((t, i) => `<tr><td>${i}</td><td>${l2TxLink(t.hash)}</td><td>${chip(t.kind)}</td><td>${counterpart(t)}</td><td>${addr(t.from)}</td>
         <td class="num">${num(t.gasUsed)}</td><td class="num">${num(t.bytes)}</td></tr>`).join("")}</tbody></table>
 
     <h2>Header</h2>
@@ -463,6 +464,25 @@ function frameCards(tx, layer) {
   }).join("")}</div>`;
 }
 
+// The deposit an L2 claim delivers, or the withdrawal an L2 transaction sends.
+function depositOf(tx) {
+  const frame = (tx.frames || []).find((f) => f.call && f.call.function === "claimL1Message");
+  return frame ? state.index.deposits[String(frame.call.args.message.index)] : null;
+}
+const withdrawalOf = (tx) => Object.values(state.index.withdrawals).find((w) => w.l2Tx === tx.hash);
+
+function counterpart(tx) {
+  if (tx.kind === "deposit claim") {
+    const d = depositOf(tx);
+    return d && d.l1Tx ? `deposited in ${l1TxLink(d.l1Tx)}` : "";
+  }
+  if (tx.kind === "withdrawal") {
+    const w = withdrawalOf(tx);
+    return w && w.l1Tx ? `claimed in ${l1TxLink(w.l1Tx)}` : '<span class="muted">not claimed on L1 yet</span>';
+  }
+  return "";
+}
+
 const L2_SUMMARIES = {
   "deposit claim": (tx) => {
     const claim = tx.frames.find((f) => f.call && f.call.function === "claimL1Message").call.args.message;
@@ -479,14 +499,25 @@ const L2_SUMMARIES = {
 async function l2TxPage(route) {
   const tx = await object(`l2/txs/${route.hash}`);
   if (!tx) return `<h1>L2 transaction</h1><p class="note">Not found. The follower may not have rebuilt its block yet.</p>`;
-  const w = tx.kind === "withdrawal" && Object.values(state.index.withdrawals).find((x) => x.l2Tx === tx.hash);
+  const w = tx.kind === "withdrawal" && withdrawalOf(tx);
+  const d = tx.kind === "deposit claim" && depositOf(tx);
   const frame = tx.type === 6;
+  const linked = [];
+  if (d) {
+    linked.push(["Deposit on L1", d.l1Tx ? `${l1TxLink(d.l1Tx)} <span class="muted">in L1 block ${num(d.l1Block)}</span>` : "",
+      `The L1 transaction that sent deposit #${d.index}. The rollup contract added its hash to the message tree, which this claim proves against.`]);
+  }
+  if (w) {
+    linked.push(["Claim on L1", w.l1Tx ? `${l1TxLink(w.l1Tx)} <span class="muted">in L1 block ${num(w.l1Block)}</span>` : '<span class="muted">not claimed yet</span>',
+      "The L1 transaction that paid this withdrawal from the escrow, against an L2 state root that includes it."]);
+  }
   return `
     <h1>L2 transaction ${chip(tx.kind)}</h1>
-    <div class="callout"><p>${(L2_SUMMARIES[tx.kind] || (() => ""))(tx)}${w && w.l1Tx ? ` It was claimed on L1 in ${l1TxLink(w.l1Tx)}.` : ""}</p></div>
+    <div class="callout"><p>${(L2_SUMMARIES[tx.kind] || (() => ""))(tx)}${d && d.l1Tx ? ` The deposit was sent on L1 in ${l1TxLink(d.l1Tx)}.` : ""}${w && w.l1Tx ? ` It was claimed on L1 in ${l1TxLink(w.l1Tx)}.` : ""}</p></div>
     ${fields([
       ["Hash", hash(tx.hash, true), "Rebuilt by the follower from the L1 blob that carried its block."],
       ["Block", l2BlockLink(tx.block), ""],
+      ...linked,
       ["Type", frame ? "0x06, frame transaction" : `0x0${tx.type}, EIP-1559`, frame ? "EIP-8141: a list of frames, each a call with its own mode and gas." : ""],
       [frame ? "Sender" : "From", addr(tx.from), frame ? "The account the transaction acts for." : ""],
       ...(frame ? [["Payer", addr(tx.payer), "The account whose VERIFY frame approved the payment."]] : [["To", addr(tx.to), ""], ["Value", eth(tx.value), ""]]),
@@ -516,11 +547,23 @@ async function l1TxPage(route) {
       state root of L2 block ${l2BlockLink(tx.call.args.l2BlockNumber)} with a storage proof, and pays it from the escrow.${w && w.l2Tx ? ` It was sent on L2 in ${l2TxLink(w.l2Tx)}.` : ""}`;
   }
   const frame = !!tx.frames;
+  const linked = [];
+  if (tx.kind === "deposit") {
+    const d = Object.values(state.index.deposits).find((x) => x.l1Tx === tx.hash);
+    if (d) linked.push(["Claim on L2", d.l2Tx ? `${l2TxLink(d.l2Tx)} <span class="muted">in L2 block</span> ${l2BlockLink(d.l2Block)}` : '<span class="muted">waiting for an L2 block that anchors it</span>',
+      `The L2 transaction that delivered deposit #${d.index}.`]);
+  }
+  if (tx.kind === "withdrawal claim") {
+    const w = state.index.withdrawals[String(tx.call.args.message.index)];
+    if (w && w.l2Tx) linked.push(["Withdrawal on L2", `${l2TxLink(w.l2Tx)} <span class="muted">in L2 block</span> ${l2BlockLink(w.l2Block)}`, `The L2 transaction that sent withdrawal #${w.index}.`]);
+  }
+  if (tx.kind === "advance") linked.push(["L2 block", l2BlockLink(tx.l2Block), "The L2 block this transaction adds."]);
   return `
     <h1>L1 transaction <span class="chip">${esc(L1_KINDS[tx.kind] || tx.kind)}</span></h1>
     <div class="callout"><p>${summary}</p></div>
     ${fields([
       ["Hash", hash(tx.hash, true), "Read from the L1 node."],
+      ...linked,
       ["L1 block", `${num(tx.block)} <span class="muted">built by ${esc(tx.builder)}</span>`, frame && tx.blobVersionedHashes.length ? "Only Nethermind and Reth accept blob-carrying frame transactions on this devnet." : ""],
       ["Type", frame ? "0x06, frame transaction" : `0x0${tx.type}`, frame ? "EIP-8141." : ""],
       [frame ? "Sender" : "From", addr(tx.from), ""],
