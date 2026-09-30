@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.28;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, console} from "forge-std/Test.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 
 import {L2Messenger} from "../src/l2/L2Messenger.sol";
@@ -26,20 +26,25 @@ contract Reverter {
     }
 }
 
-/// @notice Claims real L1 messages: `l1_message_vectors.json` holds the
-///         claims that `script/l2_node.py` built on a local frames network,
-///         with proofs from the L1 node, and the anchor of each claiming block.
+/// @notice Claims real L1 messages: `l1_message_vectors.json` holds, for each
+///         L2 block that `script/l2_node.py` built on a local frames network,
+///         its anchor, the proof of the L1 message root against it, and the
+///         claims with their paths to that root.
 contract L2MessengerTest is Test {
     using stdJson for string;
 
     address constant BEACON_ROOTS = 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02;
 
-    struct Claim {
-        Message m;
+    struct RootProof {
         uint256 timestamp;
         bytes header;
         bytes[] accountProof;
         bytes[] storageProof;
+    }
+
+    struct Claim {
+        Message m;
+        bytes32[] path;
     }
 
     string json;
@@ -52,112 +57,156 @@ contract L2MessengerTest is Test {
         vm.deal(address(messenger), 1e27);
     }
 
-    function decode(bytes calldata data)
-        external
-        pure
-        returns (Message memory, uint256, bytes memory, bytes[] memory, bytes[] memory)
-    {
-        return abi.decode(data[4:], (Message, uint256, bytes, bytes[], bytes[]));
+    function decodeRootProof(bytes calldata data) external pure returns (RootProof memory p) {
+        (p.timestamp, p.header, p.accountProof, p.storageProof) =
+            abi.decode(data[4:], (uint256, bytes, bytes[], bytes[]));
     }
 
-    /// Loads claim `i` and anchors its L1 block, as the L2 block's EIP-4788
-    /// system call does.
-    function _load(uint256 i) internal returns (Claim memory c) {
-        string memory k = string.concat(".claims[", vm.toString(i), "]");
-        (c.m, c.timestamp, c.header, c.accountProof, c.storageProof) =
-            this.decode(json.readBytes(string.concat(k, ".calldata")));
+    function decodeClaim(bytes calldata data) external pure returns (Claim memory c) {
+        (c.m, c.path) = abi.decode(data[4:], (Message, bytes32[]));
+    }
+
+    function _block(uint256 b) internal pure returns (string memory) {
+        return string.concat(".blocks[", vm.toString(b), "]");
+    }
+
+    /// Loads block `b`'s root proof and stores its anchor, as the L2 block's
+    /// EIP-4788 system call does.
+    function _rootProof(uint256 b) internal returns (RootProof memory p) {
+        p = this.decodeRootProof(json.readBytes(string.concat(_block(b), ".proveRoot")));
         vm.mockCall(
-            BEACON_ROOTS, abi.encode(c.timestamp), abi.encode(json.readBytes32(string.concat(k, ".anchorHash")))
+            BEACON_ROOTS, abi.encode(p.timestamp), abi.encode(json.readBytes32(string.concat(_block(b), ".anchorHash")))
         );
     }
 
-    function _claim(Claim memory c) internal {
-        messenger.claimL1Message(c.m, c.timestamp, c.header, c.accountProof, c.storageProof);
+    function _prove(RootProof memory p) internal {
+        messenger.proveL1MessageRoot(p.timestamp, p.header, p.accountProof, p.storageProof);
+    }
+
+    function _claim(uint256 b, uint256 i) internal view returns (Claim memory) {
+        return this.decodeClaim(json.readBytes(string.concat(_block(b), ".claims[", vm.toString(i), "]")));
     }
 
     function test_claimsMessages() public {
-        for (uint256 i = 0; json.keyExists(string.concat(".claims[", vm.toString(i), "]")); i++) {
-            Claim memory c = _load(i);
-            vm.etch(c.m.to, type(Recorder).runtimeCode);
-            uint256 supply = address(messenger).balance;
+        for (uint256 b = 0; json.keyExists(_block(b)); b++) {
+            _prove(_rootProof(b));
+            for (uint256 i = 0; json.keyExists(string.concat(_block(b), ".claims[", vm.toString(i), "]")); i++) {
+                Claim memory c = _claim(b, i);
+                vm.etch(c.m.to, type(Recorder).runtimeCode);
+                uint256 supply = address(messenger).balance;
+                uint256 balance = c.m.to.balance;
 
-            _claim(c);
+                messenger.claimL1Message(c.m, c.path);
 
-            Recorder r = Recorder(payable(c.m.to));
-            assertTrue(messenger.claimed(c.m.index));
-            assertEq(r.l1Sender(), c.m.sender);
-            assertEq(r.value(), c.m.value);
-            assertEq(r.data(), c.m.data);
-            assertEq(c.m.to.balance, c.m.value);
-            assertEq(address(messenger).balance, supply - c.m.value);
+                Recorder r = Recorder(payable(c.m.to));
+                assertTrue(messenger.claimed(c.m.index));
+                assertEq(r.l1Sender(), c.m.sender);
+                assertEq(r.value(), c.m.value);
+                assertEq(r.data(), c.m.data);
+                assertEq(c.m.to.balance, balance + c.m.value);
+                assertEq(address(messenger).balance, supply - c.m.value);
+            }
         }
         vm.expectRevert(bytes("no message"));
         messenger.l1Sender();
     }
 
     function test_rejectsReplay() public {
-        Claim memory c = _load(0);
-        _claim(c);
+        _prove(_rootProof(0));
+        Claim memory c = _claim(0, 0);
+        messenger.claimL1Message(c.m, c.path);
         vm.expectRevert(bytes("already claimed"));
-        _claim(c);
+        messenger.claimL1Message(c.m, c.path);
     }
 
-    /// The proof shows a queue entry, which must hash the claimed message.
+    /// The path leads to the proven root only from the message's own hash
+    /// and position.
     function test_rejectsForgedMessage() public {
-        Claim memory c = _load(1);
+        _prove(_rootProof(1));
+
+        Claim memory c = _claim(1, 0);
         c.m.value += 1;
-        vm.expectRevert(bytes("message not queued"));
-        _claim(c);
+        vm.expectRevert(bytes("message not in root"));
+        messenger.claimL1Message(c.m, c.path);
 
-        c = _load(1);
+        c = _claim(1, 0);
         c.m.sender = address(0xBAD);
-        vm.expectRevert(bytes("message not queued"));
-        _claim(c);
+        vm.expectRevert(bytes("message not in root"));
+        messenger.claimL1Message(c.m, c.path);
 
-        c = _load(1);
+        c = _claim(1, 0);
         c.m.data = hex"c0ffef";
-        vm.expectRevert(bytes("message not queued"));
-        _claim(c);
+        vm.expectRevert(bytes("message not in root"));
+        messenger.claimL1Message(c.m, c.path);
 
-        // Another index is another slot, which the proof does not cover.
-        c = _load(1);
-        c.m.index = 0;
-        vm.expectRevert();
-        _claim(c);
+        c = _claim(1, 0);
+        c.m.index ^= 1;
+        vm.expectRevert(bytes("message not in root"));
+        messenger.claimL1Message(c.m, c.path);
+
+        c = _claim(1, 0);
+        c.m.index = 1 << c.path.length;
+        vm.expectRevert(bytes("path too short"));
+        messenger.claimL1Message(c.m, c.path);
     }
 
-    /// Proofs only count against the L1 block the L2 block anchored.
-    function test_rejectsWrongAnchor() public {
-        Claim memory c = _load(1);
-        c.header = _load(0).header;
+    /// Roots only come from the anchored L1 block, and never move back to an
+    /// earlier one.
+    function test_rootRules() public {
+        // No root yet.
+        Claim memory c = _claim(0, 0);
+        vm.expectRevert(bytes("message not in root"));
+        messenger.claimL1Message(c.m, c.path);
+
+        RootProof memory p = _rootProof(1);
+        p.header = _rootProof(0).header;
         vm.expectRevert(bytes("header is not the anchor"));
-        _claim(c);
+        _prove(p);
 
-        c = _load(1);
-        c.timestamp += 1;
+        p = _rootProof(1);
+        p.timestamp += 1;
         vm.expectRevert(bytes("no anchor at timestamp"));
-        _claim(c);
+        _prove(p);
 
-        // Message 1 was sent after the L1 block that L2 block 1 anchored, so
-        // its proofs do not match that block's state root.
-        c = _load(1);
-        Claim memory early = _load(0);
-        c.timestamp = early.timestamp;
-        c.header = early.header;
-        vm.expectRevert();
-        _claim(c);
+        // Message 1 was sent after the L1 block that L2 block 1 anchored.
+        _prove(_rootProof(0));
+        c = _claim(1, 0);
+        vm.expectRevert(bytes("message not in root"));
+        messenger.claimL1Message(c.m, c.path);
+
+        _prove(_rootProof(1));
+        RootProof memory older = _rootProof(0);
+        vm.expectRevert(bytes("older anchor"));
+        _prove(older);
     }
 
     /// A failed delivery leaves the message claimable.
     function test_failedDelivery() public {
-        Claim memory c = _load(0);
+        _prove(_rootProof(0));
+        Claim memory c = _claim(0, 0);
         vm.etch(c.m.to, type(Reverter).runtimeCode);
         vm.expectRevert(bytes("delivery failed"));
-        _claim(c);
+        messenger.claimL1Message(c.m, c.path);
         assertFalse(messenger.claimed(c.m.index));
 
         vm.etch(c.m.to, type(Recorder).runtimeCode);
-        _claim(c);
+        messenger.claimL1Message(c.m, c.path);
         assertTrue(messenger.claimed(c.m.index));
+    }
+
+    /// Execution gas only: Foundry does not charge EIP-8037 state gas.
+    function test_measureGas() public {
+        uint256 last = 2;
+        RootProof memory p = _rootProof(last);
+        uint256 g = gasleft();
+        _prove(p);
+        console.log(
+            "proveL1MessageRoot gas %d (%d proof nodes)", g - gasleft(), p.accountProof.length + p.storageProof.length
+        );
+        Claim memory c = _claim(last, 1);
+        vm.etch(c.m.to, type(Recorder).runtimeCode);
+        g = gasleft();
+        messenger.claimL1Message(c.m, c.path);
+        console.log("claimL1Message gas %d (path of %d)", g - gasleft(), c.path.length);
     }
 }

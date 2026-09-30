@@ -94,11 +94,38 @@ contract NativeRollupMessagesTest is Test {
         vm.expectEmit(address(rollup));
         emit L1MessageSent(0, address(this), address(0xB0B), 1 ether, data);
         rollup.sendMessage{value: 1 ether}(address(0xB0B), data);
-        assertEq(
-            rollup.pendingL1Messages(0),
-            keccak256(abi.encodePacked(address(this), address(0xB0B), uint256(1 ether), keccak256(data), uint256(0)))
-        );
+        assertEq(rollup.l1MessageCount(), 1);
         assertEq(address(rollup).balance, 11 ether);
+    }
+
+    /// After every message, the root matches a tree built from all leaves at
+    /// once, as the L2 node builds it.
+    function test_messageTree() public {
+        bytes32[] memory leaves = new bytes32[](33);
+        for (uint256 i = 0; i < leaves.length; i++) {
+            address to = address(uint160(i + 1));
+            rollup.sendMessage{value: i}(to, "");
+            leaves[i] = keccak256(abi.encodePacked(address(this), to, i, keccak256(""), i));
+            assertEq(rollup.l1MessageRoot(), _root(leaves, i + 1));
+        }
+    }
+
+    function _root(bytes32[] memory leaves, uint256 count) internal pure returns (bytes32) {
+        bytes32[] memory level = new bytes32[](count);
+        for (uint256 i = 0; i < count; i++) {
+            level[i] = leaves[i];
+        }
+        bytes32 zero;
+        for (uint256 height = 0; height < 32; height++) {
+            uint256 parents = (count + 1) / 2;
+            for (uint256 i = 0; i < parents; i++) {
+                bytes32 right = 2 * i + 1 < count ? level[2 * i + 1] : zero;
+                level[i] = keccak256(abi.encodePacked(level[2 * i], right));
+            }
+            count = parents;
+            zero = keccak256(abi.encodePacked(zero, zero));
+        }
+        return level[0];
     }
 
     function test_claimsL2Messages() public {

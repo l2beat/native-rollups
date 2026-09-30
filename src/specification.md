@@ -201,18 +201,19 @@ contract NativeRollup {
     uint256 constant STATE_ROOT_HISTORY = 8191;
     mapping(uint256 => bytes32) public stateRootHistory;
 
-    // L1->L2 message queue. Messages are stored in this contract's
-    // storage and become accessible on L2 via storage proofs against
-    // the anchored L1 block hash.
-    bytes32[] public pendingL1Messages;
+    // L1->L2 messages, as an append-only Merkle tree of their hashes whose
+    // root is kept in storage, as the beacon chain deposit contract builds
+    // it. L2 proves the root against the anchored L1 block hash, then each
+    // message's path to it (see Messaging).
+    MessageTree l1Messages;
 
-    // Emitted so that relayers can deliver the message on L2, where only
-    // its hash can be proven.
+    // Emitted so that the message can be claimed on L2, where only its
+    // hash is proven.
     event L1MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
 
     function sendMessage(address to, bytes calldata data) external payable {
-        uint256 index = pendingL1Messages.length;
-        pendingL1Messages.push(keccak256(abi.encodePacked(msg.sender, to, msg.value, keccak256(data), index)));
+        uint256 index = l1Messages.count;
+        l1Messages.insert(keccak256(abi.encodePacked(msg.sender, to, msg.value, keccak256(data), index)));
         emit L1MessageSent(index, msg.sender, to, msg.value, data);
     }
 

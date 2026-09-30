@@ -12,10 +12,10 @@ struct Message {
     uint256 index;
 }
 
-/// @notice Messaging in both directions works the same way: the sending side
-///         appends each message's hash to a queue in its storage, and the
-///         receiving side proves the queue entry against a state root of the
-///         sending chain.
+/// @notice Message hashing, claimed flags, and queue proofs for messaging in
+///         both directions. L2 to L1 messages sit in a queue in the L2
+///         messenger's storage, proven entry by entry against an L2 state
+///         root. L1 to L2 messages sit in a `MessageTree` instead.
 library Messages {
     /// @notice Marks message `index` claimed in a bitmap of 256 flags per
     ///         slot, which creates a new slot once per 256 messages instead
@@ -49,12 +49,8 @@ library Messages {
         bytes[] calldata accountProof,
         bytes[] calldata storageProof
     ) internal pure {
-        // The account is [nonce, balance, storage root, code hash].
-        bytes calldata encoded = MptProof.get(stateRoot, keccak256(abi.encodePacked(account)), accountProof);
-        bytes calldata storageRoot = MptProof.listItem(encoded, 2);
-        require(storageRoot.length == 32, "invalid account");
-        uint256 slot = uint256(keccak256(abi.encode(queueSlot))) + m.index;
-        uint256 entry = MptProof.toUint(MptProof.get(bytes32(storageRoot), keccak256(abi.encode(slot)), storageProof));
+        bytes32 slot = bytes32(uint256(keccak256(abi.encode(queueSlot))) + m.index);
+        uint256 entry = MptProof.storageValue(stateRoot, account, slot, accountProof, storageProof);
         require(bytes32(entry) == hash(m.sender, m.to, m.value, m.data, m.index), "message not queued");
     }
 }

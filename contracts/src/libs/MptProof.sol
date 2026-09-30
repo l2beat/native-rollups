@@ -59,6 +59,22 @@ library MptProof {
         revert("MPT: incomplete proof");
     }
 
+    /// @notice The value of storage slot `slot` of `account`, in the state
+    ///         under `stateRoot`.
+    function storageValue(
+        bytes32 stateRoot,
+        address account,
+        bytes32 slot,
+        bytes[] calldata accountProof,
+        bytes[] calldata storageProof
+    ) internal pure returns (uint256) {
+        // The account is [nonce, balance, storage root, code hash].
+        bytes calldata encoded = get(stateRoot, keccak256(abi.encodePacked(account)), accountProof);
+        bytes calldata storageRoot = listItem(encoded, 2);
+        require(storageRoot.length == 32, "MPT: invalid account");
+        return toUint(get(bytes32(storageRoot), keccak256(abi.encode(slot)), storageProof));
+    }
+
     /// @notice The content of item `index` of the RLP list `list`.
     function listItem(bytes calldata list, uint256 index) internal pure returns (bytes calldata) {
         (uint256 start, uint256 length,, bool isList) = item(list, 0);

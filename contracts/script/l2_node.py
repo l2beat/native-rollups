@@ -14,14 +14,18 @@ node only stores the inputs of each block and rebuilds the chain from genesis.
 The genesis holds the system contracts the Specification requires and the
 `L2Messenger` predeploy with the pre-minted gas token supply, and no funded
 account: all L2 ETH comes from deposits. The node follows the rollup contract
-on L1, and each block claims the L1 messages sent up to its anchor, with
-proofs against that anchor. A claim is a frame transaction from the node's L2
-account that pays its fee with the claimed ETH:
+on L1, rebuilds its message tree from the `L1MessageSent` events, and each
+block claims the L1 messages sent up to its anchor. A claim is a frame
+transaction from the node's L2 account that pays its fee with the claimed
+ETH:
 
-    frame 0  DEFAULT  L2Messenger.claimL1Message(...)
-    frame 1  VERIFY   the account approves execution and payment
+    frame 0  DEFAULT  L2Messenger.proveL1MessageRoot(...)  first claim only
+    frame 1  DEFAULT  L2Messenger.claimL1Message(message, path)
+    frame 2  VERIFY   the account approves execution and payment
 
-so the first deposit to that account needs no L2 ETH to claim. Once funded,
+The first claim of a block proves the tree's root against the block's anchor,
+and the others only carry their message's path to it. The first deposit to
+the account needs no L2 ETH to claim. Once funded,
 the account also sends the requested L2 to L1 messages and random transfers.
 `prove` gives the proofs that claim an L2 to L1 message on L1, against the
 rollup contract's latest L2 block.
@@ -67,15 +71,21 @@ FEE_RECIPIENT = Address(0xFEE)
 L2_MESSENGER = Address(0x8079000000000000000000000000000000000001)
 PREMINT = 10**27
 MESSENGER_ARTIFACT = os.path.join(os.path.dirname(__file__), "..", "out", "L2Messenger.sol", "L2Messenger.json")
-CLAIM_SIGNATURE = "claimL1Message((address,address,uint256,bytes,uint256),uint256,bytes,bytes[],bytes[])"
-CLAIM_GAS_LIMIT = 3_000_000
+PROVE_ROOT_SIGNATURE = "proveL1MessageRoot(uint256,bytes,bytes[],bytes[])"
+CLAIM_SIGNATURE = "claimL1Message((address,address,uint256,bytes,uint256),bytes32[])"
+CLAIM_GAS_LIMIT = 1_000_000
 # EIP-8141 frame modes and approval scopes.
 DEFAULT_MODE, VERIFY_MODE = 0, 1
 APPROVE_EXECUTION_AND_PAYMENT = 3
 # Balance the account keeps for the fees of its transfers and messages.
 FEE_RESERVE = 10**16
 L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,bytes)")
-QUEUE_SLOT = 3  # NativeRollup.pendingL1Messages
+L1_MESSAGE_ROOT_SLOT = 3  # root of NativeRollup.l1Messages
+PROVEN_ROOT_SLOT = 4  # L2Messenger.provenL1MessageRoot
+TREE_DEPTH = 32
+ZERO_HASHES = [bytes(32)]
+for _ in range(TREE_DEPTH):
+    ZERO_HASHES.append(keccak256(ZERO_HASHES[-1] * 2))
 CLAIMED_SLOT = 1  # L2Messenger.claimedBits, 256 flags per slot
 SENT_SLOT = 2  # L2Messenger.sentMessages
 SEND_GAS_LIMIT = 500_000
@@ -101,11 +111,12 @@ def build_chain(state: dict, specs: list) -> dict:
                     Frame(
                         mode=DEFAULT_MODE,
                         target=L2_MESSENGER,
-                        data=bytes.fromhex(claim["calldata"][2:]),
+                        data=bytes.fromhex(call[2:]),
                         gas_limit=CLAIM_GAS_LIMIT,
-                    ),
-                    Frame(mode=VERIFY_MODE, flags=APPROVE_EXECUTION_AND_PAYMENT),
-                ],
+                    )
+                    for call in claim["calls"]
+                ]
+                + [Frame(mode=VERIFY_MODE, flags=APPROVE_EXECUTION_AND_PAYMENT)],
                 chain_id=L2_CHAIN_ID,
                 max_fee_per_gas=10**9,
                 max_priority_fee_per_gas=1,
@@ -183,9 +194,27 @@ def balance(fixture: dict, address: str) -> int:
     return int(account["balance"], 16) if account else 0
 
 
-def l1_messages(args: argparse.Namespace, first_index: int, timestamp: int) -> list:
-    """Claims of the L1 messages from `first_index` sent up to the anchor,
-    proven against the anchor, which the block stores at `timestamp`."""
+def message_tree(leaves: list) -> tuple:
+    """Root of the message tree holding `leaves`, and each leaf's path, as
+    `MessageTree` computes them."""
+    level, positions = list(leaves), list(range(len(leaves)))
+    paths = [[] for _ in leaves]
+    for height in range(TREE_DEPTH):
+        for path, position in zip(paths, positions):
+            sibling = position ^ 1
+            path.append(level[sibling] if sibling < len(level) else ZERO_HASHES[height])
+        level = [
+            keccak256(level[i] + (level[i + 1] if i + 1 < len(level) else ZERO_HASHES[height]))
+            for i in range(0, len(level), 2)
+        ]
+        positions = [position >> 1 for position in positions]
+    return (level[0] if level else ZERO_HASHES[TREE_DEPTH]), paths
+
+
+def l1_messages(args: argparse.Namespace, first_index: int, timestamp: int) -> tuple:
+    """The L1 messages from `first_index` sent up to the anchor, each with
+    the call claiming it, and the call proving their tree's root against the
+    anchor, which the block stores at `timestamp`."""
     rpc = ("--rpc-url", args.l1_rpc)
     logs = json.loads(
         cast(
@@ -198,37 +227,53 @@ def l1_messages(args: argparse.Namespace, first_index: int, timestamp: int) -> l
             }),
         )
     )
-    header = json.loads(cast("rpc", *rpc, "debug_getRawHeader", hex(args.anchor_number)))
-    claims = []
+    messages = []
     for log in logs:
-        index = int(log["topics"][1], 16)
-        if index < first_index:
-            continue
         data = bytes.fromhex(log["data"][2:])
-        value = int.from_bytes(data[0:32], "big")
         offset = int.from_bytes(data[32:64], "big")
         length = int.from_bytes(data[offset : offset + 32], "big")
-        payload = data[offset + 32 : offset + 32 + length]
-        message = {
-            "index": index,
+        messages.append({
+            "index": int(log["topics"][1], 16),
             "sender": "0x" + log["topics"][2][-40:],
             "to": "0x" + log["topics"][3][-40:],
-            "value": value,
-        }
-        slot = int.from_bytes(keccak256(QUEUE_SLOT.to_bytes(32, "big")), "big") + index
-        proof = json.loads(
-            cast("rpc", *rpc, "eth_getProof", args.rollup, json.dumps([f"0x{slot:064x}"]), hex(args.anchor_number))
+            "value": int.from_bytes(data[0:32], "big"),
+            "data": "0x" + data[offset + 32 : offset + 32 + length].hex(),
+        })
+    assert [m["index"] for m in messages] == list(range(len(messages))), "missing L1 messages"
+    leaves = [
+        keccak256(
+            bytes.fromhex(m["sender"][2:]) + bytes.fromhex(m["to"][2:]) + m["value"].to_bytes(32, "big")
+            + keccak256(bytes.fromhex(m["data"][2:])) + m["index"].to_bytes(32, "big")
         )
-        message["calldata"] = cast(
-            "calldata", CLAIM_SIGNATURE,
-            f"({message['sender']},{message['to']},{value},0x{payload.hex()},{index})",
-            str(timestamp),
-            header,
-            "[" + ",".join(proof["accountProof"]) + "]",
-            "[" + ",".join(proof["storageProof"][0]["proof"]) + "]",
-        )
-        claims.append(message)
-    return claims
+        for m in messages
+    ]
+    root, paths = message_tree(leaves)
+    # Claims only carry siblings up to the tree's height.
+    height = (len(leaves) - 1).bit_length() if leaves else 0
+
+    proof = json.loads(
+        cast("rpc", *rpc, "eth_getProof", args.rollup, json.dumps([f"0x{L1_MESSAGE_ROOT_SLOT:064x}"]), hex(args.anchor_number))
+    )
+    if messages:
+        assert int(proof["storageProof"][0]["value"], 16) == int.from_bytes(root, "big"), "L1 message root"
+    prove_root = cast(
+        "calldata", PROVE_ROOT_SIGNATURE,
+        str(timestamp),
+        json.loads(cast("rpc", *rpc, "debug_getRawHeader", hex(args.anchor_number))),
+        "[" + ",".join(proof["accountProof"]) + "]",
+        "[" + ",".join(proof["storageProof"][0]["proof"]) + "]",
+    )
+    claims = []
+    for m, path in zip(messages[first_index:], paths[first_index:]):
+        m["calls"] = [
+            cast(
+                "calldata", CLAIM_SIGNATURE,
+                f"({m['sender']},{m['to']},{m['value']},{m['data']},{m['index']})",
+                "[" + ",".join("0x" + p.hex() for p in path[:height]) + "]",
+            )
+        ]
+        claims.append(m)
+    return claims, prove_root, root
 
 
 def load(path: str) -> dict:
@@ -298,13 +343,17 @@ def build(args: argparse.Namespace) -> None:
     # their own claim, while claiming a message to another account needs
     # funds first, so claims stop at the first one it cannot pay for.
     funds = balance(fixture, str(user()))
+    pending, prove_root, root = l1_messages(args, claimed, timestamp)
     claims = []
-    for claim in l1_messages(args, claimed, timestamp):
+    for claim in pending:
         if int(claim["to"], 16) == int(str(user()), 16):
             funds += claim["value"]
         elif funds < FEE_RESERVE:
             break
         claims.append(claim)
+    # The first claim proves the root, unless the messenger already has it.
+    if claims and storage(fixture, L2_MESSENGER, PROVEN_ROOT_SLOT.to_bytes(32, "big")) != int.from_bytes(root, "big"):
+        claims[0]["calls"].insert(0, prove_root)
     l2_messages = []
     for withdrawal in args.withdraw:
         to, value, *data = withdrawal.split(":")

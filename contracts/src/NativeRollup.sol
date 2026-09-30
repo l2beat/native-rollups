@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {NativeRollupSsz} from "./NativeRollupSsz.sol";
 import {Message, Messages} from "./libs/Messages.sol";
+import {MessageTree, Tree} from "./libs/MessageTree.sol";
 
 /// @title NativeRollup
 /// @notice The rollup contract of the book's Specification. Each `advance`
@@ -74,10 +75,9 @@ abstract contract NativeRollup {
     // modulo STATE_ROOT_HISTORY (for L2->L1 messaging via state proofs).
     mapping(uint256 => bytes32) internal stateRootHistory;
 
-    // L1->L2 message queue. Messages are stored in this contract's storage
-    // and become accessible on L2 via storage proofs against the anchored L1
-    // block hash.
-    bytes32[] public pendingL1Messages;
+    // L1->L2 messages, as a Merkle tree of their hashes. L2 proves its root
+    // against the anchored L1 block hash, then each message's path.
+    Tree internal l1Messages;
 
     // L2->L1 messages already delivered, as a bitmap (see Messages), and the
     // sender of the one being delivered.
@@ -104,16 +104,24 @@ abstract contract NativeRollup {
         stateRootHistory[0] = genesisStateRoot;
     }
 
-    /// @notice Emitted so relayers can deliver the message on L2, where only
-    ///         its hash is proven.
+    /// @notice Emitted so the message can be claimed on L2, where only its
+    ///         hash is proven.
     event L1MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
 
     event L2MessageClaimed(uint256 indexed index, address indexed sender, address indexed to, uint256 value);
 
     function sendMessage(address to, bytes calldata data) external payable {
-        uint256 index = pendingL1Messages.length;
-        pendingL1Messages.push(Messages.hash(msg.sender, to, msg.value, data, index));
+        uint256 index = l1Messages.count;
+        MessageTree.insert(l1Messages, Messages.hash(msg.sender, to, msg.value, data, index));
         emit L1MessageSent(index, msg.sender, to, msg.value, data);
+    }
+
+    function l1MessageRoot() external view returns (bytes32) {
+        return l1Messages.root;
+    }
+
+    function l1MessageCount() external view returns (uint256) {
+        return l1Messages.count;
     }
 
     function stateRoot() external view returns (bytes32) {
