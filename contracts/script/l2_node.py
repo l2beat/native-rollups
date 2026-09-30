@@ -459,7 +459,24 @@ def build(args: argparse.Namespace) -> None:
                 "number": header["blockNumber"],
                 "blockHash": hx(header["blockHash"]),
                 "stateRoot": hx(header["stateRoot"]),
+                "timestamp": header["timestamp"],
+                "gasUsed": header["gasUsed"],
                 "transactions": len(payload.transactions),
+                # Claims first, then L2 to L1 messages, then transfers.
+                "transactionList": [
+                    {"kind": kind, "hash": hx(keccak256(tx)), "bytes": len(tx)}
+                    for kind, tx in zip(
+                        ["claim"] * len(spec["claims"])
+                        + ["l2Message"] * len(spec["l2Messages"])
+                        + ["transfer"] * len(spec["transfers"]),
+                        transactions,
+                    )
+                ],
+                "anchor": {"number": args.anchor_number, "hash": args.anchor_hash},
+                "validation": {"successful": bool(output.successful_validation), "chainId": L2_CHAIN_ID, "schemaId": args.schema_id},
+                "newPayloadRequestRoot": hx(np_root),
+                "publicInputRoot": hx(data_hash),
+                "balBytes": len(bal),
                 "claims": [
                     {k: c[k] for k in ("index", "sender", "to", "value")} | {"l2Balance": balance(fixture, c["to"])}
                     for c in spec["claims"]

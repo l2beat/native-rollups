@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Native rollup, live demo</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">Native rollup <span class="muted">live demo</span></div>
+    <div class="status" id="status"><span class="pill">connecting…</span></div>
+  </header>
+
+  <main>
+    <section class="intro">
+      <h1>An L2 that Ethereum checks with its own proof program</h1>
+      <p class="lead">
+        A native rollup reuses the program Ethereum will use to prove its own blocks. Its L1 contract accepts an L2
+        block only with a proof of that program, so the L2 follows Ethereum's rules exactly, with no custom proof
+        system of its own. This page runs one live on a local copy of
+        <a href="https://notes.ethereum.org/@ethpandaops/frames-devnet-0">frames-devnet-0</a>, the devnet for
+        EIP-8141 frame transactions.
+      </p>
+      <div class="legend">
+        <span class="badge real">Real</span> runs as specified
+        <span class="badge mock">Mock</span> stands in for an L1 feature that does not exist yet
+        <span class="badge shortcut">Shortcut</span> a simplification of this demo
+      </div>
+    </section>
+
+    <section id="block">
+      <h2>Life of an L2 block</h2>
+      <p class="section-lead">Every step of one block, from its transactions to an independent node rebuilding it
+        from L1. Pick a block, then a step, for the details.</p>
+      <div class="block-strip" id="block-strip"></div>
+      <ol class="pipeline" id="pipeline"></ol>
+      <div class="detail" id="stage-detail"></div>
+    </section>
+
+    <section id="messages">
+      <h2>Moving ETH between L1 and L2</h2>
+      <p class="section-lead">Alice deposits from L1 and later withdraws. All L2 ETH comes from deposits: the L2
+        starts with no ETH outside a pre-minted supply that only deposits release, so L1 backs every L2 ETH.</p>
+      <div id="message-list" class="messages"></div>
+    </section>
+
+    <section id="costs">
+      <h2>What it costs</h2>
+      <p class="section-lead">Gas from the latest receipts. State gas is <a href="https://eips.ethereum.org/EIPS/eip-8037">EIP-8037</a>'s
+        charge for new state, separate from execution gas.</p>
+      <div id="costs-table"></div>
+      <h3>How full each block's blob is</h3>
+      <div id="blob-chart" class="blob-chart"></div>
+    </section>
+
+    <section id="mocks">
+      <h2>What's real and what's mocked</h2>
+      <p class="section-lead">Everything this demo cannot run yet is missing from L1, not from the rollup. Each mock
+        stands in for one L1 feature and goes away when that feature ships.</p>
+      <table class="mock-table">
+        <thead><tr><th>Part</th><th>Status</th><th>What stands in</th><th>Goes away with</th></tr></thead>
+        <tbody>
+          <tr><td>L1 chain with frame transactions and blobs</td><td><span class="badge real">Real</span></td><td>A local copy of frames-devnet-0 with its four clients</td><td></td></tr>
+          <tr><td>L2 execution</td><td><span class="badge real">Real</span></td><td>execution-specs' Amsterdam rules with EIP-8141, as on the L1</td><td></td></tr>
+          <tr><td>Stateless validation program</td><td><span class="badge real">Real</span></td><td>Run as ordinary code instead of inside a zkVM</td><td></td></tr>
+          <tr><td>Block data in blobs</td><td><span class="badge real">Real</span></td><td>EIP-8142's encoding, on real L1 blobs</td><td></td></tr>
+          <tr><td>Rollup contract, L2 messenger, message proofs</td><td><span class="badge real">Real</span></td><td></td><td></td></tr>
+          <tr><td>Proof</td><td><span class="badge mock">Mock</span></td><td>A trusted key signs blocks that the real program accepted</td><td>A zkVM proof of the same program</td></tr>
+          <tr><td>Proof check on L1 (EIP-8288)</td><td><span class="badge mock">Mock</span></td><td>A frame that calls a contract checking the signature</td><td>EIP-8288, which lets L1's own proof cover it</td></tr>
+          <tr><td>Verification key registry (EIP-8357)</td><td><span class="badge mock">Mock</span></td><td>An admin registers the key instead of a fork</td><td>EIP-8357</td></tr>
+          <tr><td>Blob check in the program (EIP-8142)</td><td><span class="badge mock">Mock</span></td><td>The node checks that the blobs encode the block</td><td>EIP-8142 in the L1 program</td></tr>
+          <tr><td>Operator</td><td><span class="badge shortcut">Shortcut</span></td><td>One operator with a scripted story, and no public L2 RPC</td><td></td></tr>
+        </tbody>
+      </table>
+      <p class="note">The prover key is the only trusted part. The follower checks it: it re-executes every block from
+        L1 data alone and compares the result with what the contract accepted.</p>
+    </section>
+
+    <section id="findings">
+      <h2>What we learned building it</h2>
+      <p class="section-lead">Problems and optimizations the demo surfaced, each now part of the design.</p>
+      <div class="cards">
+        <a class="card" href="http://127.0.0.1:3000/specification.html#data-layout">
+          <h3>One block could halt the chain</h3>
+          <p>Ethereum's rules accept a block at the maximum timestamp, after which no block can follow. The contract
+            now keeps L2 time behind L1 time.</p>
+        </a>
+        <a class="card" href="http://127.0.0.1:3000/gas_token_deposits.html#design">
+          <h3>Nobody could pay for the first transaction</h3>
+          <p>With no ETH on L2, no one could claim the first deposit. With frame transactions, a deposit pays for its
+            own claim.</p>
+        </a>
+        <a class="card" href="http://127.0.0.1:3000/specification.html#genesis">
+          <h3>The L2 and its contract need each other</h3>
+          <p>The L2's genesis names the L1 contract, which stores the genesis hash. The genesis is built for the
+            address the contract will have.</p>
+        </a>
+        <a class="card" href="http://127.0.0.1:3000/messaging.html#l2-to-l1-messaging">
+          <h3>Half of each block's cost was new storage</h3>
+          <p>Keeping every L2 state root created a slot per block. Keeping the last 8,191 halves the cost of each
+            block.</p>
+        </a>
+        <a class="card" href="http://127.0.0.1:3000/messaging.html#l1-to-l2-messaging">
+          <h3>Deposits cost a slot and a 3 KB proof each</h3>
+          <p>A Merkle tree of messages halves the L1 cost, and claims in the same block share one proof, leaving
+            about 450 bytes each.</p>
+        </a>
+        <a class="card" href="http://127.0.0.1:3000/specification.html#nativerollup-contract">
+          <h3>Nodes could not find the data</h3>
+          <p>Without events, a node would scan every L1 transaction to find messages and blocks. The contract now
+            announces both.</p>
+        </a>
+        <a class="card" href="http://127.0.0.1:3000/specification.html#open-questions">
+          <h3>Each block takes a whole blob</h3>
+          <p>Block-in-Blobs gives every block its own blobs. Blocks of a few KB fill 3 to 4% of theirs, while rollups
+            today share blobs across many blocks.</p>
+        </a>
+        <a class="card" href="http://127.0.0.1:3000/specification.html#blob-encoding">
+          <h3>The program does not handle blobs yet</h3>
+          <p>Ethereum's validation program does not implement Block-in-Blobs yet. The design depends on it, and the
+            demo checks the blobs in the node instead.</p>
+        </a>
+      </div>
+    </section>
+
+    <section id="verify">
+      <h2>Check it yourself</h2>
+      <div id="verify-content"></div>
+    </section>
+  </main>
+
+  <footer>
+    From the <a href="http://127.0.0.1:3000/">Native Rollups book</a>. The code is in <code>contracts/</code> and
+    <code>demo/</code>.
+  </footer>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

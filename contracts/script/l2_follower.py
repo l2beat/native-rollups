@@ -21,7 +21,9 @@ The genesis is the L2 node's, as the rollup's public configuration.
 
 import argparse
 import json
+import os
 import subprocess
+import time
 import typing
 
 from ethereum_rlp import rlp
@@ -130,65 +132,99 @@ def payload_blobs(args: argparse.Namespace, l1_block: dict, versioned_hashes: li
     return [by_hash[h] for h in versioned_hashes]
 
 
+def write_record(path: str, entry: dict) -> None:
+    with open(path + ".tmp", "w") as f:
+        json.dump(entry, f)
+    os.replace(path + ".tmp", path)
+
+
 def follow(args: argparse.Namespace) -> None:
     chain = genesis(args.genesis)
     gas_limit = int(cast("call", "--rpc-url", args.l1_rpc, args.rollup, "gasLimit()(uint64)").split()[0])
-    logs = rpc(args.l1_rpc, "eth_getLogs", json.dumps({
-        "address": args.rollup, "fromBlock": "0x0", "toBlock": "latest", "topics": ["0x" + BLOCK_ADDED.hex()],
-    }))
-    for log in logs:
-        number = int(log["topics"][1], 16)
-        recorded_hash = bytes.fromhex(log["data"][2:66])
-
-        # Header fields from the advance frame, the rest from the blobs.
-        tx = decode_transaction(bytes.fromhex(rpc(args.l1_rpc, "eth_getRawTransactionByHash", log["transactionHash"])[2:]))
-        frame = next(f for f in tx.frames if f.mode == FrameMode.SENDER and bytes(f.to) == bytes.fromhex(args.rollup[2:]))
-        p = decode_advance(bytes(frame.data))
-        l1_block = rpc(args.l1_rpc, "eth_getBlockByNumber", log["blockNumber"], "false")
-        blobs = payload_blobs(args, l1_block, [bytes(h) for h in tx.blob_versioned_hashes[: p["payloadBlobCount"]]])
-        bal, transactions = bib.blobs_to_execution_payload_data(blobs)
-        anchor = bytes.fromhex(rpc(args.l1_rpc, "eth_getBlockByNumber", hex(p["anchorBlockNumber"]), "false")["hash"][2:])
-
-        # Re-execute once for the fields that L1 only has as SSZ roots.
-        parent = chain.blocks[-1].header
-        block_env = vm.BlockEnvironment(
-            chain_id=chain.chain_id,
-            state=BlockState(pre_state=chain.state),
-            block_gas_limit=Uint(gas_limit),
-            block_hashes=fork.get_last_256_block_hashes(chain),
-            coinbase=Address(p["feeRecipient"]),
-            number=parent.number + Uint(1),
-            base_fee_per_gas=Uint(p["baseFeePerGas"]),
-            time=U256(p["timestamp"]),
-            prev_randao=p["prevRandao"],
-            excess_blob_gas=U64(0),
-            parent_beacon_block_root=anchor,
-            block_access_list_builder=BlockAccessListBuilder(),
-            slot_number=U64(0),
-        )
-        output = fork.apply_body(block_env, tuple(transactions), ())
-
-        h = header({
-            "parent_hash": keccak256(rlp.encode(parent)), "ommers_hash": fork.EMPTY_OMMER_HASH,
-            "coinbase": p["feeRecipient"], "state_root": p["stateRoot"],
-            "transactions_root": root(output.transactions_trie), "receipt_root": p["receiptsRoot"],
-            "bloom": p["logsBloom"], "difficulty": 0, "number": int(parent.number) + 1, "gas_limit": gas_limit,
-            "gas_used": p["gasUsed"], "timestamp": p["timestamp"], "extra_data": p["extraData"],
-            "prev_randao": p["prevRandao"], "nonce": bytes(8), "base_fee_per_gas": p["baseFeePerGas"],
-            "withdrawals_root": root(output.withdrawals_trie), "blob_gas_used": 0, "excess_blob_gas": 0,
-            "parent_beacon_block_root": anchor, "requests_hash": compute_requests_hash(output.requests),
-            "block_access_list_hash": keccak256(bal), "slot_number": 0,
-        })
-        fork.state_transition(chain, Block(header=h, transactions=tuple(transactions), ommers=(), withdrawals=()))
-        rebuilt_hash = keccak256(rlp.encode(h))
-        assert rebuilt_hash == recorded_hash == p["blockHash"], f"L2 block {number}: rebuilt hash differs"
-        print(
-            f"L2 block {number} rebuilt from L1 block {int(log['blockNumber'], 16)}: {len(transactions)} transactions "
-            f"and a {len(bal)}-byte BAL from {len(blobs)} blob(s), re-executed, hash 0x{rebuilt_hash.hex()} matches"
-        )
+    verified, from_block = [], 0
+    while True:
+        logs = rpc(args.l1_rpc, "eth_getLogs", json.dumps({
+            "address": args.rollup, "fromBlock": hex(from_block), "toBlock": "latest",
+            "topics": ["0x" + BLOCK_ADDED.hex()],
+        }))
+        for log in logs:
+            if int(log["topics"][1], 16) <= len(verified):
+                continue
+            verified.append(rebuild(args, chain, gas_limit, log))
+            from_block = int(log["blockNumber"], 16)
+            if args.record:
+                write_record(args.record, {"rollup": args.rollup, "verified": verified, "updatedAt": int(time.time())})
+        if not args.watch:
+            break
+        time.sleep(args.interval)
     state_root = cast("call", "--rpc-url", args.l1_rpc, args.rollup, "stateRoot()(bytes32)")
     assert "0x" + bytes(chain.blocks[-1].header.state_root).hex() == state_root
-    print(f"followed {len(logs)} L2 blocks from L1 data, state root {state_root} matches the rollup contract")
+    print(f"followed {len(verified)} L2 blocks from L1 data, state root {state_root} matches the rollup contract")
+
+
+def rebuild(args: argparse.Namespace, chain: fork.BlockChain, gas_limit: int, log: dict) -> dict:
+    """Rebuilds and applies the L2 block that `log` announces."""
+    number = int(log["topics"][1], 16)
+    recorded_hash = bytes.fromhex(log["data"][2:66])
+
+    # Header fields from the advance frame, the rest from the blobs.
+    tx = decode_transaction(bytes.fromhex(rpc(args.l1_rpc, "eth_getRawTransactionByHash", log["transactionHash"])[2:]))
+    frame = next(f for f in tx.frames if f.mode == FrameMode.SENDER and bytes(f.to) == bytes.fromhex(args.rollup[2:]))
+    p = decode_advance(bytes(frame.data))
+    l1_block = rpc(args.l1_rpc, "eth_getBlockByNumber", log["blockNumber"], "false")
+    blobs = payload_blobs(args, l1_block, [bytes(h) for h in tx.blob_versioned_hashes[: p["payloadBlobCount"]]])
+    bal, transactions = bib.blobs_to_execution_payload_data(blobs)
+    anchor = bytes.fromhex(rpc(args.l1_rpc, "eth_getBlockByNumber", hex(p["anchorBlockNumber"]), "false")["hash"][2:])
+
+    # Re-execute once for the fields that L1 only has as SSZ roots.
+    parent = chain.blocks[-1].header
+    block_env = vm.BlockEnvironment(
+        chain_id=chain.chain_id,
+        state=BlockState(pre_state=chain.state),
+        block_gas_limit=Uint(gas_limit),
+        block_hashes=fork.get_last_256_block_hashes(chain),
+        coinbase=Address(p["feeRecipient"]),
+        number=parent.number + Uint(1),
+        base_fee_per_gas=Uint(p["baseFeePerGas"]),
+        time=U256(p["timestamp"]),
+        prev_randao=p["prevRandao"],
+        excess_blob_gas=U64(0),
+        parent_beacon_block_root=anchor,
+        block_access_list_builder=BlockAccessListBuilder(),
+        slot_number=U64(0),
+    )
+    output = fork.apply_body(block_env, tuple(transactions), ())
+
+    h = header({
+        "parent_hash": keccak256(rlp.encode(parent)), "ommers_hash": fork.EMPTY_OMMER_HASH,
+        "coinbase": p["feeRecipient"], "state_root": p["stateRoot"],
+        "transactions_root": root(output.transactions_trie), "receipt_root": p["receiptsRoot"],
+        "bloom": p["logsBloom"], "difficulty": 0, "number": int(parent.number) + 1, "gas_limit": gas_limit,
+        "gas_used": p["gasUsed"], "timestamp": p["timestamp"], "extra_data": p["extraData"],
+        "prev_randao": p["prevRandao"], "nonce": bytes(8), "base_fee_per_gas": p["baseFeePerGas"],
+        "withdrawals_root": root(output.withdrawals_trie), "blob_gas_used": 0, "excess_blob_gas": 0,
+        "parent_beacon_block_root": anchor, "requests_hash": compute_requests_hash(output.requests),
+        "block_access_list_hash": keccak256(bal), "slot_number": 0,
+    })
+    fork.state_transition(chain, Block(header=h, transactions=tuple(transactions), ommers=(), withdrawals=()))
+    rebuilt_hash = keccak256(rlp.encode(h))
+    assert rebuilt_hash == recorded_hash == p["blockHash"], f"L2 block {number}: rebuilt hash differs"
+    print(
+        f"L2 block {number} rebuilt from L1 block {int(log['blockNumber'], 16)}: {len(transactions)} transactions "
+        f"and a {len(bal)}-byte BAL from {len(blobs)} blob(s), re-executed, hash 0x{rebuilt_hash.hex()} matches",
+        flush=True,
+    )
+    return {
+        "number": number,
+        "l1Block": int(log["blockNumber"], 16),
+        "l1Tx": log["transactionHash"],
+        "blockHash": "0x" + rebuilt_hash.hex(),
+        "stateRoot": "0x" + bytes(h.state_root).hex(),
+        "transactions": len(transactions),
+        "balBytes": len(bal),
+        "blobs": len(blobs),
+        "match": True,
+    }
 
 
 def main() -> None:
@@ -197,6 +233,9 @@ def main() -> None:
     parser.add_argument("--beacon", required=True, help="a consensus-layer API serving /eth/v1/beacon/blobs")
     parser.add_argument("--rollup", required=True)
     parser.add_argument("--genesis", required=True, help="the L2 node's state file, for the genesis configuration")
+    parser.add_argument("--watch", action="store_true", help="keep following new L2 blocks")
+    parser.add_argument("--interval", type=float, default=4, help="seconds between polls with --watch")
+    parser.add_argument("--record", help="keep the verified blocks in this JSON file")
     follow(parser.parse_args())
 
 

@@ -253,11 +253,34 @@ def advance(args: argparse.Namespace) -> None:
         f"gas {int(receipt['gasUsed'], 16)}, blob gas {int(receipt.get('blobGasUsed', '0x0'), 16)} "
         f"at {int(receipt.get('blobGasPrice', '0x0'), 16)} wei"
     )
+    frames = []
     for i, frame in enumerate(receipt.get("frameReceipts", [])):
         execution, state = int(frame["executionGasUsed"], 16), int(frame["stateGasUsed"], 16)
         print(f"frame {i}: status {int(frame['status'], 16)}, {execution} execution, {state} state gas")
+        frames.append({"status": int(frame["status"], 16), "executionGas": execution, "stateGas": state})
     head = int(call(rpc, args.rollup, "blockNumber()(uint256)").split()[0])
     print(f"rollup at L2 block {head}")
+    if args.record:
+        record(args.record, {
+            "type": "advance",
+            "l2": {k: v for k, v in bundle.items() if k not in ("blobs", "proof", "triple")},
+            "proof": {"kind": "mock", "triple": bundle["triple"], "signature": bundle["proof"]},
+            "l1": {
+                "txHash": tx_hash,
+                "block": int(receipt["blockNumber"], 16),
+                "builder": builder.decode(errors="replace"),
+                "gasUsed": int(receipt["gasUsed"], 16),
+                "blobGasUsed": int(receipt.get("blobGasUsed", "0x0"), 16),
+                "blobGasPrice": int(receipt.get("blobGasPrice", "0x0"), 16),
+                "frames": frames,
+                "rollupHead": head,
+            },
+        })
+
+
+def record(path: str, entry: dict) -> None:
+    with open(path, "w") as f:
+        json.dump(entry, f)
 
 
 def claim_l2_message(args: argparse.Namespace) -> None:
@@ -281,6 +304,19 @@ def claim_l2_message(args: argparse.Namespace) -> None:
         f"status {int(receipt['status'], 16)}, gas {int(receipt['gasUsed'], 16)}, "
         f"{m['to']} received {int(cast('balance', '--rpc-url', rpc, m['to'])) - before} wei"
     )
+    if args.record:
+        record(args.record, {
+            "type": "claimL2Message",
+            "message": m,
+            "l2Block": p["blockNumber"],
+            "proofNodes": len(p["accountProof"]) + len(p["storageProof"]),
+            "l1": {
+                "txHash": receipt["transactionHash"],
+                "block": int(receipt["blockNumber"], 16),
+                "status": int(receipt["status"], 16),
+                "gasUsed": int(receipt["gasUsed"], 16),
+            },
+        })
 
 
 def main() -> None:
@@ -298,6 +334,7 @@ def main() -> None:
     adv.add_argument("--l2-state", required=True, help="the L2 node's state file")
     adv.add_argument("--zkevm-specs", required=True, help="execution-specs projects/zkevm merged with eips/bogota/eip-8141")
     adv.add_argument("--corrupt-proof", action="store_true", help="send an invalid mock proof")
+    adv.add_argument("--record", help="write what happened to this JSON file")
     adv.add_argument(
         "--withdraw", action="append", default=[], metavar="TO:WEI[:DATA]", help="send an L2 to L1 message"
     )
@@ -308,6 +345,7 @@ def main() -> None:
     claim.add_argument("--index", type=int, required=True)
     claim.add_argument("--l2-state", required=True, help="the L2 node's state file")
     claim.add_argument("--zkevm-specs", required=True, help="execution-specs projects/zkevm merged with eips/bogota/eip-8141")
+    claim.add_argument("--record", help="write what happened to this JSON file")
     args = parser.parse_args()
     if args.command == "check-vectors":
         check_vectors(args.vectors)
