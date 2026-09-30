@@ -3,9 +3,10 @@ Operator for a native rollup on an EIP-8141 chain without EIP-8288, such as
 frames-devnet-0 (see FramesNativeRollup).
 
 `advance` anchors the next L2 block to the latest L1 block, has the L2 node
-(`l2_node.py`) build it on the rollup's head, claiming the L1 messages sent
-up to the anchor, validate it with the L1 stateless validation program, and
-sign the dependency, then sends one frame transaction:
+(`l2_node.py`, through its RPC) build it on the rollup's head, claiming the
+L1 messages sent up to the anchor, validate it with the L1 stateless
+validation program, and sign the dependency, then sends one frame
+transaction:
 
     frame 0  VERIFY   the operator's account approves execution and payment
     frame 1  DEFAULT  MockDependencyVerifier(scheme || data_hash || vk_hash || proof)
@@ -17,8 +18,9 @@ proofs. `--submit-rpc` selects a client that accepts blob-carrying frame
 transactions: on frames-devnet-0, Nethermind and Reth do, while geth and
 ethrex do not.
 
-`claim-l2-message` claims an L2 to L1 message sent with `advance --withdraw`,
-with the L2 node's proofs against the rollup's latest L2 block.
+`claim-l2-message` claims an L2 to L1 message, which an L2 account sent with
+`L2Messenger.sendMessage`, with a proof from the L2 node's `eth_getProof`
+against the rollup's latest L2 block.
 
 `check-vectors` checks the Python root computation against the
 consensus-specs vectors that the Solidity tests use.
@@ -28,16 +30,15 @@ the frame transaction types, and Foundry's `cast` on the PATH:
 
     uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py \
         advance --rpc <url> --rollup <address> --verifier <address> \
-        --operator-key <key> --prover-key <key> \
-        --l2-state <file> --zkevm-specs <execution-specs@projects/zkevm+eip-8141>
+        --operator-key <key> --prover-key <key> --l2-rpc <url>
 """
 
 import argparse
 from dataclasses import replace
 import json
-import os
 import subprocess
 import time
+import urllib.request
 
 from ethereum_types.bytes import Bytes0, Bytes20
 from ethereum_types.numeric import U64, U256, Uint
@@ -55,6 +56,7 @@ from ethereum.forks.amsterdam.transactions.frame_transaction import (
     compute_frame_signature_hash,
 )
 
+from ethereum.crypto.hash import keccak256
 from ethereum_rlp import rlp
 
 import block_in_blobs as bib
@@ -66,6 +68,9 @@ ADVANCE_SIGNATURE = (
 )
 CLAIM_L2_MESSAGE_SIGNATURE = "claimL2Message((address,address,uint256,bytes,uint256),uint256,bytes[],bytes[])"
 DEPENDENCY_FRAME_INDEX = 1
+L2_MESSENGER = "0x8079000000000000000000000000000000000001"
+L2_MESSAGE_SENT = keccak256(b"L2MessageSent(uint256,address,address,uint256,bytes)")
+SENT_SLOT = 2  # L2Messenger.sentMessages
 
 
 # ---------------------------------------------------------------------------
@@ -95,17 +100,17 @@ def hx(b: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 
-def l2_node(args: argparse.Namespace, *node_args: str) -> dict:
-    node = subprocess.run(
-        [
-            "uv", "run", "--project", args.zkevm_specs, "python",
-            os.path.join(os.path.dirname(__file__), "l2_node.py"), *node_args,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+def l2_rpc(url: str, method: str, *params):
+    request = urllib.request.Request(
+        url,
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}).encode(),
+        {"Content-Type": "application/json"},
     )
-    return json.loads(node.stdout.strip().splitlines()[-1])
+    with urllib.request.urlopen(request, timeout=600) as response:
+        out = json.load(response)
+    if "error" in out:
+        raise SystemExit(f"L2 node: {method}: {out['error']['message']}")
+    return out["result"]
 
 
 def wait_for_receipt(rpc: str, tx_hash: str, blocks: int = 40) -> dict:
@@ -136,22 +141,16 @@ def advance(args: argparse.Namespace) -> None:
 
     # The L2 node builds the next block on the rollup's head, validates it
     # with the stateless program, and signs the dependency.
-    bundle = l2_node(
-        args, "build",
-        "--state", args.l2_state,
-        "--head-hash", head_hash,
-        "--anchor-number", str(anchor_number),
-        "--anchor-hash", anchor_hash,
-        "--schema-id", str(schema_id),
-        "--vk-hash", vk_hash,
-        "--l1-chain-id", cast("chain-id", "--rpc-url", rpc),
-        "--verifier", args.verifier,
-        "--prover-key", args.prover_key,
-        "--l1-rpc", rpc,
-        "--rollup", args.rollup,
-        *[a for w in args.withdraw for a in ("--withdraw", w)],
-        *[a for t in args.transfer for a in ("--transfer", t)],
-    )
+    bundle = l2_rpc(args.l2_rpc, "nr_buildBlock", {
+        "headHash": head_hash,
+        "anchorNumber": anchor_number,
+        "anchorHash": anchor_hash,
+        "schemaId": schema_id,
+        "vkHash": vk_hash,
+        "l1ChainId": int(cast("chain-id", "--rpc-url", rpc)),
+        "verifier": args.verifier,
+        "proverKey": args.prover_key,
+    })
     p = bundle["params"]
     triple = bytes.fromhex(bundle["triple"][2:])
     proof = bytes.fromhex(bundle["proof"][2:])
@@ -238,10 +237,7 @@ def advance(args: argparse.Namespace) -> None:
         f"{bundle['payloadBytes']} payload bytes in {len(blobs)} blob(s)"
     )
     for c in bundle["claims"]:
-        print(
-            f"claims L1 message {c['index']}: {c['value']} wei from {c['sender']} to {c['to']}, "
-            f"whose L2 balance becomes {c['l2Balance']}"
-        )
+        print(f"claims L1 message {c['index']}: {c['value']} wei from {c['sender']} to {c['to']}")
     for m in bundle["l2Messages"]:
         print(f"sends L2 message {m['index']}: {m['value']} wei from {m['sender']} to {m['to']} on L1")
     tx_hash = json.loads(cast("rpc", "--rpc-url", args.submit_rpc or rpc, "eth_sendRawTransaction", hx(wrapped)))
@@ -287,8 +283,29 @@ def record(path: str, entry: dict) -> None:
 def claim_l2_message(args: argparse.Namespace) -> None:
     rpc = args.rpc
     head_hash = call(rpc, args.rollup, "blockHash()(bytes32)")
-    p = l2_node(args, "prove", "--state", args.l2_state, "--head-hash", head_hash, "--index", str(args.index))
-    m = p["message"]
+    latest = l2_rpc(args.l2_rpc, "eth_getBlockByNumber", "latest", False)
+    if latest["hash"] != head_hash:
+        raise SystemExit(f"the L2 node is at {latest['hash']}, the rollup at {head_hash}")
+    logs = l2_rpc(args.l2_rpc, "eth_getLogs", {
+        "address": L2_MESSENGER, "fromBlock": "0x0", "toBlock": "latest",
+        "topics": [hx(L2_MESSAGE_SENT), f"0x{args.index:064x}"],
+    })
+    if not logs:
+        raise SystemExit(f"L2 to L1 message {args.index} is not in an L2 block the rollup has")
+    topics, data = logs[0]["topics"], bytes.fromhex(logs[0]["data"][2:])
+    offset = int.from_bytes(data[32:64], "big")
+    m = {
+        "index": args.index, "sender": "0x" + topics[2][-40:], "to": "0x" + topics[3][-40:],
+        "value": int.from_bytes(data[0:32], "big"),
+        "data": hx(data[offset + 32 : offset + 32 + int.from_bytes(data[offset : offset + 32], "big")]),
+    }
+    slot = int.from_bytes(keccak256(SENT_SLOT.to_bytes(32, "big")), "big") + args.index
+    proof = l2_rpc(args.l2_rpc, "eth_getProof", L2_MESSENGER, [f"0x{slot:064x}"], "latest")
+    p = {
+        "blockNumber": int(latest["number"], 16),
+        "accountProof": proof["accountProof"],
+        "storageProof": proof["storageProof"][0]["proof"],
+    }
     before = int(cast("balance", "--rpc-url", rpc, m["to"]))
     receipt = json.loads(
         cast(
@@ -332,22 +349,15 @@ def main() -> None:
     adv.add_argument("--verifier", required=True)
     adv.add_argument("--operator-key", required=True)
     adv.add_argument("--prover-key", required=True)
-    adv.add_argument("--l2-state", required=True, help="the L2 node's state file")
-    adv.add_argument("--zkevm-specs", required=True, help="execution-specs projects/zkevm merged with eips/bogota/eip-8141")
+    adv.add_argument("--l2-rpc", required=True, help="the L2 node's RPC")
     adv.add_argument("--corrupt-proof", action="store_true", help="send an invalid mock proof")
     adv.add_argument("--record", help="write what happened to this JSON file")
-    adv.add_argument(
-        "--withdraw", action="append", default=[], metavar="FROM:TO:WEI[:DATA]",
-        help="send an L2 to L1 message from one of the L2 node's accounts",
-    )
-    adv.add_argument("--transfer", action="append", default=[], metavar="FROM:TO:WEI", help="send ETH on L2 from one of the L2 node's accounts")
     claim = sub.add_parser("claim-l2-message")
     claim.add_argument("--rpc", required=True)
     claim.add_argument("--rollup", required=True)
     claim.add_argument("--key", required=True, help="the L1 account sending the claim")
     claim.add_argument("--index", type=int, required=True)
-    claim.add_argument("--l2-state", required=True, help="the L2 node's state file")
-    claim.add_argument("--zkevm-specs", required=True, help="execution-specs projects/zkevm merged with eips/bogota/eip-8141")
+    claim.add_argument("--l2-rpc", required=True, help="the L2 node's RPC")
     claim.add_argument("--record", help="write what happened to this JSON file")
     args = parser.parse_args()
     if args.command == "check-vectors":

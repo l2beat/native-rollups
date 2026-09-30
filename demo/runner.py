@@ -1,15 +1,14 @@
 """
 Runs the native rollup demo on the local frames devnet (`contracts/frames/`).
 
-Each episode deploys a fresh rollup, starts a follower that rebuilds the L2
-chain from L1 on its own, then advances the rollup with a scripted story:
-Alice and Bob deposit from L1, and each deposit pays for its own claim on
-L2. The users pay each other on L2, and Charlie, who never deposits,
-withdraws ETH received on L2 to L1 and claims it there. Every step is
-recorded in `demo/data/session.json`, which `demo/server.py` serves to the
-site. After `--blocks` L2 blocks the
-episode ends and a new one starts, since the L2 node rebuilds its chain from
-genesis for every block.
+It deploys a fresh rollup, starts the L2 node with its RPC and a follower
+that rebuilds the L2 chain from L1 on its own, then plays a scripted story,
+adding one L2 block per step: Alice and Bob deposit from L1, and each
+deposit pays for its own claim on L2. The users pay each other through the
+L2 RPC, and Charlie, who never deposits, withdraws ETH received on L2 to L1
+and claims it there. Every step is recorded in `demo/data/session.json`,
+which `demo/server.py` serves to the site. If the L2 node stops, the runner
+starts over with a new rollup.
 
 Only uses the standard library: it runs the contract scripts in their uv
 environments, as the README of `contracts/frames/` describes.
@@ -27,6 +26,7 @@ import subprocess
 import sys
 import time
 import traceback
+import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONTRACTS = os.path.join(ROOT, "contracts")
@@ -41,8 +41,10 @@ USER_KEYS = {
     "Charlie": "0xab63b23eb7941c1251757e24b3d2350d2bc05c3c388d06f8fe6feafefb1e8c70",
 }
 L2_MESSENGER = "0x8079000000000000000000000000000000000001"
+# keccak256("L2MessageSent(uint256,address,address,uint256,bytes)")
+L2_MESSAGE_SENT = "0xb10e5e7445000e46a527775d169ada0d864e3b30788afd9cae13ce3552e2b14e"
 ETH = 10**18
-# What a user keeps on L2 for fees, above the L2 node's own reserve.
+# What a user keeps on L2 for fees.
 RESERVE = ETH // 20
 
 
@@ -55,6 +57,19 @@ def run(cmd: list, cwd: str = CONTRACTS) -> str:
 
 def cast(*args: str) -> str:
     return run(["cast", *args]).strip()
+
+
+def json_rpc(url: str, method: str, *params):
+    request = urllib.request.Request(
+        url,
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}).encode(),
+        {"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        out = json.load(response)
+    if "error" in out:
+        raise RuntimeError(f"{method}: {out['error']['message']}")
+    return out["result"]
 
 
 def write_json(path: str, value) -> None:
@@ -70,9 +85,8 @@ class Episode:
         self.state = os.path.join(DATA, "l2_state.json")
         self.record = os.path.join(DATA, "record.json")
         self.session = {"episode": number, "startedAt": int(time.time()), "contracts": {}, "events": []}
-        self.withdrawals = []  # the recipient of each withdrawal, in order
-        self.claimed = 0
-        self.balances = {}  # each user's L2 balance after the last L2 block
+        self.claimed = 0  # L2 to L1 messages claimed on L1
+        self.node = None
         self.follower = None
 
     # Recording
@@ -112,7 +126,31 @@ class Episode:
         }
         self.session["contracts"] = self.contracts
         self.event("deployed", "Deployed a new rollup on L1", contracts=self.contracts)
+        self.start_node()
         self.start_follower()
+
+    def start_node(self) -> None:
+        a = self.args
+        log = open(os.path.join(DATA, "l2_node.log"), "a")
+        self.node = subprocess.Popen(
+            ["uv", "run", "--project", a.zkevm_specs, "python", "script/l2_node.py", "serve",
+             "--state", self.state, "--l1-rpc", a.rpc, "--rollup", self.contracts["rollup"], "--port", str(a.l2_port)],
+            cwd=CONTRACTS, stdout=log, stderr=subprocess.STDOUT,
+            env={**os.environ, "L2_USER_KEYS": ",".join(USER_KEYS.values())},
+        )
+        for _ in range(120):
+            try:
+                json_rpc(self.l2_rpc, "eth_blockNumber")
+                return
+            except OSError:
+                if self.node.poll() is not None:
+                    break
+                time.sleep(1)
+        raise RuntimeError("the L2 node did not start")
+
+    @property
+    def l2_rpc(self) -> str:
+        return f"http://127.0.0.1:{self.args.l2_port}"
 
     def start_follower(self) -> None:
         a = self.args
@@ -128,9 +166,10 @@ class Episode:
         )
 
     def stop(self) -> None:
-        if self.follower and self.follower.poll() is None:
-            self.follower.terminate()
-            self.follower.wait(timeout=30)
+        for process in (self.follower, self.node):
+            if process and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=30)
 
     # Story steps
 
@@ -147,82 +186,93 @@ class Episode:
         )
 
     def spendable(self, user: str) -> int:
-        return max(0, self.balances.get(self.users[user].lower(), 0) - RESERVE)
+        return max(0, int(json_rpc(self.l2_rpc, "eth_getBalance", self.users[user], "latest"), 16) - RESERVE)
 
-    def payments(self, count: int, exclude: str | None = None) -> list:
-        """Up to `count` payments between users, each a small part of what
-        its sender can spend."""
-        out = []
-        for _ in range(count):
-            senders = [u for u in USER_KEYS if u != exclude and self.spendable(u) > ETH // 100]
-            if not senders:
-                break
+    def send_l2(self, user: str, *args: str) -> str:
+        """Sends a transaction from `user` through the L2 RPC, for the next
+        block. `cast send` takes the latest nonce, not the pending one."""
+        nonce = int(json_rpc(self.l2_rpc, "eth_getTransactionCount", self.users[user], "pending"), 16)
+        return cast("send", "--rpc-url", self.l2_rpc, "--private-key", USER_KEYS[user], "--async", "--nonce", str(nonce), *args)
+
+    def pay(self, sender: str, to: str, amount: int) -> None:
+        tx = self.send_l2(sender, self.users[to], "--value", str(amount))
+        self.event("payment", f"{sender} pays {amount / ETH:g} ETH to {to} on L2", l2Tx=tx)
+
+    def withdraw(self, user: str, amount: int) -> None:
+        tx = self.send_l2(user, L2_MESSENGER, "sendMessage(address,bytes)", self.users[user], "0x", "--value", str(amount))
+        self.event("withdrawal", f"{user} withdraws {amount / ETH:g} ETH to L1", l2Tx=tx)
+
+    def random_payment(self, exclude: tuple) -> None:
+        """A payment between users, a small part of what its sender can spend."""
+        senders = [u for u in USER_KEYS if u not in exclude and self.spendable(u) > ETH // 100]
+        if senders:
             sender = random.choice(senders)
             to = random.choice([u for u in USER_KEYS if u != sender])
-            out.append((sender, to, self.spendable(sender) * random.randint(2, 12) // 100 // 10**14 * 10**14))
-        return out
+            self.pay(sender, to, self.spendable(sender) * random.randint(2, 12) // 100 // 10**14 * 10**14)
 
-    def advance(self, withdraw: tuple | None = None, pay: list | None = None) -> None:
+    def advance(self) -> None:
         a = self.args
-        cmd = [
+        run([
             "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "advance",
             "--rpc", a.rpc, "--submit-rpc", a.submit_rpc, "--rollup", self.contracts["rollup"],
             "--verifier", self.contracts["verifier"], "--operator-key", OPERATOR_KEY,
-            "--prover-key", self.prover_key, "--l2-state", self.state, "--zkevm-specs", a.zkevm_specs,
-            "--record", self.record,
-        ]
-        if withdraw:
-            user, amount = withdraw
-            cmd += ["--withdraw", f"{self.users[user]}:{self.users[user]}:{amount}"]
-        for sender, to, amount in pay or self.payments(1 if withdraw else 2, exclude=withdraw and withdraw[0]):
-            cmd += ["--transfer", f"{self.users[sender]}:{self.users[to]}:{amount}"]
-        run(cmd)
+            "--prover-key", self.prover_key, "--l2-rpc", self.l2_rpc, "--record", self.record,
+        ])
         record = json.load(open(self.record))
-        self.withdrawals += [m["to"] for m in record["l2"]["l2Messages"]]
-        self.balances = {a.lower(): v for a, v in record["l2"]["balances"].items()}
         n = record["l2"]["number"]
         self.event("advance", f"L2 block {n} is on L1", **{k: v for k, v in record.items() if k != "type"})
 
-    def claim(self) -> None:
+    def claim_withdrawals(self) -> None:
+        """Claims on L1 the withdrawals in L2 blocks the rollup has."""
         a = self.args
-        # The recipient claims, though anyone could.
-        user = next(u for u, address in self.users.items() if address.lower() == self.withdrawals[self.claimed].lower())
-        run([
-            "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "claim-l2-message",
-            "--rpc", a.rpc, "--rollup", self.contracts["rollup"], "--key", USER_KEYS[user],
-            "--index", str(self.claimed), "--l2-state", self.state, "--zkevm-specs", a.zkevm_specs,
-            "--record", self.record,
-        ])
-        record = json.load(open(self.record))
-        self.claimed += 1
-        value = record["message"]["value"] / 10**18
-        self.event("claimL2Message", f"{user} claims a {value:g} ETH withdrawal on L1",
-                   **{k: v for k, v in record.items() if k != "type"})
+        logs = json_rpc(self.l2_rpc, "eth_getLogs", {
+            "address": L2_MESSENGER, "fromBlock": "0x0", "toBlock": "latest", "topics": [L2_MESSAGE_SENT],
+        })
+        for log in logs[self.claimed:]:
+            to = "0x" + log["topics"][3][-40:]
+            # The recipient claims, though anyone could.
+            user = next(u for u, address in self.users.items() if address.lower() == to)
+            run([
+                "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "claim-l2-message",
+                "--rpc", a.rpc, "--rollup", self.contracts["rollup"], "--key", USER_KEYS[user],
+                "--index", str(self.claimed), "--l2-rpc", self.l2_rpc, "--record", self.record,
+            ])
+            record = json.load(open(self.record))
+            self.claimed += 1
+            value = record["message"]["value"] / ETH
+            self.event("claimL2Message", f"{user} claims a {value:g} ETH withdrawal on L1",
+                       **{k: v for k, v in record.items() if k != "type"})
 
     def step(self, i: int) -> None:
-        """The story: the first steps show each flow once, then they recur."""
-        opening = [
-            lambda: self.deposit("Alice", "1ether"),
-            lambda: self.deposit("Bob", "0.5ether"),
-            lambda: self.advance(),
-            lambda: self.advance(pay=[("Alice", "Charlie", 3 * ETH // 10)]),
-            lambda: self.advance(withdraw=("Charlie", 2 * ETH // 10)),
-            lambda: self.claim(),
-        ]
-        if i < len(opening):
-            return opening[i]()
-        if self.claimed < len(self.withdrawals):
-            return self.claim()
-        if i % 6 == 0:
-            return self.deposit(random.choice(["Alice", "Bob"]), "0.5ether")
-        if i % 9 == 0:
-            rich = max(USER_KEYS, key=self.spendable)
-            if self.spendable(rich) > ETH // 10:
-                return self.advance(withdraw=(rich, self.spendable(rich) // 4 // 10**15 * 10**15))
-        return self.advance()
-
-    def l2_blocks(self) -> int:
-        return sum(1 for e in self.session["events"] if e["type"] == "advance")
+        """The story: the first steps show each flow once, then they recur.
+        Each step ends with an L2 block."""
+        if self.node.poll() is not None:
+            raise RuntimeError("the L2 node stopped")
+        self.claim_withdrawals()
+        if i == 0:
+            self.deposit("Alice", "1ether")
+            self.deposit("Bob", "0.5ether")
+        elif i == 1:
+            self.pay("Alice", "Charlie", 3 * ETH // 10)
+        elif i == 2:
+            self.withdraw("Charlie", 2 * ETH // 10)
+        else:
+            # The node signs a deposit's claim with the recipient's key, at
+            # the recipient's nonce, so the recipient does not send in the
+            # same block.
+            busy = ()
+            if i % 6 == 0:
+                depositor = random.choice(["Alice", "Bob"])
+                self.deposit(depositor, "0.5ether")
+                busy = (depositor,)
+            if i % 9 == 0:
+                rich = max(USER_KEYS, key=self.spendable)
+                if rich not in busy and self.spendable(rich) > ETH // 10:
+                    self.withdraw(rich, self.spendable(rich) // 4 // 10**15 * 10**15)
+                    busy += (rich,)
+            for _ in range(random.randint(1, 2)):
+                self.random_payment(busy)
+        self.advance()
 
 
 def main() -> None:
@@ -233,8 +283,8 @@ def main() -> None:
     parser.add_argument("--beacon", default="http://127.0.0.1:65167")
     parser.add_argument("--zkevm-specs", default=os.path.expanduser("~/work/execution-specs-zkevm-frames"))
     parser.add_argument("--frames-specs", default=os.path.expanduser("~/work/execution-specs-frames"))
-    parser.add_argument("--interval", type=float, default=20, help="seconds between steps")
-    parser.add_argument("--blocks", type=int, default=150, help="L2 blocks per episode")
+    parser.add_argument("--interval", type=float, default=12, help="seconds between steps")
+    parser.add_argument("--l2-port", type=int, default=8547, help="the port of the L2 node's RPC")
     args = parser.parse_args()
     os.makedirs(DATA, exist_ok=True)
 
@@ -244,10 +294,12 @@ def main() -> None:
         try:
             episode.deploy()
             i = 0
-            while episode.l2_blocks() < args.blocks:
+            while True:
                 try:
                     episode.step(i)
                 except Exception as e:  # keep the story going, and show what failed
+                    if episode.node.poll() is not None:
+                        raise
                     episode.event("error", "A step failed", message=str(e)[-400:])
                     traceback.print_exc()
                 i += 1

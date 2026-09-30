@@ -38,8 +38,7 @@
         <tr><td>Proof check on L1 (EIP-8288)</td><td><span class="badge mock">Mock</span></td><td>A frame that calls a contract checking the signature</td><td>EIP-8288, which lets L1's own proof cover it</td></tr>
         <tr><td>Verification key registry (EIP-8357)</td><td><span class="badge mock">Mock</span></td><td>An admin registers the key instead of a fork</td><td>EIP-8357</td></tr>
         <tr><td>Blob check in the program (EIP-8142)</td><td><span class="badge mock">Mock</span></td><td>The node checks that the blobs encode the block</td><td>EIP-8142 in the L1 program</td></tr>
-        <tr><td>Operator</td><td><span class="badge shortcut">Shortcut</span></td><td>One operator with a scripted story, and no public L2 RPC</td><td></td></tr>
-        <tr><td>Restarts</td><td><span class="badge shortcut">Shortcut</span></td><td>Every 150 L2 blocks the demo deploys a fresh rollup, since its L2 node rebuilds the chain from genesis for each block</td><td></td></tr>
+        <tr><td>Operator</td><td><span class="badge shortcut">Shortcut</span></td><td>One operator with a scripted story, whose L2 node signs deposit claims for the users, and no public L2 RPC</td><td></td></tr>
       </tbody>
     </table>
     <p class="note">The prover key is the only trusted part. The follower checks it: it re-executes every block from L1

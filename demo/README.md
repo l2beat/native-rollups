@@ -4,7 +4,7 @@ An annotated explorer for the native rollup of `contracts/`, running on a local 
 
 Its L2 data comes from the follower, which rebuilds every block from L1 alone, and it reads live chain state directly from the L1 and beacon nodes.
 
-- `runner.py` deploys a rollup and advances it with a scripted story, recording the operator's side of every step in `data/session.json`. A follower rebuilds the chain from L1 on its own and writes the decoded blocks and transactions to `data/explorer/`. After 150 L2 blocks, it starts a new episode.
+- `runner.py` deploys a rollup, starts the L2 node with its RPC on port 8547, and plays a scripted story with one L2 block per step, recording the operator's side of every step in `data/session.json`. The users send their L2 transactions through the node's RPC. A follower rebuilds the chain from L1 on its own and writes the decoded blocks and transactions to `data/explorer/`.
 - `server.py` serves `site/`, the records, and read-only access to the L1 node and the beacon node, so that the page reads the chain itself.
 - `site/` is a static page with no build step.
 

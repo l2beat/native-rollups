@@ -24,18 +24,16 @@ import json
 import os
 import subprocess
 import time
-import typing
 
 from ethereum_rlp import rlp
 from ethereum_types.numeric import U64, U256, Uint
 
 from ethereum.crypto.hash import keccak256
 from ethereum.merkle_patricia_trie import root
-from ethereum.state import Account, Address
-from ethereum.state_mpt import State, set_account, set_storage, store_code
+from ethereum.state import Address
 from ethereum.forks.amsterdam import fork, vm
 from ethereum.forks.amsterdam.block_access_lists import BlockAccessListBuilder
-from ethereum.forks.amsterdam.blocks import Block, Header
+from ethereum.forks.amsterdam.blocks import Block
 from ethereum.forks.amsterdam.requests import compute_requests_hash
 from ethereum.forks.amsterdam.state_tracker import BlockState
 from ethereum.forks.amsterdam.transactions import decode_transaction
@@ -65,12 +63,6 @@ def http_get(url: str):
     return json.loads(subprocess.run(["curl", "-sf", url], check=True, capture_output=True, text=True).stdout)
 
 
-def header(fields: dict) -> Header:
-    """A `Header` from field values, converted to the field types."""
-    types = typing.get_type_hints(Header)
-    return Header(**{name: types[name](value) for name, value in fields.items()})
-
-
 def decode_advance(data: bytes) -> dict:
     """The `BlockParams` of an `advance` call."""
     assert data[:4] == ADVANCE_SELECTOR, "not an advance call"
@@ -92,35 +84,7 @@ def decode_advance(data: bytes) -> dict:
 
 
 def genesis(state_file: str) -> fork.BlockChain:
-    fixture = l2_node.build_chain(json.load(open(state_file)), [])
-    state = State()
-    for address, account in fixture["pre"].items():
-        address = Address(bytes.fromhex(address[2:]))
-        code_hash = store_code(state, bytes.fromhex(account["code"][2:]))
-        set_account(state, address, Account(Uint(int(account["nonce"], 16)), U256(int(account["balance"], 16)), code_hash))
-        for key, value in account["storage"].items():
-            set_storage(state, address, int(key, 16).to_bytes(32, "big"), U256(int(value, 16)))
-    g = fixture["genesisBlockHeader"]
-    names = {
-        "parent_hash": "parentHash", "ommers_hash": "uncleHash", "coinbase": "coinbase", "state_root": "stateRoot",
-        "transactions_root": "transactionsTrie", "receipt_root": "receiptTrie", "bloom": "bloom",
-        "difficulty": "difficulty", "number": "number", "gas_limit": "gasLimit", "gas_used": "gasUsed",
-        "timestamp": "timestamp", "extra_data": "extraData", "prev_randao": "mixHash", "nonce": "nonce",
-        "base_fee_per_gas": "baseFeePerGas", "withdrawals_root": "withdrawalsRoot", "blob_gas_used": "blobGasUsed",
-        "excess_blob_gas": "excessBlobGas", "parent_beacon_block_root": "parentBeaconBlockRoot",
-        "requests_hash": "requestsHash", "block_access_list_hash": "blockAccessListHash", "slot_number": "slotNumber",
-    }
-    types = typing.get_type_hints(Header)
-    genesis_header = header({
-        name: (bytes.fromhex(g[key][2:]) if issubclass(types[name], bytes) else int(g[key], 16))
-        for name, key in names.items()
-    })
-    assert "0x" + keccak256(rlp.encode(genesis_header)).hex() == g["hash"], "genesis hash"
-    return fork.BlockChain(
-        blocks=[Block(header=genesis_header, transactions=(), ommers=(), withdrawals=())],
-        state=state,
-        chain_id=U64(l2_node.L2_CHAIN_ID),
-    )
+    return l2_node.genesis_chain(json.load(open(state_file)))
 
 
 def payload_blobs(args: argparse.Namespace, l1_block: dict, versioned_hashes: list) -> list:
@@ -253,7 +217,7 @@ def rebuild(args: argparse.Namespace, chain: fork.BlockChain, gas_limit: int, lo
     )
     output = fork.apply_body(block_env, tuple(transactions), ())
 
-    h = header({
+    h = l2_node.header({
         "parent_hash": keccak256(rlp.encode(parent)), "ommers_hash": fork.EMPTY_OMMER_HASH,
         "coinbase": p["feeRecipient"], "state_root": p["stateRoot"],
         "transactions_root": root(output.transactions_trie), "receipt_root": p["receiptsRoot"],

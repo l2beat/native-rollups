@@ -199,7 +199,7 @@ function renderStatus() {
       ? `<span class="pill ok">follower rebuilt all ${num(n)} from L1</span>`
       : `<span class="pill warn">follower rebuilt ${num(n)} of ${num(state.rollupHead)}</span>`);
   }
-  if (state.session) pills.push(`<a class="pill" href="#/about" title="The demo deploys a fresh rollup every 150 L2 blocks">rollup deployed ${ago(state.session.startedAt)}</a>`);
+  if (state.session) pills.push(`<a class="pill" href="#/about">rollup deployed ${ago(state.session.startedAt)}</a>`);
   document.getElementById("status").innerHTML = pills.join("");
 }
 
