@@ -30,6 +30,9 @@ abstract contract NativeRollup {
         // type places it yet, so it is not a payload leaf here.
         uint256 payloadBlobCount;
         bytes32 executionRequestsRoot; // any requests are accepted
+        // L1 block whose hash becomes the L1 anchor. Chosen by the operator,
+        // since the anchor enters L2 state and must be known before proving.
+        uint256 anchorBlockNumber;
         // Unconstrained fields (free operator inputs)
         address feeRecipient;
         bytes32 prevRandao;
@@ -56,6 +59,7 @@ abstract contract NativeRollup {
     bytes32 public blockHash;
     bytes32 public stateRoot;
     uint256 public blockNumber;
+    uint256 public anchorBlockNumber;
 
     // L2 state root history (for L2->L1 messaging via state proofs)
     mapping(uint256 => bytes32) public stateRootHistory;
@@ -102,17 +106,27 @@ abstract contract NativeRollup {
         // 3. Rebuild the proof's public output from storage, calldata, the
         //    versioned hashes, and the L1 anchor, and compare it with the
         //    declared dependency.
-        bytes32 npRoot = _newPayloadRequestRoot(params);
+        bytes32 npRoot = _newPayloadRequestRoot(params, _anchor(params.anchorBlockNumber));
         require(dataHash == NativeRollupSsz.publicInputRoot(npRoot, chainId, schemaId), "root mismatch");
 
         // 4. Update onchain state.
         blockHash = params.blockHash;
         stateRoot = params.stateRoot;
         blockNumber = blockNumber + 1;
+        anchorBlockNumber = params.anchorBlockNumber;
         stateRootHistory[blockNumber] = params.stateRoot;
     }
 
-    function _newPayloadRequestRoot(BlockParams calldata params) internal view returns (bytes32) {
+    /// @notice The L1 anchor: the hash of a recent L1 block, which the proof
+    ///         binds as `parent_beacon_block_root`. It must not move backwards
+    ///         and must be within the `BLOCKHASH` window of the last 256 blocks.
+    function _anchor(uint256 number) internal view returns (bytes32 anchor) {
+        require(number >= anchorBlockNumber, "anchor moved backwards");
+        anchor = blockhash(number);
+        require(anchor != bytes32(0), "anchor not available");
+    }
+
+    function _newPayloadRequestRoot(BlockParams calldata params, bytes32 anchor) internal view returns (bytes32) {
         NativeRollupSsz.ExecutionPayloadHeader memory header = NativeRollupSsz.ExecutionPayloadHeader({
             parentHash: blockHash, // from storage
             feeRecipient: params.feeRecipient,
@@ -137,7 +151,7 @@ abstract contract NativeRollup {
         return NativeRollupSsz.newPayloadRequestRoot(
             NativeRollupSsz.executionPayloadRoot(header),
             NativeRollupSsz.versionedHashesRoot(_versionedHashes(params.payloadBlobCount)),
-            blockhash(block.number - 1), // L1 anchor
+            anchor, // L1 anchor
             params.executionRequestsRoot // proven, not interpreted
         );
     }

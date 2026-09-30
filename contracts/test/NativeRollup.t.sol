@@ -97,6 +97,7 @@ contract NativeRollupTest is Test {
         p.blockAccessListRoot = json.readBytes32(string.concat(k, ".blockAccessListRoot"));
         p.payloadBlobCount = json.readUint(string.concat(b, ".payloadBlobCount"));
         p.executionRequestsRoot = json.readBytes32(string.concat(b, ".executionRequestsRoot"));
+        p.anchorBlockNumber = _anchorNumber(i);
         p.feeRecipient = json.readAddress(string.concat(k, ".feeRecipient"));
         p.prevRandao = json.readBytes32(string.concat(k, ".prevRandao"));
         p.extraData = json.readBytes(string.concat(k, ".extraData"));
@@ -106,12 +107,17 @@ contract NativeRollupTest is Test {
         return json.readBytes32(string.concat(_block(i), ".publicInputRoot"));
     }
 
+    /// The L1 block block `i` anchors to, a few blocks before its inclusion.
+    function _anchorNumber(uint256 i) internal pure returns (uint256) {
+        return 990 + 5 * i;
+    }
+
     /// Sets the L1 context block `i` was proven against: its payload blobs
-    /// and the L1 anchor, which the contract reads as the previous blockhash.
+    /// and the L1 anchor, the hash of the L1 block the operator chose.
     function _setL1Context(uint256 i) internal {
         vm.blobhashes(json.readBytes32Array(string.concat(_block(i), ".versionedHashes")));
-        vm.roll(1000 + i);
-        vm.setBlockhash(999 + i, json.readBytes32(string.concat(_block(i), ".parentBeaconBlockRoot")));
+        vm.roll(1000 + 10 * i);
+        vm.setBlockhash(_anchorNumber(i), json.readBytes32(string.concat(_block(i), ".parentBeaconBlockRoot")));
     }
 
     function _advance(TestNativeRollup r, uint256 i, bytes32 vkHash) internal {
@@ -127,6 +133,7 @@ contract NativeRollupTest is Test {
             assertEq(rollup.blockHash(), json.readBytes32(string.concat(_block(i), ".header.blockHash")));
             assertEq(rollup.stateRoot(), json.readBytes32(string.concat(_block(i), ".header.stateRoot")));
             assertEq(rollup.stateRootHistory(i + 1), rollup.stateRoot());
+            assertEq(rollup.anchorBlockNumber(), _anchorNumber(i));
         }
     }
 
@@ -158,7 +165,7 @@ contract NativeRollupTest is Test {
         rollup.advance(p, 1);
 
         _setL1Context(0);
-        vm.setBlockhash(999, bytes32(uint256(1))); // a different L1 anchor
+        vm.setBlockhash(_anchorNumber(0), bytes32(uint256(1))); // a different L1 anchor
         vm.expectRevert(bytes("root mismatch"));
         rollup.advance(p, 1);
 
@@ -172,6 +179,40 @@ contract NativeRollupTest is Test {
         rollup.setDependency(LEANSTARK, _publicInputRoot(1), K1);
         vm.expectRevert(bytes("root mismatch"));
         rollup.advance(_params(1), 1);
+    }
+
+    /// The anchor may repeat but not move backwards, and must be a recent,
+    /// past L1 block.
+    function test_anchorRules() public {
+        _advance(rollup, 0, K1);
+        NativeRollup.BlockParams memory p = _params(1);
+        _setL1Context(1);
+        rollup.setDependency(LEANSTARK, _publicInputRoot(1), K1);
+
+        p.anchorBlockNumber = _anchorNumber(0) - 1;
+        vm.expectRevert(bytes("anchor moved backwards"));
+        rollup.advance(p, 1);
+
+        p.anchorBlockNumber = block.number; // the current block has no hash yet
+        vm.expectRevert(bytes("anchor not available"));
+        rollup.advance(p, 1);
+
+        vm.roll(_anchorNumber(1) + 257); // the anchor left the BLOCKHASH window
+        p.anchorBlockNumber = _anchorNumber(1);
+        vm.expectRevert(bytes("anchor not available"));
+        rollup.advance(p, 1);
+    }
+
+    /// Consecutive L2 blocks can share an anchor.
+    function test_repeatedAnchor() public {
+        _advance(rollup, 0, K1);
+        NativeRollup.BlockParams memory p = _params(1);
+        _setL1Context(1);
+        vm.setBlockhash(_anchorNumber(0), json.readBytes32(string.concat(_block(1), ".parentBeaconBlockRoot")));
+        p.anchorBlockNumber = _anchorNumber(0);
+        rollup.setDependency(LEANSTARK, _publicInputRoot(1), K1);
+        rollup.advance(p, 1);
+        assertEq(rollup.anchorBlockNumber(), _anchorNumber(0));
     }
 
     /// A fork that registers a new key moves rollups that follow the current

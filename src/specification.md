@@ -66,7 +66,7 @@ The input carries no fork schedule. The guest reads it as `schema_id || SSZ(Stat
 |-------|-------------|-----------------|-------|
 | `execution_payload` | | | See below |
 | `versioned_hashes` | yes | `BLOBHASH` | Ordered list of blob versioned hashes. On L1, the first `payload_blob_count` entries are payload blobs ([EIP-8142](https://eips.ethereum.org/EIPS/eip-8142), carrying block data) and the rest are from type-3 blob transactions. On L2, since blob transactions are not supported, the list contains only payload blob hashes, read via `BLOBHASH` from the transaction's blobs |
-| `parent_beacon_block_root` | no | computed onchain | Repurposed as the L1 anchor on L2. The existing [EIP-4788](https://eips.ethereum.org/EIPS/eip-4788) system transaction inside `apply_body` writes this value to the beacon roots predeploy, making it available to L2 contracts. The rollup contract chooses what to pass in this field (e.g. an L1 block hash, a message queue commitment, or any other value useful for L1->L2 communication). See [Messaging](./messaging.md) |
+| `parent_beacon_block_root` | no | computed onchain | Repurposed as the L1 anchor on L2. The existing [EIP-4788](https://eips.ethereum.org/EIPS/eip-4788) system transaction inside `apply_body` writes this value to the beacon roots predeploy, making it available to L2 contracts. The reference contract passes the hash of a recent L1 block chosen by the operator, which must be within the `BLOCKHASH` window and must not move backwards. See [Messaging](./messaging.md#l1-anchoring) |
 | `execution_requests` | yes | calldata | Root supplied by the operator. The rollup contract accepts any requests, since they have no effect on L2 (see [Genesis](#genesis)) |
 
 ### ExecutionPayload
@@ -167,6 +167,7 @@ contract NativeRollup {
         bytes32 blockAccessListRoot; // SSZ root of the progressive byte list containing RLP(BAL)
         uint256 payloadBlobCount;    // EIP-8142: number of blobs carrying L2 block data
         bytes32 executionRequestsRoot; // SSZ root of ExecutionRequests; any requests are accepted
+        uint256 anchorBlockNumber;   // L1 block whose hash is the L1 anchor
         // Unconstrained fields (free operator inputs)
         address feeRecipient;
         bytes32 prevRandao;
@@ -183,6 +184,7 @@ contract NativeRollup {
     bytes32 public blockHash;
     bytes32 public stateRoot;
     uint256 public blockNumber;
+    uint256 public anchorBlockNumber;
     uint256 public gasLimit;
     uint64 public chainId;
 
@@ -244,7 +246,7 @@ contract NativeRollup {
             payloadBlobCount:    params.payloadBlobCount,
             // NewPayloadRequest fields
             versionedHashes:     getVersionedHashes(params.payloadBlobCount),
-            parentBeaconBlockRoot: blockhash(block.number - 1), // L1 anchor
+            parentBeaconBlockRoot: anchor(params.anchorBlockNumber), // L1 anchor
             executionRequests:   params.executionRequestsRoot // proven, not interpreted
         );
 
@@ -257,7 +259,15 @@ contract NativeRollup {
         blockHash = params.blockHash;
         stateRoot = params.stateRoot;
         blockNumber = blockNumber + 1;
+        anchorBlockNumber = params.anchorBlockNumber;
         stateRootHistory[blockNumber] = params.stateRoot;
+    }
+
+    function anchor(uint256 number) internal view returns (bytes32 hash) {
+        // A recent L1 block chosen by the operator (see Messaging).
+        require(number >= anchorBlockNumber, "anchor moved backwards");
+        hash = blockhash(number);
+        require(hash != bytes32(0), "anchor not available");
     }
 
     function getVersionedHashes(uint256 count) internal view returns (bytes32[] memory) {
