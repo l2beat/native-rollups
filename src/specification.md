@@ -10,6 +10,7 @@
   - [StatelessInput](#statelessinput)
   - [NewPayloadRequest](#newpayloadrequest)
   - [ExecutionPayload](#executionpayload)
+- [Genesis](#genesis)
 - [Proof statement](#proof-statement)
 - [Root computation](#root-computation)
 - [NativeRollup contract](#nativerollup-contract)
@@ -66,7 +67,7 @@ The input carries no fork schedule. The guest reads it as `schema_id || SSZ(Stat
 | `execution_payload` | | | See below |
 | `versioned_hashes` | yes | `BLOBHASH` | Ordered list of blob versioned hashes. On L1, the first `payload_blob_count` entries are payload blobs ([EIP-8142](https://eips.ethereum.org/EIPS/eip-8142), carrying block data) and the rest are from type-3 blob transactions. On L2, since blob transactions are not supported, the list contains only payload blob hashes, read via `BLOBHASH` from the transaction's blobs |
 | `parent_beacon_block_root` | no | computed onchain | Repurposed as the L1 anchor on L2. The existing [EIP-4788](https://eips.ethereum.org/EIPS/eip-4788) system transaction inside `apply_body` writes this value to the beacon roots predeploy, making it available to L2 contracts. The rollup contract chooses what to pass in this field (e.g. an L1 block hash, a message queue commitment, or any other value useful for L1->L2 communication). See [Messaging](./messaging.md) |
-| `execution_requests` | fixed | constant | Empty: L2 has no validator or builder operations, so all five lists (deposits, withdrawals, consolidations, and [EIP-8282](https://eips.ethereum.org/EIPS/eip-8282) builder deposits and exits) are empty |
+| `execution_requests` | yes | calldata | Root supplied by the operator. The rollup contract accepts any requests, since they have no effect on L2 (see [Genesis](#genesis)) |
 
 ### ExecutionPayload
 
@@ -102,6 +103,12 @@ The BAL has two distinct commitments. Let `block_access_list = RLP.encode(BAL)`,
 
 `block_access_list_root` is not a new execution-block-header field and is not part of EIP-7928. It is only the root-equivalent representation needed by contracts and validators that do not download the full execution payload.
 
+## Genesis
+
+Amsterdam treats a block as invalid if any of its request system contracts has no code: [EIP-7002](https://eips.ethereum.org/EIPS/eip-7002) withdrawal requests, [EIP-7251](https://eips.ethereum.org/EIPS/eip-7251) consolidations, and [EIP-8282](https://eips.ethereum.org/EIPS/eip-8282) builder deposits and exits. The L2 genesis must therefore deploy them, together with the [EIP-4788](https://eips.ethereum.org/EIPS/eip-4788) beacon roots contract, which stores the [L1 anchor](./messaging.md#l1-anchoring). The [EIP-2935](https://eips.ethereum.org/EIPS/eip-2935) history contract and the [EIP-7997](https://eips.ethereum.org/EIPS/eip-7997) deterministic factory are recommended for parity with L1.
+
+Since the request contracts exist, L2 users can create requests. Requests have no effect on L2, and the value sent with them stays locked in the contracts, so the rollup contract accepts any `execution_requests` whose root the L2 proof binds. Fixing them to empty would let anyone halt the rollup by forcing a transaction that creates a request.
+
 ## Proof statement
 
 The L2 proof shows that [`verify_stateless_new_payload`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py) succeeded for the L2 block. Its public output is the [`StatelessValidationResult`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py):
@@ -134,7 +141,7 @@ The contract has access to every field needed for step 1:
 | `slot_number` | Constant (value TBD) |
 | `versioned_hashes` | `BLOBHASH` from the transaction's blobs |
 | `parent_beacon_block_root` | Computed onchain (L1 anchor) |
-| `execution_requests` | Known constant (empty for L2) |
+| `execution_requests` | Operator calldata (constrained by the L2 proof; any requests are accepted) |
 
 `transactions_root` and `block_access_list_root` are constrained fields: if the operator provides a wrong value, the reconstructed `new_payload_request_root` does not match the L2 proof, and the mandatory L1 proof fails. This is the same trust model as `state_root` and `receipts_root`, which are also claimed by the operator and validated by the proof.
 
@@ -159,15 +166,18 @@ contract NativeRollup {
         bytes32 transactionsRoot;
         bytes32 blockAccessListRoot; // SSZ root of the progressive byte list containing RLP(BAL)
         uint256 payloadBlobCount;    // EIP-8142: number of blobs carrying L2 block data
+        bytes32 executionRequestsRoot; // SSZ root of ExecutionRequests; any requests are accepted
         // Unconstrained fields (free operator inputs)
         address feeRecipient;
         bytes32 prevRandao;
-        bytes32 extraData;
+        bytes   extraData;           // at most 32 bytes
     }
 
     uint8 constant LEANSTARK_SCHEME = 0x11; // EIP-8288
     address constant EVM_VK_REGISTRY = 0x00005e9c1447C1A05A642ec9eB76D9C125468357; // EIP-8357
     uint64 constant L2_SLOT_NUMBER = 0; // TBD
+    // SSZ root of an empty progressive list: sha256 of 64 zero bytes.
+    bytes32 constant EMPTY_LIST_ROOT = 0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b;
 
     // L2 chain state tracked onchain
     bytes32 public blockHash;
@@ -226,7 +236,7 @@ contract NativeRollup {
             baseFeePerGas:       params.baseFeePerGas,
             blockHash:           params.blockHash,
             transactionsRoot:    params.transactionsRoot, // constrained (proven)
-            withdrawalsRoot:     bytes32(0),              // empty for L2
+            withdrawalsRoot:     EMPTY_LIST_ROOT,         // no withdrawals on L2
             blobGasUsed:         0,                       // fixed for L2
             excessBlobGas:       0,                       // fixed for L2
             blockAccessListRoot: params.blockAccessListRoot, // constrained (proven)
@@ -235,7 +245,7 @@ contract NativeRollup {
             // NewPayloadRequest fields
             versionedHashes:     getVersionedHashes(params.payloadBlobCount),
             parentBeaconBlockRoot: blockhash(block.number - 1), // L1 anchor
-            executionRequests:   bytes32(0)               // empty for L2
+            executionRequests:   params.executionRequestsRoot // proven, not interpreted
         );
 
         // 4. Hash the EIP-8025 PublicInput and compare it with the
