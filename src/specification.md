@@ -54,7 +54,7 @@ The unconstrained fields (`fee_recipient`, `prev_randao`, `parent_beacon_block_r
 |-------|-----------------|-------|
 | `new_payload_request` | see below | |
 | `witness` | offchain | [`ExecutionWitness`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/stateless.py): MPT node preimages, contract bytecodes, ancestor headers. Used by the prover, never posted to L1 |
-| `chain_id` | storage | The L2 chain ID |
+| `chain_id` | immutable | The L2 chain ID |
 
 The input carries no fork schedule. The guest reads it as `schema_id || SSZ(StatelessInput)`, where the 2-byte `schema_id` is `(fork_index << 8) | revision`, and the fork byte selects the rules it executes: `0x1501` is Amsterdam, revision 1. Each L2 block is therefore executed under the rules of the fork that its verification key implements, with no activation check, and the rollup contract learns that `schema_id` from the EIP-8357 registry together with the key. This still needs to be specified: execution-specs' reference program notes that a real implementation must check the payload timestamp against fork activation, which has no meaning for an L2 chain ID.
 
@@ -82,7 +82,7 @@ The input carries no fork schedule. The guest reads it as `schema_id || SSZ(Stat
 | `logs_bloom` | yes | calldata | Computed during execution |
 | `prev_randao` | no | various | See [L1 vs L2 differences](./l1_vs_l2_diff.md#randao) |
 | `block_number` | yes | storage | Must equal `parent_header.number + 1` |
-| `gas_limit` | yes | storage | Bounds check against parent (1/1024 rule). TBD: ZK gas handling |
+| `gas_limit` | yes | immutable | Fixed at deployment, so the 1/1024 bound against the parent always holds. TBD: ZK gas handling |
 | `gas_used` | yes | calldata | Computed during execution |
 | `timestamp` | yes | calldata | Must be `> parent_header.timestamp`. The contract also requires `<= block.timestamp` |
 | `extra_data` | no | various | Max 32 bytes |
@@ -94,7 +94,7 @@ The input carries no fork schedule. The guest reads it as `schema_id || SSZ(Stat
 | `excess_blob_gas` | fixed | constant | 0 for L2 |
 | `block_access_list` | yes | calldata + blobs | Canonical RLP bytes defined by [EIP-7928](https://eips.ethereum.org/EIPS/eip-7928). `block_access_list_root` in calldata, full bytes in [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) payload blobs |
 | `slot_number` | fixed | constant | TBD: the L2 value is not defined yet. L2 contracts read it with `SLOTNUM` ([EIP-7843](https://eips.ethereum.org/EIPS/eip-7843)) |
-| `payload_blob_count` | yes | calldata | Header field added by [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142): the number of payload blobs. The contract reads that many `BLOBHASH` values |
+| `payload_blob_count` | yes | calldata | Header field added by [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142): the number of payload blobs. The contract reads that many `BLOBHASH` values. It is not yet a leaf of the payload the contract rebuilds, since no consensus-specs type places it. The versioned hashes root already commits to the number of blobs |
 
 The BAL has two distinct commitments. Let `block_access_list = RLP.encode(BAL)`, as defined by EIP-7928:
 
@@ -130,13 +130,13 @@ The rollup contract must reconstruct the expected `public_input_root` and check 
 
 1. **Compute `new_payload_request_root` from `NewPayloadRequestHeader`.** The mandatory-proof model requires a compact header because neither validators nor the contract have the full transaction list or BAL. SSZ defines [root-equivalent summaries](https://github.com/ethereum/consensus-specs/blob/802485ec74a6986542bd53bf153189623aab440c/ssz/simple-serialize.md#summaries-and-expansions): variable-sized payload fields can be replaced by their `hash_tree_root` without changing the root of the enclosing object. Consequently, `hash_tree_root(NewPayloadRequestHeader) == hash_tree_root(NewPayloadRequest)`. [`NewPayloadRequestHeader`](https://github.com/ethereum/consensus-specs/issues/5076) was removed from the current optional EIP-8025 flow only because validators still receive the full payload; this proposal assumes its return for mandatory proofs. The root is that of Gloas's progressive `NewPayloadRequest` (see [Proof statement](#proof-statement)).
 
-2. **Hash `PublicInput`**: compute the `hash_tree_root` of the [`PublicInput`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-publicinput) containing `new_payload_request_root` (from step 1), `successful_validation = true`, the L2 `chain_id` from storage, and the `schema_id` that the EIP-8357 registry returns with the verification key hash. The result is the `public_input_root`.
+2. **Hash `PublicInput`**: compute the `hash_tree_root` of the [`PublicInput`](https://github.com/ethereum/consensus-specs/blob/master/specs/_features/eip8025/beacon-chain.md#new-publicinput) containing `new_payload_request_root` (from step 1), `successful_validation = true`, the L2 `chain_id` fixed at deployment, and the `schema_id` that the EIP-8357 registry returns with the verification key hash. The result is the `public_input_root`.
 
 The contract has access to every field needed for step 1:
 
 | Leaf | Expected source |
 |------|-----------------|
-| Scalar header fields (`parent_hash`, `block_number`, etc.) | Contract storage and operator calldata |
+| Scalar header fields (`parent_hash`, `block_number`, etc.) | Contract storage, immutables, and operator calldata |
 | `transactions_root` | Operator calldata (constrained: proven by the L2 proof) |
 | `withdrawals_root` | Known constant (empty for L2) |
 | `block_access_list_root` | Operator calldata: `hash_tree_root(ProgressiveByteList(block_access_list))` (constrained by the L2 proof) |
@@ -144,6 +144,8 @@ The contract has access to every field needed for step 1:
 | `versioned_hashes` | `BLOBHASH` from the transaction's blobs |
 | `parent_beacon_block_root` | Computed onchain (L1 anchor) |
 | `execution_requests` | Operator calldata (constrained by the L2 proof; any requests are accepted) |
+
+The [reference implementation](#nativerollup-contract) computes both roots in Solidity with the SHA-256 precompile, in about 21k gas without blobs and 28k with one, and is tested against roots computed with the compiled consensus-specs types.
 
 `transactions_root` and `block_access_list_root` are constrained fields: if the operator provides a wrong value, the reconstructed `new_payload_request_root` does not match the L2 proof, and the mandatory L1 proof fails. This is the same trust model as `state_root` and `receipts_root`, which are also claimed by the operator and validated by the proof.
 
@@ -153,6 +155,8 @@ The contract does not separately receive EIP-7928's `block_access_list_hash`. Th
 
 The contract implements the [root computation](#root-computation) and checks the result against the EIP-8288 dependency declared in the same transaction. It verifies no proof itself: in a valid block, EIP-8288 guarantees that every declared dependency is proven.
 
+The code below is abridged from the [reference implementation](https://github.com/l2beat/native-rollups/tree/main/contracts), which also contains the L2 messenger. It runs on a local [frames devnet](https://notes.ethereum.org/@ethpandaops/frames-devnet-0) with real L2 blocks, and mocks what L1 does not have yet: the EIP-8288 dependency, the EIP-8357 registry, and EIP-8142 in the L1 program.
+
 ```solidity
 contract NativeRollup {
 
@@ -161,19 +165,19 @@ contract NativeRollup {
         bytes32 stateRoot;
         bytes32 receiptsRoot;
         bytes   logsBloom;
-        uint256 gasUsed;
-        uint256 timestamp;
+        uint64  gasUsed;
+        uint64  timestamp;
         uint256 baseFeePerGas;
         bytes32 blockHash;
         bytes32 transactionsRoot;
-        bytes32 blockAccessListRoot; // SSZ root of the progressive byte list containing RLP(BAL)
-        uint256 payloadBlobCount;    // EIP-8142: number of blobs carrying L2 block data
+        bytes32 blockAccessListRoot;   // SSZ root of the progressive byte list containing RLP(BAL)
+        uint256 payloadBlobCount;      // EIP-8142: number of blobs carrying L2 block data
         bytes32 executionRequestsRoot; // SSZ root of ExecutionRequests; any requests are accepted
-        uint256 anchorBlockNumber;   // L1 block whose hash is the L1 anchor
+        uint256 anchorBlockNumber;     // L1 block whose hash is the L1 anchor
         // Unconstrained fields (free operator inputs)
         address feeRecipient;
         bytes32 prevRandao;
-        bytes   extraData;           // at most 32 bytes
+        bytes   extraData;             // at most 32 bytes
     }
 
     uint8 constant LEANSTARK_SCHEME = 0x11; // EIP-8288
@@ -181,31 +185,34 @@ contract NativeRollup {
     uint64 constant L2_SLOT_NUMBER = 0; // TBD
     // SSZ root of an empty progressive list: sha256 of 64 zero bytes.
     bytes32 constant EMPTY_LIST_ROOT = 0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b;
+    uint256 constant STATE_ROOT_HISTORY = 8191;
+
+    // Fixed at deployment
+    uint64 immutable chainId;
+    uint64 immutable gasLimit;
+    enum VkPolicy { FollowCurrent, Pinned } // see EIP-8357
+    VkPolicy immutable vkPolicy;
+    bytes32 immutable pinnedVkHash;
+    address immutable l2Messenger; // L2 predeploy whose storage records L2->L1 messages
 
     // L2 chain state tracked onchain
     bytes32 public blockHash;
-    bytes32 public stateRoot;
-    uint256 public blockNumber;
-    uint256 public anchorBlockNumber;
-    uint256 public gasLimit;
-    uint64 public chainId;
-
-    // Verification key policy (see EIP-8357)
-    enum VkPolicy { FollowCurrent, Pinned }
-    VkPolicy public vkPolicy;
-    bytes32 public pinnedVkHash;
+    uint64 public blockNumber;
+    uint64 public anchorBlockNumber;
 
     // State roots of the last STATE_ROOT_HISTORY L2 blocks, by block number
     // modulo STATE_ROOT_HISTORY, as EIP-2935 keeps L1 block hashes (for
     // L2->L1 messaging via state proofs).
-    uint256 constant STATE_ROOT_HISTORY = 8191;
-    mapping(uint256 => bytes32) public stateRootHistory;
+    mapping(uint256 => bytes32) stateRootHistory;
 
     // L1->L2 messages, as an append-only Merkle tree of their hashes whose
     // root is kept in storage, as the beacon chain deposit contract builds
     // it. L2 proves the root against the anchored L1 block hash, then each
     // message's path to it (see Messaging).
     MessageTree l1Messages;
+
+    // L2->L1 messages already delivered, 256 flags per storage slot.
+    mapping(uint256 => uint256) claimedL2Messages;
 
     // Emitted so that the message can be claimed on L2, where only its
     // hash is proven.
@@ -236,8 +243,8 @@ contract NativeRollup {
         require(params.timestamp <= block.timestamp, "timestamp in the future");
 
         // 4. Compute new_payload_request_root from storage, calldata,
-        //    versioned hashes, and the L1 anchor (see Messaging).
-        //    Hashing scheme is SSZ hash_tree_root. TBD: onchain library.
+        //    versioned hashes, and the L1 anchor (see Messaging), with SSZ
+        //    hash_tree_root over the SHA-256 precompile.
         bytes32 npRoot = computeNewPayloadRequestRoot(
             // ExecutionPayloadHeader fields
             parentHash:          blockHash,              // from storage
@@ -247,7 +254,7 @@ contract NativeRollup {
             logsBloom:           params.logsBloom,
             prevRandao:          params.prevRandao,
             blockNumber:         blockNumber + 1,        // from storage
-            gasLimit:            gasLimit,                // from storage
+            gasLimit:            gasLimit,                // fixed at deployment
             gasUsed:             params.gasUsed,
             timestamp:           params.timestamp,
             extraData:           params.extraData,
@@ -259,7 +266,6 @@ contract NativeRollup {
             excessBlobGas:       0,                       // fixed for L2
             blockAccessListRoot: params.blockAccessListRoot, // constrained (proven)
             slotNumber:          L2_SLOT_NUMBER,          // fixed for L2 (value TBD)
-            payloadBlobCount:    params.payloadBlobCount,
             // NewPayloadRequest fields
             versionedHashes:     getVersionedHashes(params.payloadBlobCount),
             parentBeaconBlockRoot: anchor(params.anchorBlockNumber), // L1 anchor
@@ -272,12 +278,37 @@ contract NativeRollup {
         require(dataHash == publicInputRoot, "root mismatch");
 
         // 6. Update onchain state.
+        uint64 number = blockNumber + 1;
         blockHash = params.blockHash;
-        stateRoot = params.stateRoot;
-        blockNumber = blockNumber + 1;
-        anchorBlockNumber = params.anchorBlockNumber;
-        stateRootHistory[blockNumber % STATE_ROOT_HISTORY] = params.stateRoot;
-        emit BlockAdded(uint64(blockNumber), params.blockHash);
+        blockNumber = number;
+        anchorBlockNumber = uint64(params.anchorBlockNumber);
+        stateRootHistory[number % STATE_ROOT_HISTORY] = params.stateRoot;
+        emit BlockAdded(number, params.blockHash);
+    }
+
+    function stateRootAt(uint256 l2BlockNumber) public view returns (bytes32) {
+        require(
+            l2BlockNumber <= blockNumber && blockNumber - l2BlockNumber < STATE_ROOT_HISTORY,
+            "L2 block not in history"
+        );
+        return stateRootHistory[l2BlockNumber % STATE_ROOT_HISTORY];
+    }
+
+    function claimL2Message(
+        Message calldata m, // sender, to, value, data, index
+        uint256 l2BlockNumber,
+        bytes[] calldata accountProof,
+        bytes[] calldata storageProof
+    ) external {
+        markClaimed(claimedL2Messages, m.index); // reverts if already claimed
+        // Messages stay in the messenger's queue, so any recent root works.
+        bytes32 entry = storageValue(
+            stateRootAt(l2BlockNumber), l2Messenger, queueSlot(m.index), accountProof, storageProof
+        );
+        require(entry == hashMessage(m), "message not queued");
+        // Pay out of the ETH escrowed by sendMessage. The destination can
+        // read m.sender from l2Sender() during the call.
+        deliver(m);
     }
 
     function anchor(uint256 number) internal view returns (bytes32 hash) {
@@ -303,6 +334,14 @@ contract NativeRollup {
 
 Replay is constrained by state: the expected root commits to the parent L2 block hash and number, the L2 chain ID, the schema ID, the L1 anchor, and the blob versioned hashes.
 
+**Gas.** Measured on the local devnet, with [EIP-8037](https://eips.ethereum.org/EIPS/eip-8037) state gas:
+
+| Call | Gas |
+|---|---|
+| `advance`, one blob | 121k, plus 131,072 blob gas, plus 98k of state gas per block until the state root history wraps. Includes the mock dependency frame |
+| `sendMessage` | 73k to 77k, plus 98k of state gas when the message count first reaches a new power of two |
+| `claimL2Message` | 124k to an existing account. The first claim in each 256 adds 98k of state gas for its flag slot, and a new recipient 184k for its account |
+
 See also: [Messaging](./messaging.md)
 
 ## Blob encoding
@@ -319,14 +358,12 @@ L1 data is enough to rebuild the L2 chain. An L2 node finds each block through t
 
 1. **Proof pricing**: covering an L2 proof in the mandatory L1 proof adds work for the L1 prover. EIP-8288 charges a fixed `LEANSTARK_VERIFICATION_GAS` per dependency. Whether that is adequate, or a separate proof gas market is needed, depends on the L1 zkEVM gas model.
 
-2. **Root computation library**: the rollup contract needs to compute `new_payload_request_root` onchain via SSZ `hash_tree_root` (over the progressive `NewPayloadRequest`) and then `hash_tree_root` the `PublicInput`. The availability and gas cost of an SSZ `hash_tree_root` library in Solidity is a practical consideration.
+2. **One L2 block per transaction**: EIP-8288 allows one STARK dependency per transaction, and the native program proves one block, so every L2 block needs its own L1 transaction. Proving a range of blocks with a single proof would require L1 to approve a program that validates multiple blocks.
 
-3. **One L2 block per transaction**: EIP-8288 allows one STARK dependency per transaction, and the native program proves one block, so every L2 block needs its own L1 transaction. Proving a range of blocks with a single proof would require L1 to approve a program that validates multiple blocks.
+3. **Sequence-first-prove-later**: the current design requires blobs and proof to be in the same transaction, so the operator must have the proof ready at data posting time. Supporting sequence-first-prove-later (post data first, prove later) would require a mechanism to reference past blobs. `BLOBHASH` only accesses blobs in the current transaction. Possible approaches include a new opcode or precompile that can attest to blob availability from past blocks (within the DAS availability window), or a contract-level registry of blob commitments.
 
-4. **Sequence-first-prove-later**: the current design requires blobs and proof to be in the same transaction, so the operator must have the proof ready at data posting time. Supporting sequence-first-prove-later (post data first, prove later) would require a mechanism to reference past blobs. `BLOBHASH` only accesses blobs in the current transaction. Possible approaches include a new opcode or precompile that can attest to blob availability from past blocks (within the DAS availability window), or a contract-level registry of blob commitments.
+4. **Forward compatibility**: the rollup contract reconstructs `new_payload_request_root` with a fork-specific schema and assigns an L2 value to every field. When an L1 fork changes `NewPayloadRequest` or `ExecutionPayload`, as with the recently added `slot_number`, a contract that follows the current registry entry must already know the new schema and the L2 value of each new field. The registry's `schema_id` lets the contract detect such a change, but not handle it. Supporting this without a contract upgrade at every such fork is open.
 
-5. **Forward compatibility**: the rollup contract reconstructs `new_payload_request_root` with a fork-specific schema and assigns an L2 value to every field. When an L1 fork changes `NewPayloadRequest` or `ExecutionPayload`, as with the recently added `slot_number`, a contract that follows the current registry entry must already know the new schema and the L2 value of each new field. The registry's `schema_id` lets the contract detect such a change, but not handle it. Supporting this without a contract upgrade at every such fork is open.
+5. **Recursive L1 execution proofs**: this design assumes L1 proves each block with the stateless validation program, so native rollups reuse that program, its verification key, and its `PublicInput`. EIP-8025 is moving to recursive proofs ([consensus-specs#5566](https://github.com/ethereum/consensus-specs/pull/5566), with the guest drafted in [consensus-specs#5534](https://github.com/ethereum/consensus-specs/pull/5534)), in which one program verifies the previous proof, checks the beacon-chain lineage, and runs the stateless validation function inside itself. L1 would then no longer prove the per-block program on its own, and the key registered in EIP-8357 would belong to a program that L1 approves but does not use. Having the recursive program verify per-block proofs, instead of re-executing blocks, would restore the reuse. The recursive design is still a draft.
 
-6. **Recursive L1 execution proofs**: this design assumes L1 proves each block with the stateless validation program, so native rollups reuse that program, its verification key, and its `PublicInput`. EIP-8025 is moving to recursive proofs ([consensus-specs#5566](https://github.com/ethereum/consensus-specs/pull/5566), with the guest drafted in [consensus-specs#5534](https://github.com/ethereum/consensus-specs/pull/5534)), in which one program verifies the previous proof, checks the beacon-chain lineage, and runs the stateless validation function inside itself. L1 would then no longer prove the per-block program on its own, and the key registered in EIP-8357 would belong to a program that L1 approves but does not use. Having the recursive program verify per-block proofs, instead of re-executing blocks, would restore the reuse. The recursive design is still a draft.
-
-7. **Blob granularity**: EIP-8142 encodes each payload into its own blobs, so every L2 block takes at least one blob, 131,072 blob gas, however small it is. On a local frames devnet, L2 blocks of 4 to 5 KB used 3 to 4% of their blob. Rollups today pack many blocks into each blob. Fewer and larger L2 blocks amortize the cost, while sharing blobs across blocks or rollups would need a different encoding than EIP-8142's.
+6. **Blob granularity**: EIP-8142 encodes each payload into its own blobs, so every L2 block takes at least one blob, 131,072 blob gas, however small it is. On a local frames devnet, L2 blocks of 4 to 5 KB used 3 to 4% of their blob. Rollups today pack many blocks into each blob. Fewer and larger L2 blocks amortize the cost, while sharing blobs across blocks or rollups would need a different encoding than EIP-8142's.
