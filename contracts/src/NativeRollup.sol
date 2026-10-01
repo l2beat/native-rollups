@@ -106,17 +106,24 @@ abstract contract NativeRollup {
 
     /// @notice Emitted so the message can be claimed on L2, where only its
     ///         hash is proven.
-    event L1MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
+    event L1MessageSent(
+        uint256 indexed index, address indexed sender, address indexed to, uint256 value, uint256 fee, bytes data
+    );
 
     /// @notice Emitted for each L2 block, so that nodes can find the
     ///         transactions that carry the L2 blocks and their blobs.
     event BlockAdded(uint64 indexed number, bytes32 blockHash);
-    event L2MessageClaimed(uint256 indexed index, address indexed sender, address indexed to, uint256 value);
+    event L2MessageClaimed(
+        uint256 indexed index, address indexed sender, address indexed to, uint256 value, uint256 fee, address feeRecipient
+    );
 
-    function sendMessage(address to, bytes calldata data) external payable {
+    /// @notice Sends `msg.value - fee` to `to` on L2, and `fee` to whoever
+    ///         claims the message there.
+    function sendMessage(address to, uint256 fee, bytes calldata data) external payable {
+        require(msg.value >= fee, "fee exceeds value");
         uint256 index = l1Messages.count;
-        MessageTree.insert(l1Messages, Messages.hash(msg.sender, to, msg.value, data, index));
-        emit L1MessageSent(index, msg.sender, to, msg.value, data);
+        MessageTree.insert(l1Messages, Messages.hash(msg.sender, to, msg.value - fee, fee, data, index));
+        emit L1MessageSent(index, msg.sender, to, msg.value - fee, fee, data);
     }
 
     function l1MessageRoot() external view returns (bytes32) {
@@ -150,27 +157,28 @@ abstract contract NativeRollup {
     }
 
     /// @notice Delivers an L2 to L1 message, proven against the state root of
-    ///         any recent L2 block since it was sent, and pays its value out
-    ///         of the ETH escrowed by L1 to L2 messages. Sent messages stay in
+    ///         any recent L2 block since it was sent, and pays its value and
+    ///         fee out of the ETH escrowed by L1 to L2 messages. Sent messages stay in
     ///         the messenger's storage, so a proof can always use a recent
     ///         root.
     /// @param accountProof Proof of the L2 messenger's account in that block's
     ///                     state.
     /// @param storageProof Proof of the queue entry in its storage.
+    /// @param feeRecipient Who receives the message's fee.
     function claimL2Message(
         Message calldata m,
         uint256 l2BlockNumber,
         bytes[] calldata accountProof,
-        bytes[] calldata storageProof
+        bytes[] calldata storageProof,
+        address feeRecipient
     ) external {
         Messages.markClaimed(claimedL2MessageBits, m.index);
         Messages.requireQueued(m, stateRootAt(l2BlockNumber), l2Messenger, L2_QUEUE_SLOT, accountProof, storageProof);
 
         currentL2Sender = m.sender;
-        (bool ok,) = m.to.call{value: m.value}(m.data);
+        Messages.deliver(m, feeRecipient);
         currentL2Sender = address(0);
-        require(ok, "delivery failed");
-        emit L2MessageClaimed(m.index, m.sender, m.to, m.value);
+        emit L2MessageClaimed(m.index, m.sender, m.to, m.value, m.fee, feeRecipient);
     }
 
     function advance(BlockParams calldata params, uint256 dependencyFrameIndex) external {

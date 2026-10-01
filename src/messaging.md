@@ -8,7 +8,6 @@
 - [L1 to L2 messaging](#l1-to-l2-messaging)
 - [L2 to L1 messaging](#l2-to-l1-messaging)
 - [Existing rollups](#existing-rollups)
-- [Open questions](#open-questions)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
@@ -35,6 +34,8 @@ Alternatives that were considered and dropped:
 
 The rollup contract appends the hash of each L1 to L2 message to a Merkle tree, like the `l1Messages` tree of the reference contract, keeps the tree's root in its storage, and emits the full message so that it can be claimed. On L2, a messenger contract verifies a storage proof of the root against the anchored L1 block hash, once for all the claims against that anchor. Each claim then carries the message's path to the root: the messenger checks it, marks the message as claimed, and calls the destination. For the duration of the call, it exposes the original L1 sender so that the destination can authenticate it, as Linea's `sender()` and Taiko's `context()` already do. Alternatively, the sender can be passed directly to the destination contract.
 
+Messages carry a fee, which the sender pays on top of the value, as on Linea and Taiko. Whoever claims a message names the fee's recipient, so anyone can claim a message and be paid for it, while recipients can claim their own and pay no fee. On L2, the claim frame pays the fee before any frame approves payment, so a claimer needs no funds: it pays the gas with the fee it just received, and if the claim fails, it cannot pay and the transaction is invalid. Deposits to contracts and other addresses that cannot claim are claimed this way.
+
 A queue with a storage slot per message, each proven on its own, was dropped. [EIP-8037](https://eips.ethereum.org/EIPS/eip-8037) charges each new slot as state growth, about 98k gas per message on L1, and each claim carried a proof against L1 state of about 3 KB, which the L2 publishes in blobs. The tree follows the beacon chain deposit contract, which only creates a slot when the message count first reaches a new power of two, and a claim only carries the path up to the tree's height, 32 hashes at most.
 
 Native rollups do not add an unsigned transaction type that executes messages with the L1 sender as `msg.sender`, as the OP and Orbit stacks do. L1 has no such transaction type, so supporting it would require a different program. The cost is that destination contracts must explicitly support the messenger interface for cross-chain authentication, instead of relying on `msg.sender`. Many projects already work this way, and standardizing the interface across projects would reduce this cost.
@@ -55,7 +56,3 @@ A shallower interface, such as a dedicated root of L2 to L1 messages, cannot be 
 | Orbit stack | None: each L1 message becomes its own transaction | Delayed messages in the L1 `Bridge` become unsigned transactions with an aliased L1 sender, force-included after a delay | ArbOS accumulates messages in a Merkle tree whose root is confirmed on L1. The `Outbox` executes them with Merkle proofs |
 
 Each stack relies on transaction types or system logic that L1 does not have, or on a permissioned relayer. Native rollups get the same functionality from the reused anchor, storage proofs, and messenger contracts.
-
-## Open questions
-
-- **Claim fees**: anyone can claim a message, in either direction, but the reference messages carry no fee, so whoever claims a message for someone else pays for it. Deposits to contracts, which cannot approve payment for their own claim, depend on such claimers, and so do withdrawals whose recipients do not claim them. Linea's `sendMessage` and Taiko's `Message` include a fee that the sender pays to whoever claims the message.

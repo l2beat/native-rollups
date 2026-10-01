@@ -26,10 +26,11 @@ contract Reverter {
     }
 }
 
-/// @notice Claims real L1 messages: `l1_message_vectors.json` holds, for each
-///         L2 block that `script/l2_node.py` built on a local frames network,
-///         its anchor, the proof of the L1 message root against it, and the
-///         claims with their paths to that root.
+/// @notice Claims real L1 messages: `l1_message_vectors.json` holds, for
+///         three L2 blocks of a rollup on a local frames network, their
+///         anchor, the proof of the L1 message root against it, and the
+///         claims of the new messages with their paths to that root, as
+///         `script/record_message_vectors.py` records them.
 contract L2MessengerTest is Test {
     using stdJson for string;
 
@@ -47,6 +48,9 @@ contract L2MessengerTest is Test {
         bytes32[] path;
     }
 
+    // Receives the fees of the claims in these tests.
+    address constant CLAIMER = address(0xC1A1);
+
     string json;
     L2Messenger messenger;
 
@@ -63,7 +67,7 @@ contract L2MessengerTest is Test {
     }
 
     function decodeClaim(bytes calldata data) external pure returns (Claim memory c) {
-        (c.m, c.path) = abi.decode(data[4:], (Message, bytes32[]));
+        (c.m, c.path,) = abi.decode(data[4:], (Message, bytes32[], address));
     }
 
     function _block(uint256 b) internal pure returns (string memory) {
@@ -95,8 +99,9 @@ contract L2MessengerTest is Test {
                 vm.etch(c.m.to, type(Recorder).runtimeCode);
                 uint256 supply = address(messenger).balance;
                 uint256 balance = c.m.to.balance;
+                uint256 fees = CLAIMER.balance;
 
-                messenger.claimL1Message(c.m, c.path);
+                messenger.claimL1Message(c.m, c.path, CLAIMER);
 
                 Recorder r = Recorder(payable(c.m.to));
                 assertTrue(messenger.claimed(c.m.index));
@@ -104,7 +109,8 @@ contract L2MessengerTest is Test {
                 assertEq(r.value(), c.m.value);
                 assertEq(r.data(), c.m.data);
                 assertEq(c.m.to.balance, balance + c.m.value);
-                assertEq(address(messenger).balance, supply - c.m.value);
+                assertEq(CLAIMER.balance, fees + c.m.fee);
+                assertEq(address(messenger).balance, supply - c.m.value - c.m.fee);
             }
         }
         vm.expectRevert(bytes("no message"));
@@ -114,9 +120,9 @@ contract L2MessengerTest is Test {
     function test_rejectsReplay() public {
         _prove(_rootProof(0));
         Claim memory c = _claim(0, 0);
-        messenger.claimL1Message(c.m, c.path);
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
         vm.expectRevert(bytes("already claimed"));
-        messenger.claimL1Message(c.m, c.path);
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
     }
 
     /// The path leads to the proven root only from the message's own hash
@@ -127,27 +133,32 @@ contract L2MessengerTest is Test {
         Claim memory c = _claim(1, 0);
         c.m.value += 1;
         vm.expectRevert(bytes("message not in root"));
-        messenger.claimL1Message(c.m, c.path);
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
+
+        c = _claim(1, 0);
+        c.m.fee += 1;
+        vm.expectRevert(bytes("message not in root"));
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
 
         c = _claim(1, 0);
         c.m.sender = address(0xBAD);
         vm.expectRevert(bytes("message not in root"));
-        messenger.claimL1Message(c.m, c.path);
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
 
         c = _claim(1, 0);
         c.m.data = hex"c0ffef";
         vm.expectRevert(bytes("message not in root"));
-        messenger.claimL1Message(c.m, c.path);
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
 
         c = _claim(1, 0);
         c.m.index ^= 1;
         vm.expectRevert(bytes("message not in root"));
-        messenger.claimL1Message(c.m, c.path);
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
 
         c = _claim(1, 0);
         c.m.index = 1 << c.path.length;
         vm.expectRevert(bytes("path too short"));
-        messenger.claimL1Message(c.m, c.path);
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
     }
 
     /// Roots only come from the anchored L1 block, and never move back to an
@@ -156,7 +167,7 @@ contract L2MessengerTest is Test {
         // No root yet.
         Claim memory c = _claim(0, 0);
         vm.expectRevert(bytes("message not in root"));
-        messenger.claimL1Message(c.m, c.path);
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
 
         RootProof memory p = _rootProof(1);
         p.header = _rootProof(0).header;
@@ -172,7 +183,7 @@ contract L2MessengerTest is Test {
         _prove(_rootProof(0));
         c = _claim(1, 0);
         vm.expectRevert(bytes("message not in root"));
-        messenger.claimL1Message(c.m, c.path);
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
 
         _prove(_rootProof(1));
         RootProof memory older = _rootProof(0);
@@ -186,11 +197,11 @@ contract L2MessengerTest is Test {
         Claim memory c = _claim(0, 0);
         vm.etch(c.m.to, type(Reverter).runtimeCode);
         vm.expectRevert(bytes("delivery failed"));
-        messenger.claimL1Message(c.m, c.path);
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
         assertFalse(messenger.claimed(c.m.index));
 
         vm.etch(c.m.to, type(Recorder).runtimeCode);
-        messenger.claimL1Message(c.m, c.path);
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
         assertTrue(messenger.claimed(c.m.index));
     }
 
@@ -206,7 +217,7 @@ contract L2MessengerTest is Test {
         Claim memory c = _claim(last, 1);
         vm.etch(c.m.to, type(Recorder).runtimeCode);
         g = gasleft();
-        messenger.claimL1Message(c.m, c.path);
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
         console.log("claimL1Message gas %d (path of %d)", g - gasleft(), c.path.length);
     }
 }

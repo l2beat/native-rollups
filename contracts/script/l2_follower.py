@@ -44,8 +44,8 @@ import explorer as ex
 import l2_node
 
 BLOCK_ADDED = keccak256(b"BlockAdded(uint64,bytes32)")
-L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,bytes)")
-L2_MESSAGE_CLAIMED = keccak256(b"L2MessageClaimed(uint256,address,address,uint256)")
+L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,uint256,bytes)")
+L2_MESSAGE_CLAIMED = keccak256(b"L2MessageClaimed(uint256,address,address,uint256,uint256,address)")
 ADVANCE_SELECTOR = keccak256(
     b"advance((bytes32,bytes32,bytes,uint64,uint64,uint256,bytes32,bytes32,bytes32,uint256,bytes32,uint256,address,bytes32,bytes),uint256)"
 )[:4]

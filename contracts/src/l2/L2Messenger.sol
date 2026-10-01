@@ -12,9 +12,11 @@ import {MptProof} from "../libs/MptProof.sol";
 ///           L2, once per anchor. `claimL1Message` proves a message's path
 ///           to that root, releases its value, and calls the destination,
 ///           which can read the L1 sender from `l1Sender()` during the call.
-///         - L2 to L1: `sendMessage` locks the value back into the supply and
-///           appends the message hash to `sentMessages`, which the rollup
-///           contract proves against an L2 state root.
+///           It also releases the message's fee to the recipient the claim
+///           names, so anyone can claim a message and be paid for it.
+///         - L2 to L1: `sendMessage` locks the value and the fee back into the
+///           supply and appends the message hash to `sentMessages`, which the
+///           rollup contract proves against an L2 state root.
 /// @dev    Lives in the L2 genesis with its code, its balance, and `l1Rollup`
 ///         in storage, so it has no constructor.
 contract L2Messenger {
@@ -35,10 +37,14 @@ contract L2Messenger {
     address internal transient currentL1Sender;
 
     event L1MessageRootProven(uint256 indexed anchorTimestamp, bytes32 root);
-    event L1MessageClaimed(uint256 indexed index, address indexed sender, address indexed to, uint256 value);
+    event L1MessageClaimed(
+        uint256 indexed index, address indexed sender, address indexed to, uint256 value, uint256 fee, address feeRecipient
+    );
     /// @notice Emitted so the message can be claimed on L1, where only its
     ///         hash is proven.
-    event L2MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
+    event L2MessageSent(
+        uint256 indexed index, address indexed sender, address indexed to, uint256 value, uint256 fee, bytes data
+    );
 
     function claimed(uint256 index) external view returns (bool) {
         return Messages.isClaimed(claimedBits, index);
@@ -50,10 +56,13 @@ contract L2Messenger {
         return currentL1Sender;
     }
 
-    function sendMessage(address to, bytes calldata data) external payable {
+    /// @notice Sends `msg.value - fee` to `to` on L1, and `fee` to whoever
+    ///         claims the message there.
+    function sendMessage(address to, uint256 fee, bytes calldata data) external payable {
+        require(msg.value >= fee, "fee exceeds value");
         uint256 index = sentMessages.length;
-        sentMessages.push(Messages.hash(msg.sender, to, msg.value, data, index));
-        emit L2MessageSent(index, msg.sender, to, msg.value, data);
+        sentMessages.push(Messages.hash(msg.sender, to, msg.value - fee, fee, data, index));
+        emit L2MessageSent(index, msg.sender, to, msg.value - fee, fee, data);
     }
 
     /// @notice Proves the rollup contract's L1 message root in an anchored L1
@@ -86,19 +95,21 @@ contract L2Messenger {
         emit L1MessageRootProven(anchorTimestamp, root);
     }
 
-    /// @param m    The message, as sent to `NativeRollup.sendMessage`.
-    /// @param path The siblings on the message's path to the proven root, up
-    ///             to the tree's height.
-    function claimL1Message(Message calldata m, bytes32[] calldata path) external {
+    /// @param m            The message, as sent to `NativeRollup.sendMessage`.
+    /// @param path         The siblings on the message's path to the proven
+    ///                     root, up to the tree's height.
+    /// @param feeRecipient Who receives the message's fee. In an EIP-8141
+    ///                     frame, the caller is the entry point, so the claim
+    ///                     names the recipient instead.
+    function claimL1Message(Message calldata m, bytes32[] calldata path, address feeRecipient) external {
         Messages.markClaimed(claimedBits, m.index);
-        bytes32 leaf = Messages.hash(m.sender, m.to, m.value, m.data, m.index);
+        bytes32 leaf = Messages.hash(m.sender, m.to, m.value, m.fee, m.data, m.index);
         require(MessageTree.rootFromPath(leaf, m.index, path) == provenL1MessageRoot, "message not in root");
 
         currentL1Sender = m.sender;
-        (bool ok,) = m.to.call{value: m.value}(m.data);
+        Messages.deliver(m, feeRecipient);
         currentL1Sender = address(0);
-        require(ok, "delivery failed");
-        emit L1MessageClaimed(m.index, m.sender, m.to, m.value);
+        emit L1MessageClaimed(m.index, m.sender, m.to, m.value, m.fee, feeRecipient);
     }
 
     function _anchor(uint256 timestamp) internal view returns (bytes32) {

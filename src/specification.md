@@ -216,16 +216,23 @@ contract NativeRollup {
 
     // Emitted so that the message can be claimed on L2, where only its
     // hash is proven.
-    event L1MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
+    event L1MessageSent(
+        uint256 indexed index, address indexed sender, address indexed to, uint256 value, uint256 fee, bytes data
+    );
 
     // Emitted for each L2 block, so that L2 nodes can find the transaction
     // that carries it and its blobs.
     event BlockAdded(uint64 indexed number, bytes32 blockHash);
 
-    function sendMessage(address to, bytes calldata data) external payable {
+    // Sends msg.value - fee to `to` on L2, and `fee` to whoever claims the
+    // message there.
+    function sendMessage(address to, uint256 fee, bytes calldata data) external payable {
+        require(msg.value >= fee, "fee exceeds value");
         uint256 index = l1Messages.count;
-        l1Messages.insert(keccak256(abi.encodePacked(msg.sender, to, msg.value, keccak256(data), index)));
-        emit L1MessageSent(index, msg.sender, to, msg.value, data);
+        l1Messages.insert(
+            keccak256(abi.encodePacked(msg.sender, to, msg.value - fee, fee, keccak256(data), index))
+        );
+        emit L1MessageSent(index, msg.sender, to, msg.value - fee, fee, data);
     }
 
     function advance(BlockParams calldata params, uint256 dependencyFrameIndex) external {
@@ -295,10 +302,11 @@ contract NativeRollup {
     }
 
     function claimL2Message(
-        Message calldata m, // sender, to, value, data, index
+        Message calldata m, // sender, to, value, fee, data, index
         uint256 l2BlockNumber,
         bytes[] calldata accountProof,
-        bytes[] calldata storageProof
+        bytes[] calldata storageProof,
+        address feeRecipient
     ) external {
         markClaimed(claimedL2Messages, m.index); // reverts if already claimed
         // Messages stay in the messenger's queue, so any recent root works.
@@ -306,9 +314,10 @@ contract NativeRollup {
             stateRootAt(l2BlockNumber), l2Messenger, queueSlot(m.index), accountProof, storageProof
         );
         require(entry == hashMessage(m), "message not queued");
-        // Pay out of the ETH escrowed by sendMessage. The destination can
-        // read m.sender from l2Sender() during the call.
-        deliver(m);
+        // Pay out of the ETH escrowed by sendMessage: the value to the
+        // destination, which can read m.sender from l2Sender() during the
+        // call, then the fee to feeRecipient.
+        deliver(m, feeRecipient);
     }
 
     function anchor(uint256 number) internal view returns (bytes32 hash) {

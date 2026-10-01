@@ -19,7 +19,9 @@ the contract has it, so the RPC serves the chain the contract has.
 
 Blocks take the mempool's transactions, and the node holds no keys. Users
 claim their deposits like any transaction, with frame transactions they sign
-themselves, which `l2_claims.py` builds from L1 data and this RPC.
+themselves, which `l2_claims.py` builds from L1 data and this RPC. A claim
+runs before any frame approves payment, so the node admits a claim only if
+it succeeds on its head state, and one per message.
 
 Each block goes to L1 in EIP-8142 payload blobs, which encode its BAL and
 transactions. The L1 program does not implement EIP-8142 yet, so the node
@@ -75,7 +77,8 @@ from ethereum.forks.amsterdam.block_access_lists import BlockAccessListBuilder
 from ethereum.forks.amsterdam.blocks import Block, FrameTransactionReceipt, Header, decode_receipt
 from ethereum.forks.amsterdam.execution_engine.requests import decode_execution_requests
 from ethereum.forks.amsterdam.requests import compute_requests_hash
-from ethereum.forks.amsterdam.state_tracker import BlockState, TransactionState, extract_block_diff, get_account
+from ethereum.forks.amsterdam.state_tracker import BlockState, TransactionState, extract_block_diff, get_account, incorporate_tx_into_block
+from ethereum.forks.amsterdam.state_tracker import set_account as set_tracked_account
 from ethereum.forks.amsterdam.stateless import STATELESS_INPUT_SCHEMA_ID
 from ethereum.forks.amsterdam.stateless_guest import deserialize_stateless_input, run_stateless_guest
 from ethereum.forks.amsterdam.stateless_host import (
@@ -113,7 +116,8 @@ L2_MESSENGER = "0x8079000000000000000000000000000000000001"
 MESSENGER = Address(bytes.fromhex(L2_MESSENGER[2:]))
 PREMINT = 10**27
 MESSENGER_ARTIFACT = os.path.join(os.path.dirname(__file__), "..", "out", "L2Messenger.sol", "L2Messenger.json")
-L2_MESSAGE_SENT = keccak256(b"L2MessageSent(uint256,address,address,uint256,bytes)")
+L2_MESSAGE_SENT = keccak256(b"L2MessageSent(uint256,address,address,uint256,uint256,bytes)")
+CLAIM_SELECTOR = keccak256(b"claimL1Message((address,address,uint256,uint256,bytes,uint256),bytes32[],address)")[:4]
 BLOCK_HASH_SELECTOR = keccak256(b"blockHash()")[:4]
 # The priority fee the RPC suggests. Blocks include any transaction that
 # pays the base fee.
@@ -253,6 +257,19 @@ class PoolTransaction:
     sender: Address
     nonce: int
     arrival: int
+    claims: tuple  # the L1 messages it claims
+
+
+def claims(tx) -> tuple:
+    """The L1 messages a frame transaction claims, by index."""
+    if not isinstance(tx, FrameTransaction):
+        return ()
+    out = []
+    for frame in tx.frames:
+        if len(frame.to) and bytes(frame.to) == bytes(MESSENGER) and bytes(frame.data[:4]) == CLAIM_SELECTOR:
+            message, _, _ = abi_decode(["(address,address,uint256,uint256,bytes,uint256)", "bytes32[]", "address"], bytes(frame.data[4:]))
+            out.append(message[5])
+    return tuple(out)
 
 
 @dataclass
@@ -616,10 +633,10 @@ class Node:
     # The RPC's view of blocks
 
     def l2_message(self, log) -> dict:
-        value, data = abi_decode(["uint256", "bytes"], bytes(log.data))
+        value, fee, data = abi_decode(["uint256", "uint256", "bytes"], bytes(log.data))
         return {
             "index": int.from_bytes(log.topics[1], "big"), "sender": "0x" + bytes(log.topics[2])[12:].hex(),
-            "to": "0x" + bytes(log.topics[3])[12:].hex(), "value": value, "data": hx(data),
+            "to": "0x" + bytes(log.topics[3])[12:].hex(), "value": value, "fee": fee, "data": hx(data),
         }
 
     def index(self, block: Block, output: vm.BlockOutput | None) -> None:
@@ -849,13 +866,48 @@ class Node:
             raise RpcError(-32000, "L2 blocks carry no blob transactions")
         if int(tx.nonce) < self.nonce(sender):
             raise RpcError(-32000, "nonce too low")
+        # A claim runs before any frame approves payment, so a failing claim
+        # costs the node its execution and pays nothing. The node only admits
+        # a claim that succeeds on its head state, and one per message, so a
+        # pending claim cannot keep a message from being claimed.
+        claimed = claims(tx)
+        for index in claimed:
+            if any(index in t.claims for t in self.pool.values() if (t.sender, t.nonce) != (sender, int(tx.nonce))):
+                raise RpcError(-32000, f"a claim of L1 message {index} is already pending")
+        if claimed:
+            self.check_claim(tx, sender)
         # A transaction replaces the sender's one with the same nonce.
         for h, t in list(self.pool.items()):
             if t.sender == sender and t.nonce == int(tx.nonce):
                 del self.pool[h]
         self.arrivals += 1
-        self.pool[keccak256(raw)] = PoolTransaction(raw, tx, sender, int(tx.nonce), self.arrivals)
+        self.pool[keccak256(raw)] = PoolTransaction(raw, tx, sender, int(tx.nonce), self.arrivals, claimed)
         return hx(keccak256(raw))
+
+    def check_claim(self, tx: FrameTransaction, sender: Address) -> None:
+        """Runs a claim on the head state, at its own nonce, and requires it
+        to be valid and its claim frames to succeed."""
+        block_state = BlockState(pre_state=self.chain.state)
+        h = self.head
+        env = self.environment(
+            block_state, max(int(time.time()), int(h.timestamp) + 1), h.parent_beacon_block_root, h.prev_randao, self.next_base_fee()
+        )
+        # Earlier transactions of the sender may be pending, so run it at its
+        # own nonce.
+        state = TransactionState(parent=block_state)
+        account = get_account(state, sender)
+        set_tracked_account(state, sender, Account(nonce=Uint(tx.nonce), balance=account.balance, code_hash=account.code_hash))
+        incorporate_tx_into_block(state, env.block_access_list_builder)
+        output = vm.BlockOutput()
+        try:
+            fork.process_transaction(env, output, tx, Uint(0))
+        except Exception as e:
+            raise RpcError(-32000, f"the claim is invalid on the head state: {e!r}")
+        receipt = decode_receipt(trie_get(output.receipts_trie, output.receipt_keys[0]))
+        for frame, result in zip(tx.frames, receipt.frame_receipts):
+            data = bytes(frame.data)
+            if len(frame.to) and bytes(frame.to) == bytes(MESSENGER) and data[:4] == CLAIM_SELECTOR and int(result.status) != 1:
+                raise RpcError(-32000, "the claim fails on the head state")
 
     def transaction_count(self, addr: str, tag=None) -> str:
         sender = address(addr)

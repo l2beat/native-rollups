@@ -505,7 +505,10 @@ class Explorer:
                 if event.get("name") == "L1MessageSent":
                     a = event["args"]
                     entry = self.index["deposits"].setdefault(str(a["index"]), {})
-                    entry.update({"index": a["index"], "from": a["sender"], "to": a["to"], "value": a["value"], "l1Tx": tx["hash"], "l1Block": tx["block"]})
+                    entry.update({
+                        "index": a["index"], "from": a["sender"], "to": a["to"], "value": a["value"], "fee": a["fee"],
+                        "l1Tx": tx["hash"], "l1Block": tx["block"],
+                    })
         if kind == "withdrawal claim":
             index = tx["call"]["args"]["m"]["index"]
             entry = self.index["withdrawals"].setdefault(str(index), {"index": index})
@@ -572,7 +575,10 @@ class Explorer:
                 if event.get("name") == "L2MessageSent":
                     a = event["args"]
                     entry = self.index["withdrawals"].setdefault(str(a["index"]), {"index": a["index"]})
-                    entry.update({"from": a["sender"], "to": a["to"], "value": a["value"], "l2Tx": tx["hash"], "l2Block": block["number"]})
+                    entry.update({
+                        "from": a["sender"], "to": a["to"], "value": a["value"], "fee": a["fee"],
+                        "l2Tx": tx["hash"], "l2Block": block["number"],
+                    })
         # What the block's transaction table shows, so it needs no other file.
         block["transactions"] = [
             {k: tx.get(k) for k in ("hash", "kind", "from", "to", "gasUsed", "bytes", "status", "fee", "deposit")} | {"method": method(tx)}

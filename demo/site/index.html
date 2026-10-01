@@ -39,7 +39,7 @@
         <tr><td>Verification key registry (EIP-8357)</td><td><span class="badge mock">Mock</span></td><td>An admin registers a placeholder key hash instead of a fork, since the proofs are signatures</td><td>EIP-8357</td></tr>
         <tr><td>Blob check in the program (EIP-8142)</td><td><span class="badge mock">Mock</span></td><td>The node checks that the blobs encode the block</td><td>EIP-8142 in the L1 program</td></tr>
         <tr><td>Operator and users</td><td><span class="badge real">Real</span></td><td>One operator runs the L2 node and posts its blocks, which the rollup contract would accept from anyone. Users sign their own transactions, deposit claims included, and send them to the node's RPC, which this demo keeps local</td><td></td></tr>
-        <tr><td>Claims for others</td><td><span class="badge shortcut">Shortcut</span></td><td>A relayer on L2 and a claimer on L1 claim the messages that their recipients cannot, for free, since messages carry no fee</td><td></td></tr>
+        <tr><td>Claims for others</td><td><span class="badge real">Real</span></td><td>Messages carry a fee for whoever claims them. A relayer on L2 and a claimer on L1 claim those whose recipients cannot, as anyone could, and recipients claim their own for free</td><td></td></tr>
         <tr><td>Activity</td><td><span class="badge real">Real</span></td><td>Besides the story, spamoor sends ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, EIP-8141 frame transactions and messages in both directions</td><td></td></tr>
       </tbody>
     </table>

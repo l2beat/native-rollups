@@ -126,8 +126,8 @@ function labels() {
   add(c.framesHelper, "Frames helper", "");
   // Each user has one key, so one address, on both chains.
   Object.entries(c.users || {}).forEach(([name, a]) => add(a, name, ""));
-  add(c.relayer, "Relayer", "shortcut");
-  add(c.claimer, "Claimer", "shortcut");
+  add(c.relayer, "Relayer", "");
+  add(c.claimer, "Claimer", "");
   add(c.spamoorL1, "Spamoor", "");
   add(c.spamoorL2, "Spamoor", "");
   add(c.receiverL1, "Message receiver", "");
@@ -154,7 +154,7 @@ function chainFor(key, ctx = {}) {
     L1MessageSent: { sender: "l1", to: "l2" }, L1MessageClaimed: { sender: "l1", to: "l2" },
     L2MessageSent: { sender: "l2", to: "l1" }, L2MessageClaimed: { sender: "l2", to: "l1" },
     claimL1Message: { sender: "l1", to: "l2" }, claimL2Message: { sender: "l2", to: "l1" },
-    sendMessage: { to: OTHER[c] }, advance: { feeRecipient: "l2" },
+    sendMessage: { to: OTHER[c] }, advance: { feeRecipient: "l2" }, MessageReceived: { crossChainSender: OTHER[c] },
   };
   const m = ends[ctx.event] || ends[ctx.fn];
   return (m && m[key]) || c;
@@ -292,12 +292,12 @@ function messageRows(kind) {
   const entries = Object.values(state.index[kind]).sort((a, b) => b.index - a.index);
   if (!entries.length) return `<p class="note">None yet.</p>`;
   if (kind === "deposits") {
-    return `<table><thead><tr><th>#</th><th class="num">Amount</th><th>From (L1)</th><th>To (L2)</th><th>Sent on L1</th><th>Claimed on L2</th></tr></thead><tbody>
-      ${entries.map((d) => `<tr><td>${d.index}</td><td class="num">${d.value ? eth(d.value) : ""}</td><td>${addr(d.from, "l1")}</td><td>${addr(d.to, "l2")}</td>
+    return `<table><thead><tr><th>#</th><th class="num">Amount</th><th class="num">Fee</th><th>From (L1)</th><th>To (L2)</th><th>Sent on L1</th><th>Claimed on L2</th></tr></thead><tbody>
+      ${entries.map((d) => `<tr><td>${d.index}</td><td class="num">${d.value !== undefined ? eth(d.value) : ""}</td><td class="num">${d.fee ? eth(d.fee) : ""}</td><td>${addr(d.from, "l1")}</td><td>${addr(d.to, "l2")}</td>
         <td>${d.l1Tx ? l1TxLink(d.l1Tx) : ""}</td><td>${d.l2Tx ? `${l2TxLink(d.l2Tx)} in ${l2BlockLink(d.l2Block)}` : '<span class="muted">waiting for an L2 block that anchors it</span>'}</td></tr>`).join("")}</tbody></table>`;
   }
-  return `<table><thead><tr><th>#</th><th class="num">Amount</th><th>From (L2)</th><th>To (L1)</th><th>Sent on L2</th><th>Claimed on L1</th></tr></thead><tbody>
-    ${entries.map((w) => `<tr><td>${w.index}</td><td class="num">${w.value ? eth(w.value) : ""}</td><td>${addr(w.from, "l2")}</td><td>${addr(w.to, "l1")}</td>
+  return `<table><thead><tr><th>#</th><th class="num">Amount</th><th class="num">Fee</th><th>From (L2)</th><th>To (L1)</th><th>Sent on L2</th><th>Claimed on L1</th></tr></thead><tbody>
+    ${entries.map((w) => `<tr><td>${w.index}</td><td class="num">${w.value !== undefined ? eth(w.value) : ""}</td><td class="num">${w.fee ? eth(w.fee) : ""}</td><td>${addr(w.from, "l2")}</td><td>${addr(w.to, "l1")}</td>
       <td>${w.l2Tx ? `${l2TxLink(w.l2Tx)} in ${l2BlockLink(w.l2Block)}` : ""}</td><td>${w.l1Tx ? l1TxLink(w.l1Tx) : '<span class="muted">not claimed yet</span>'}</td></tr>`).join("")}</tbody></table>`;
 }
 
@@ -364,9 +364,7 @@ function blockList(route) {
   const blocks = [...state.index.l2Blocks].reverse();
   const n = Math.max(route.n, 1);
   return `<h1>L2 blocks</h1>
-    <p class="section-lead">Every L2 block the rollup contract accepted, newest first. Each row has the same columns: what
-      the block contains, the L1 transaction that carries it, how much of its blob it fills, and whether the follower rebuilt
-      it from L1 with the same hash.</p>
+    <p class="section-lead">Every L2 block the rollup contract accepted, newest first.</p>
     ${pager(route, blocks.length, "blocks")}${blockRows(blocks.slice((n - 1) * PAGE, n * PAGE))}${pager(route, blocks.length, "blocks")}`;
 }
 
@@ -514,8 +512,8 @@ const ROLES = {
   "Trusted prover key": ["mock", "The key that signs the blocks Ethereum's validation program accepted, in place of a zk proof. It never sends transactions."],
   "Operator": ["", "The account that posts L2 blocks to L1. Its L2 node builds them from the transactions users send, and holds no user keys. The rollup contract accepts a valid block from anyone; this demo runs one operator."],
   "Frames helper": ["shortcut", "Lets the rollup contract use EIP-8141's FRAMEPARAM and FRAMEDATACOPY instructions, which Solidity cannot emit yet. The rollup contract deploys it and calls it to read the proof frame. Written in assembly with geas."],
-  Relayer: ["shortcut", "Claims deposits to addresses that cannot claim themselves, such as contracts, and pays the claims' fees. Messages carry no fee, so nothing pays it back. It builds and signs its claims as any wallet would, and funded itself with a deposit, whose claim paid for itself."],
-  Claimer: ["shortcut", "Claims on L1 the withdrawals to addresses outside the story, which the demo holds no keys for. Anyone can claim a withdrawal, and the ETH goes to its recipient, but nothing pays the claimer back."],
+  Relayer: ["", "Claims L1 to L2 messages whose recipients cannot claim them, such as contracts, when their fee covers the claim. The claim pays it the fee before it approves payment, so it started with no ETH. Anyone can do the same."],
+  Claimer: ["", "Claims on L1 the L2 to L1 messages whose recipients cannot claim them, when their fee covers the L1 gas. Anyone can claim a message: the ETH goes to its recipient and the fee to the claimer."],
   Spamoor: ["", "The funding wallet of spamoor, ethPandaOps' transaction generator, which funds child wallets that send ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, EIP-8141 frame transactions and messages between the chains."],
   "Message receiver": ["", "An example app for messages between the chains. It accepts any call from the messenger on its chain, the L2 messenger on L2 or the rollup contract on L1, and records the message with its sender on the other chain."],
   Alice: ["", USER_ROLE],
@@ -550,6 +548,7 @@ async function addressPage(route) {
   let live = [];
   let history = "";
   let count;
+  let emitted = [];
   let l1Code = null, acc = null;
   if (chain === "l1") {
     const [balance, nonce, code] = await Promise.all([
@@ -584,6 +583,7 @@ async function addressPage(route) {
       live = [["Prover", addr(wordAddress(await call(a, SELECTORS.prover)), "l1"), "The only key whose signatures it accepts."]];
     }
     const txs = state.index.l1Txs.filter((t) => (t.addresses || []).includes(a)).sort((x, y) => y.block - x.block);
+    emitted = await emittedEvents(a, txs.slice(0, EVENT_TXS).map((t) => [`l1/txs/${t.hash}`, t.hash, t.block, "l1"]));
     count = txs.length;
     history = `<p class="section-lead">The rollup's L1 transactions that involve this address.</p>${txs.length ? l1Rows(txs.slice(0, 50)) : '<p class="note">None.</p>'}`;
   } else {
@@ -604,6 +604,7 @@ async function addressPage(route) {
         ];
       }
       const txs = [...acc.txs].reverse();
+      emitted = await emittedEvents(a, txs.slice(0, EVENT_TXS).map((t) => [`l2/txs/${t.hash}`, t.hash, t.block, "l2"]));
       count = txs.length;
       // Etherscan's columns: the method, or what the transaction does when it calls none.
       history = txs.length ? `<table><thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th class="hide-narrow">Age</th>
@@ -614,7 +615,7 @@ async function addressPage(route) {
           <td>${t.to ? (t.to === a ? '<span class="muted">this address</span>' : addr(t.to, "l2")) : ""}</td>
           <td class="num">${t.value ? eth(t.value) : ""}</td><td class="num">${t.fee !== undefined && t.fee !== null ? eth(t.fee) : ""}</td></tr>`).join("")}</tbody></table>` : '<p class="note">None.</p>';
       const created = (state.index.contracts || {})[a];
-      if (created) rows.push(["Contract creator", `created in ${l2TxLink(created.tx)}`, created.name ? `Named ${esc(created.name)} from its creation code, which the explorer knows from the ABIs it loaded.` : ""]);
+      if (created) rows.push(["Contract creator", `created in ${l2TxLink(created.tx)}`, created.name ? `Named from its creation code.` : ""]);
     }
   }
   const other = Object.values(c.users || {}).some((u) => u.toLowerCase() === a)
@@ -634,8 +635,32 @@ async function addressPage(route) {
     ${tabs(base, [
       ["", "Transactions", count, history],
       code && ["contract", "Contract", undefined, code],
+      (code || emitted.length) && ["events", "Events", emitted.length, eventRows(emitted, chain)],
       live.length && ["state", "State", undefined, `<p class="section-lead">${chain === "l1" ? "Read from the contract on L1 now." : "From the follower's rebuilt L2 state."}</p>${fields(live)}`],
     ], tab)}`;
+}
+
+// How many of an address's latest transactions the Events tab reads.
+const EVENT_TXS = 50;
+
+// The events an address emitted in some of its transactions, newest first.
+// `txs` are [path of the transaction's file, hash, block, chain].
+async function emittedEvents(a, txs) {
+  const loaded = await Promise.all(txs.map(([path]) => object(path)));
+  return txs.flatMap(([, hash, block, chain], i) =>
+    (loaded[i] ? logsOf(loaded[i]) : []).filter((l) => l.address === a).map((log) => ({ hash, block, chain, log })));
+}
+
+function eventRows(emitted, chain) {
+  if (!emitted.length) return '<p class="note">No events in its latest transactions.</p>';
+  return `<p class="section-lead">The events it emitted in its latest ${EVENT_TXS} transactions.</p>
+    <table><thead><tr><th>Transaction hash</th><th>Block</th><th>Event</th><th>Arguments</th></tr></thead><tbody>
+    ${emitted.map(({ hash: tx, block, log }) => {
+      const e = log.event;
+      return `<tr><td>${chain === "l1" ? l1TxLink(tx) : l2TxLink(tx)}</td><td>${chain === "l1" ? num(block) : l2BlockLink(block)}</td>
+        <td>${e ? `<b title="${esc(e.signature || "")}">${e.name}</b>` : `<span class="muted">unknown</span><br>${hash(log.topics[0])}`}</td>
+        <td>${e ? Object.entries(e.args).map(([k, v]) => `${esc(k)}: ${value(v, k, { chain, event: e.name })}`).join("<br>") : hash(log.data)}</td></tr>`;
+    }).join("")}</tbody></table>`;
 }
 
 // The source file each contract of the demo is built from.
@@ -689,18 +714,15 @@ function sourceSection(a, name, bytecode, chain, verified) {
   let html = "";
   if (verified) {
     html += `<h2>Source</h2>
-      <p class="section-lead">From <code>${esc(verified.file)}</code>, which compiles to exactly the creation code this contract was
-        deployed with${verified.flattened ? `. Flattened with <a href="https://github.com/l2beat/l2beat/tree/main/packages/discovery/src/flatten">L2BEAT's
-        flattener</a>: the contract and everything it inherits and uses, in one file` : ""}.</p>
+      <p class="section-lead">From <code>${esc(verified.file)}</code>, which compiles to the creation code it was deployed with${
+        verified.flattened ? `. Flattened with <a href="https://github.com/l2beat/l2beat/tree/main/packages/discovery/src/flatten">L2BEAT's flattener</a>` : ""}.</p>
       ${sourceView(`${verified.name}.sol${verified.flattened ? ", flattened" : ""}`, verified.flat, false, true)}`;
   }
   // Solidity contracts, flattened by L2BEAT's flattener.
   const flatName = main && main.endsWith(".sol") && main.split("/").pop().replace(".sol", "");
   if (flatName && state.flat && state.flat[flatName]) {
     html += `<h2>Source</h2>
-      <p class="section-lead">Flattened with <a href="https://github.com/l2beat/l2beat/tree/main/packages/discovery/src/flatten">L2BEAT's flattener</a>,
-        as L2BEAT shows the contracts it tracks: the contract and everything it inherits and uses, in one file. The separate files are in
-        the repository's <code>contracts/src/</code>.</p>
+      <p class="section-lead">From <code>contracts/src/</code>, flattened with <a href="https://github.com/l2beat/l2beat/tree/main/packages/discovery/src/flatten">L2BEAT's flattener</a>.</p>
       ${sourceView(`${flatName}.sol, flattened`, state.flat[flatName], false, true)}`;
   } else if (main && state.sources[main]) {
     const files = sourceClosure(main);
@@ -1055,10 +1077,14 @@ const L2_SUMMARIES = {
     return `${own ? `${addr(claim.to, "l2")} claims a deposit of ${eth(claim.value)} and pays the fee from it. It is an EIP-8141 frame
       transaction: the claim frames run first, then the VERIFY frame approves the payment from the balance the claim
       just delivered.` : `${addr(tx.from, "l2")} claims a deposit of ${eth(claim.value)} for ${addr(claim.to, "l2")}, which cannot claim it
-      itself, and pays the fee. The message carries no fee to pay it back.`}${proves ? " It also proves the root of L1's message tree, against the anchor of a recent L2 block." : ""}`;
+      itself. ${claim.fee > 0 ? `The message's fee of ${eth(claim.fee)}, which the claim pays it first, covers the claim's gas, so the claimer needs no funds.` : "The message carries no fee, so the claimer pays the gas itself."}`}${proves ? " It also proves the root of L1's message tree, against the anchor of a recent L2 block." : ""}`;
   },
-  withdrawal: (tx) => `${addr(tx.from, "l2")} withdraws ${eth(tx.value)} to ${addr(tx.call.args.to, "l1")} on L1. The L2 messenger records the
-    message, which can be claimed on L1 once this block is on L1.`,
+  withdrawal: (tx) => {
+    const fee = Number(tx.call.args.fee || 0);
+    return `${addr(tx.from, "l2")} withdraws ${eth((BigInt(tx.value) - BigInt(tx.call.args.fee || 0)).toString())} to ${addr(tx.call.args.to, "l1")} on L1${
+      fee ? `, with a fee of ${eth(tx.call.args.fee)} for whoever claims it there` : ", to claim there itself"}. The L2 messenger records the
+      message, which can be claimed on L1 once this block is on L1.`;
+  },
   transfer: (tx) => tx.status
     ? `${addr(tx.from, "l2")} pays ${eth(tx.value)} to ${addr(tx.to, "l2")}, in a plain ETH transfer.`
     : `A plain ETH transfer of ${eth(tx.value)} that <b>failed</b>, so no ETH moved. The transaction is still in the block and paid its fee.`,
@@ -1146,12 +1172,15 @@ async function l1TxPage(route) {
       proof is for exactly this block.`;
   } else if (tx.kind === "deposit") {
     const d = Object.values(state.index.deposits).find((x) => x.l1Tx === tx.hash);
-    summary = `${addr(tx.from, "l1")} deposits ${eth(tx.value)} to ${addr(tx.call.args.to, "l2")} on L2. The rollup contract adds the message
+    const fee = BigInt(tx.call.args.fee || 0);
+    summary = `${addr(tx.from, "l1")} deposits ${eth((BigInt(tx.value) - fee).toString())} to ${addr(tx.call.args.to, "l2")} on L2${
+      fee ? `, with a fee of ${eth(fee.toString())} for whoever claims it there` : ""}. The rollup contract adds the message
       to its Merkle tree and keeps the ETH in escrow.${d && d.l2Tx ? ` It was claimed on L2 in ${l2TxLink(d.l2Tx)}, in block ${l2BlockLink(d.l2Block)}.` : ""}`;
   } else if (tx.kind === "withdrawal claim") {
     const m = tx.call.args.m;
     const w = state.index.withdrawals[String(m.index)];
-    summary = `${addr(tx.from, "l1")} claims a withdrawal of ${eth(m.value)}. The rollup contract checks the message against the
+    summary = `${addr(tx.from, "l1")} claims a withdrawal of ${eth(m.value)} to ${addr(m.to, "l1")}${
+      Number(m.fee) ? ` and earns its fee of ${eth(m.fee)}` : ""}. The rollup contract checks the message against the
       state root of L2 block ${l2BlockLink(tx.call.args.l2BlockNumber)} with a storage proof, and pays it from the escrow.${w && w.l2Tx ? ` It was sent on L2 in ${l2TxLink(w.l2Tx)}.` : ""}`;
   }
   const frame = !!tx.frames;

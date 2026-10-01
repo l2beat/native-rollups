@@ -28,17 +28,22 @@ contract L1Reverter {
 }
 
 /// @notice The rollup contract's side of messaging. L2 to L1 claims use real
-///         proofs: `l2_message_vectors.json` holds the messages that
-///         `script/l2_node.py` sent on L2, with its proofs against the state
-///         root of the L2 block the rollup advanced to on a local frames
-///         network.
+///         proofs: `l2_message_vectors.json` holds messages sent on the L2 of
+///         a rollup on a local frames network, with proofs against the state
+///         root of its latest block, as `script/record_message_vectors.py`
+///         records them.
 contract NativeRollupMessagesTest is Test {
     using stdJson for string;
 
     uint256 constant BLOCK_NUMBER_SLOT = 1;
     uint256 constant STATE_ROOTS_SLOT = 2;
 
-    event L1MessageSent(uint256 indexed index, address indexed sender, address indexed to, uint256 value, bytes data);
+    event L1MessageSent(
+        uint256 indexed index, address indexed sender, address indexed to, uint256 value, uint256 fee, bytes data
+    );
+
+    // Receives the fees of the claims in these tests.
+    address constant CLAIMER = address(0xC1A1);
 
     struct Claim {
         Message m;
@@ -72,6 +77,7 @@ contract NativeRollupMessagesTest is Test {
         c.m.sender = json.readAddress(string.concat(k, ".message.sender"));
         c.m.to = json.readAddress(string.concat(k, ".message.to"));
         c.m.value = json.readUint(string.concat(k, ".message.value"));
+        c.m.fee = json.readUint(string.concat(k, ".message.fee"));
         c.m.data = json.readBytes(string.concat(k, ".message.data"));
         c.m.index = json.readUint(string.concat(k, ".message.index"));
         c.blockNumber = json.readUint(string.concat(k, ".blockNumber"));
@@ -86,16 +92,19 @@ contract NativeRollupMessagesTest is Test {
     }
 
     function _claim(Claim memory c) internal {
-        rollup.claimL2Message(c.m, c.blockNumber, c.accountProof, c.storageProof);
+        rollup.claimL2Message(c.m, c.blockNumber, c.accountProof, c.storageProof, CLAIMER);
     }
 
     function test_sendMessage() public {
         bytes memory data = hex"c0ffee";
         vm.expectEmit(address(rollup));
-        emit L1MessageSent(0, address(this), address(0xB0B), 1 ether, data);
-        rollup.sendMessage{value: 1 ether}(address(0xB0B), data);
+        emit L1MessageSent(0, address(this), address(0xB0B), 0.9 ether, 0.1 ether, data);
+        rollup.sendMessage{value: 1 ether}(address(0xB0B), 0.1 ether, data);
         assertEq(rollup.l1MessageCount(), 1);
         assertEq(address(rollup).balance, 11 ether);
+
+        vm.expectRevert(bytes("fee exceeds value"));
+        rollup.sendMessage{value: 1 ether}(address(0xB0B), 1 ether + 1, data);
     }
 
     /// After every message, the root matches a tree built from all leaves at
@@ -104,8 +113,8 @@ contract NativeRollupMessagesTest is Test {
         bytes32[] memory leaves = new bytes32[](33);
         for (uint256 i = 0; i < leaves.length; i++) {
             address to = address(uint160(i + 1));
-            rollup.sendMessage{value: i}(to, "");
-            leaves[i] = keccak256(abi.encodePacked(address(this), to, i, keccak256(""), i));
+            rollup.sendMessage{value: i}(to, i / 2, "");
+            leaves[i] = keccak256(abi.encodePacked(address(this), to, i - i / 2, i / 2, keccak256(""), i));
             assertEq(rollup.l1MessageRoot(), _root(leaves, i + 1));
         }
     }
@@ -133,6 +142,7 @@ contract NativeRollupMessagesTest is Test {
             Claim memory c = _load(i);
             vm.etch(c.m.to, type(L1Recorder).runtimeCode);
             uint256 escrow = address(rollup).balance;
+            uint256 fees = CLAIMER.balance;
 
             _claim(c);
 
@@ -141,7 +151,8 @@ contract NativeRollupMessagesTest is Test {
             assertEq(r.l2Sender(), c.m.sender);
             assertEq(r.value(), c.m.value);
             assertEq(r.data(), c.m.data);
-            assertEq(address(rollup).balance, escrow - c.m.value);
+            assertEq(CLAIMER.balance, fees + c.m.fee);
+            assertEq(address(rollup).balance, escrow - c.m.value - c.m.fee);
         }
         vm.expectRevert(bytes("no message"));
         rollup.l2Sender();
@@ -157,6 +168,11 @@ contract NativeRollupMessagesTest is Test {
     function test_rejectsForgedMessage() public {
         Claim memory c = _load(1);
         c.m.value += 1;
+        vm.expectRevert(bytes("message not queued"));
+        _claim(c);
+
+        c = _load(1);
+        c.m.fee += 1;
         vm.expectRevert(bytes("message not queued"));
         _claim(c);
 

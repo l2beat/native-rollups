@@ -5,18 +5,20 @@ each claim signed with its claimer's own key.
 A claim is an EIP-8141 frame transaction from the claimer:
 
     frame 0  DEFAULT  L2Messenger.proveL1MessageRoot(...)  when the messenger has no root with the message
-    frame 1  DEFAULT  L2Messenger.claimL1Message(message, path)
+    frame 1  DEFAULT  L2Messenger.claimL1Message(message, path, feeRecipient = claimer)
     frame 2  VERIFY   the claimer approves execution and payment
 
 The first frame proves the root of the rollup contract's message tree
 against the L1 anchor of the latest L2 block, which the EIP-4788 contract
-keeps on L2, so a wallet builds the claim between blocks. A message to the
-claimer pays for its own claim: the fee is taken at the VERIFY frame, after
-the claim delivered the message's value.
+keeps on L2, so a wallet builds the claim between blocks. The claim frame
+pays the message's fee to the claimer, and a message to the claimer also
+its value, before the VERIFY frame approves payment: a claim pays for
+itself, and a claimer needs no funds. If the claim fails, the claimer cannot
+pay, so the transaction is invalid and costs it nothing.
 
 Each wallet claims the messages to itself. The relayer, if any, claims the
-messages to every other address, which cannot claim themselves, such as
-contracts. Messages carry no fee, so nothing pays the relayer back.
+messages to every other address, such as contracts, whose fee covers the
+claim's cost.
 
     uv run --project <execution-specs> python script/l2_claims.py --l1-rpc <url> --rollup <address> \
         --l2-rpc <url> --wallet <key> [--wallet <key> ...] [--relayer <key>]
@@ -37,12 +39,15 @@ from ethereum.crypto.hash import keccak256
 from l2_node import L2_CHAIN_ID, L2_MESSENGER, PRIORITY_FEE, hx, json_rpc
 
 PROVE_ROOT_SIGNATURE = "proveL1MessageRoot(uint256,bytes,bytes[],bytes[])"
-CLAIM_SIGNATURE = "claimL1Message((address,address,uint256,bytes,uint256),bytes32[])"
+CLAIM_SIGNATURE = "claimL1Message((address,address,uint256,uint256,bytes,uint256),bytes32[],address)"
 CLAIM_GAS_LIMIT = 1_000_000
 # EIP-8141 frame modes and approval scopes.
 DEFAULT_MODE, VERIFY_MODE = 0, 1
 APPROVE_EXECUTION_AND_PAYMENT = 3
-L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,bytes)")
+L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,uint256,bytes)")
+# A bound on a claim's gas: the frames' limits, their intrinsic cost, and
+# the signature's, which `TXPARAM(0x06)` charges at the maximum fee.
+CLAIM_GAS = 2 * (CLAIM_GAS_LIMIT + 400_000) + 100_000 + 400_000 + 100_000
 L1_MESSAGE_ROOT_SLOT = 3  # root of NativeRollup.l1Messages
 CLAIMED_SLOT = 1  # L2Messenger.claimedBits, 256 flags per slot
 PROVEN_ROOT_SLOT = 4  # L2Messenger.provenL1MessageRoot
@@ -100,13 +105,14 @@ def l1_messages(l1_rpc: str, rollup: str, anchor: int) -> list:
     messages = []
     for log in logs:
         data = bytes.fromhex(log["data"][2:])
-        offset = int.from_bytes(data[32:64], "big")
+        offset = int.from_bytes(data[64:96], "big")
         length = int.from_bytes(data[offset : offset + 32], "big")
         messages.append({
             "index": int(log["topics"][1], 16),
             "sender": "0x" + log["topics"][2][-40:],
             "to": "0x" + log["topics"][3][-40:],
             "value": int.from_bytes(data[0:32], "big"),
+            "fee": int.from_bytes(data[32:64], "big"),
             "data": "0x" + data[offset + 32 : offset + 32 + length].hex(),
         })
     assert [m["index"] for m in messages] == list(range(len(messages))), "missing L1 messages"
@@ -116,7 +122,7 @@ def l1_messages(l1_rpc: str, rollup: str, anchor: int) -> list:
 def leaf(m: dict) -> bytes:
     return keccak256(
         bytes.fromhex(m["sender"][2:]) + bytes.fromhex(m["to"][2:]) + m["value"].to_bytes(32, "big")
-        + keccak256(bytes.fromhex(m["data"][2:])) + m["index"].to_bytes(32, "big")
+        + m["fee"].to_bytes(32, "big") + keccak256(bytes.fromhex(m["data"][2:])) + m["index"].to_bytes(32, "big")
     )
 
 
@@ -146,11 +152,17 @@ def main() -> None:
     words = {}
     claimed = lambda i: words.setdefault(i >> 8, storage(keccak256((i >> 8).to_bytes(32, "big") + CLAIMED_SLOT.to_bytes(32, "big")))) >> (i & 0xFF) & 1  # noqa: E731
 
+    # Twice the base fee leaves room for it to rise before inclusion.
+    max_fee = 2 * int(head["baseFeePerGas"], 16) + PRIORITY_FEE
     wallets = {str(EOA(key=int(k, 16))).lower(): EOA(key=int(k, 16)) for k in args.wallet}
     relayer = EOA(key=int(args.relayer, 16)) if args.relayer else None
     claims = {}  # claimer -> messages
     for m in messages:
-        claimer = wallets.get(m["to"].lower()) or relayer
+        claimer = wallets.get(m["to"].lower())
+        # The relayer only claims what pays: the fee, received before the
+        # VERIFY frame, must cover the most the claim can cost.
+        if claimer is None and relayer is not None and m["fee"] >= CLAIM_GAS * max_fee:
+            claimer = relayer
         if claimer is not None and not claimed(m["index"]):
             claims.setdefault(str(claimer).lower(), (claimer, []))[1].append(m)
     if not claims:
@@ -172,7 +184,8 @@ def main() -> None:
     prove = None
     for claimer, pending in claims.values():
         nonce = int(json_rpc(args.l2_rpc, "eth_getTransactionCount", str(claimer), "pending"), 16)
-        for i, m in enumerate(pending):
+        proved = False
+        for m in pending:
             calls = []
             if m["index"] >= covered:
                 if prove is None:
@@ -184,13 +197,14 @@ def main() -> None:
                     )
                 # Each claimer's first claim proves the root, which costs little
                 # if another claim in the block proved it already.
-                if i == 0:
+                if not proved:
                     calls.append(prove)
                 size = len(leaves)
             else:
                 size = covered
             calls.append(cast(
-                "calldata", CLAIM_SIGNATURE, f"({m['sender']},{m['to']},{m['value']},{m['data']},{m['index']})", path(m, size),
+                "calldata", CLAIM_SIGNATURE, f"({m['sender']},{m['to']},{m['value']},{m['fee']},{m['data']},{m['index']})",
+                path(m, size), str(claimer),
             ))
             tx = Transaction(
                 sender=claimer,
@@ -201,12 +215,21 @@ def main() -> None:
                 ]
                 + [Frame(mode=VERIFY_MODE, flags=APPROVE_EXECUTION_AND_PAYMENT)],
                 chain_id=L2_CHAIN_ID,
-                max_fee_per_gas=10**9,
+                max_fee_per_gas=max_fee,
                 max_priority_fee_per_gas=PRIORITY_FEE,
             )
+            try:
+                tx_hash = json_rpc(args.l2_rpc, "eth_sendRawTransaction", hx(bytes(tx.rlp())))
+            except RuntimeError as e:
+                # Another claim of it may be pending, which the node admitted
+                # because it succeeds: skip the message and keep the nonce.
+                print(json.dumps({"index": m["index"], "skipped": str(e)}), flush=True)
+                continue
             nonce += 1
-            tx_hash = json_rpc(args.l2_rpc, "eth_sendRawTransaction", hx(bytes(tx.rlp())))
-            print(json.dumps({"index": m["index"], "to": m["to"], "value": m["value"], "claimer": str(claimer).lower(), "tx": tx_hash}), flush=True)
+            proved = proved or prove in calls
+            print(json.dumps({
+                "index": m["index"], "to": m["to"], "value": m["value"], "fee": m["fee"], "claimer": str(claimer).lower(), "tx": tx_hash,
+            }), flush=True)
 
 
 if __name__ == "__main__":
