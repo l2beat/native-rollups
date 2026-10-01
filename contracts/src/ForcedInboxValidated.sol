@@ -81,9 +81,10 @@ contract ForcedInboxValidated {
     /// @dev Hard cap on entries processed per IL. Bounds the L1 gas cost of
     ///      `settle` so the rollup's `advance` tx never blows through
     ///      [EIP-7825](https://eips.ethereum.org/EIPS/eip-7825)'s 16.77 M
-    ///      per-tx limit. Worst case: 32 included entries with deep tx-trie
-    ///      proofs (~330 k each) ≈ 10.5 M, leaving headroom for proof
-    ///      verification and state updates in the same `advance` tx.
+    ///      per-tx limit. 32 included entries with tx-trie proofs from a
+    ///      real mainnet block cost about 3.7 M (~115 k each, see
+    ///      `SettleGas.t.sol`), leaving headroom for proof verification and
+    ///      state updates in the same `advance` tx.
     ///      `currentIL` and `settle` share this bound so the IL the rollup
     ///      commits to (via the proof's `public_input_root`) matches
     ///      what `settle` actually processes.

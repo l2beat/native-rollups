@@ -33,7 +33,7 @@ The inbox works as follows:
 
 Block stuffing remains possible but costly, as on L1: EIP-1559 raises the base fee exponentially while the listed transactions wait. This relies on every L2 block carrying the list, otherwise the operator could publish empty blocks to lower the base fee cheaply. The [Specification](./specification.md) already proves one L2 block per update.
 
-In the prototype, a submission costs about 1.3M gas and a prune about 1.1M gas, roughly 0.001 ETH at 1 gwei. Settlement costs about 275k gas per included entry with Merkle-Patricia proofs, so a list of 32 entries fits within 10M gas. Against the SSZ `transactions_root` that the rollup contract already receives, an inclusion proof is a short sha256 branch.
+In the prototype, a submission costs about 620k gas and a prune about 430k gas, roughly 0.0006 and 0.0004 ETH at 1 gwei. Settlement costs about 100k to 115k gas per included entry with Merkle-Patricia proofs, so a list of 32 entries takes about 3.7M gas. Against the SSZ `transactions_root` that the rollup contract already receives, an inclusion proof is a short sha256 branch.
 
 ## What L1 must provide
 
@@ -42,4 +42,4 @@ The rollup reuses L1's stateless validation program, so that program must take t
 ## Open questions
 
 - **Account proofs.** Submitting and pruning require account proofs, which today require a full node, prohibitive for most users of an L2. Block-level access lists carry storage diffs but not storage roots, so tracking them is not enough to build account proofs. [EIP-8268](https://eips.ethereum.org/EIPS/eip-8268) would add storage roots to them, so that nodes tracking only accounts, as in [VOPS](https://ethresear.ch/t/a-pragmatic-path-towards-validity-only-partial-statelessness-vops/22236), could serve these proofs.
-- **Pruning incentives.** A prune costs about 1.1M gas and benefits everyone waiting in the queue. Submitters could post a small bond that refunds whoever prunes their entry.
+- **Pruning incentives.** A prune costs about 430k gas and benefits everyone waiting in the queue. Submitters could post a small bond that refunds whoever prunes their entry.

@@ -1,0 +1,29 @@
+# A local network with the frames-devnet-0 settings and clients: Gloas from
+# genesis and the EIP-8141 execution fork at epoch 1. Blob-carrying frame
+# transactions only enter Nethermind's and Reth's pools, in the EIP-7594
+# network form. Run with:
+#   kurtosis run github.com/ethpandaops/ethereum-package --enclave frames --args-file frames/kurtosis.yaml
+participants:
+  - el_type: geth
+    el_image: ethpandaops/geth:frames-devnet-0
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:unstable
+  - el_type: nethermind
+    el_image: ethpandaops/nethermind:frames-devnet-0
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:unstable
+  - el_type: reth
+    el_image: ethpandaops/reth:frames-devnet-0
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:unstable
+  - el_type: ethrex
+    el_image: ethpandaops/ethrex:frames-devnet-0
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:unstable
+
+network_params:
+  gloas_fork_epoch: 0
+  heze_fork_epoch: 1
+  frames_enabled: true
+  gas_limit: 200000000
+  genesis_gaslimit: 200000000
