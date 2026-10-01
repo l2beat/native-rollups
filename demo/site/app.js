@@ -549,8 +549,8 @@ const ROLES = {
   "Trusted prover key": ["mock", "The key that signs the blocks Ethereum's validation program accepted, in place of a zk proof. It never sends transactions."],
   "Operator": ["", "The account that posts L2 blocks to L1. Its L2 node builds them from the transactions users send, and holds no user keys. The rollup contract accepts a valid block from anyone; this demo runs one operator."],
   "Frames helper": ["", "Lets the rollup contract use EIP-8141's FRAMEPARAM and FRAMEDATACOPY instructions, which Solidity cannot emit yet. The rollup contract deploys it and calls it to read the proof frame. Written in assembly with geas."],
-  Relayer: ["", "Claims L1 to L2 messages whose recipients cannot claim them, such as contracts, when their fee covers the claim. The claim pays it the fee before it approves payment, so it started with no ETH. Anyone can do the same."],
-  Claimer: ["", "Claims on L1 the L2 to L1 messages whose recipients cannot claim them, when their fee covers the L1 gas. Anyone can claim a message: the ETH goes to its recipient and the fee to the claimer."],
+  Relayer: ["", "Claims L1 to L2 messages to other addresses, such as contracts, when their fee covers the claim. The claim pays it the fee before it approves payment, so it started with no ETH. Anyone can do the same."],
+  Claimer: ["", "Claims on L1 the L2 to L1 messages to other addresses, when their fee covers the L1 gas. Anyone can claim a message: the ETH goes to its recipient and the fee to the claimer."],
   Spamoor: ["", "The funding wallet of spamoor, ethPandaOps' transaction generator, which funds child wallets that send ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, EIP-8141 frame transactions and messages between the chains."],
   "Message receiver": ["", "An example app for messages between the chains. It accepts any call from the messenger on its chain, the L2 messenger on L2 or the rollup contract on L1, and records the message with its sender on the other chain."],
   Alice: ["", USER_ROLE],
@@ -1106,8 +1106,8 @@ const L2_SUMMARIES = {
     const own = claim.to === tx.from;
     return `${own ? `${addr(claim.to, "l2")} claims a deposit of ${eth(claim.value)} and pays the fee from it. It is an EIP-8141 frame
       transaction: the claim frames run first, then the VERIFY frame approves the payment from the balance the claim
-      just delivered.` : `${addr(tx.from, "l2")} claims a deposit of ${eth(claim.value)} for ${addr(claim.to, "l2")}, which cannot claim it
-      itself. ${claim.fee > 0 ? `The message's fee of ${eth(claim.fee)}, which the claim pays it first, covers the claim's gas, so the claimer needs no funds.` : "The message carries no fee, so the claimer pays the gas itself."}`}${proves ? " It also proves the root of L1's message tree, against the anchor of a recent L2 block." : ""}`;
+      just delivered.` : `${addr(tx.from, "l2")} claims a deposit of ${eth(claim.value)} for ${addr(claim.to, "l2")}.
+      ${claim.fee > 0 ? `The message's fee of ${eth(claim.fee)}, which the claim pays it first, covers the claim's gas, so the claimer needs no funds.` : "The message carries no fee, so the claimer pays the gas itself."}`}${proves ? " It also proves the root of L1's message tree, against the anchor of a recent L2 block." : ""}`;
   },
   withdrawal: (tx) => {
     const fee = Number(tx.call.args.fee || 0);
