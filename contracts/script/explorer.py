@@ -226,7 +226,38 @@ def decode_call(data: bytes) -> dict | None:
     call = {"function": entry["name"], "signature": signature(entry), "args": args}
     if entry["name"] == "claimL1Message":
         call["pathToRoot"] = path_to_root(*values[:2])
+    names = [p["name"] for p in entry["inputs"]]
+    if "accountProof" in names and "storageProof" in names:
+        call["proofs"] = {k: trie_path(values[names.index(k)]) for k in ("accountProof", "storageProof")}
     return call
+
+
+def trie_path(proof: tuple) -> dict:
+    """The nodes of a Merkle Patricia proof from its root down: for a branch,
+    which children it has and the one the proof follows, found by the next
+    node's hash; for an extension or leaf, its part of the key."""
+    nodes, key = [], ""
+    for i, raw in enumerate(proof):
+        node = rlp.decode(raw)
+        following = keccak256(proof[i + 1]) if i + 1 < len(proof) else None
+        if len(node) == 17:
+            taken = next((d for d, child in enumerate(node[:16]) if child == following), None)
+            entry = {"kind": "branch", "children": [len(child) > 0 for child in node[:16]], "nibble": taken}
+            key += "?" if taken is None else f"{taken:x}"
+        else:
+            path = bytes(node[0]).hex()
+            flag = int(path[0], 16)
+            entry = {"kind": "leaf" if flag >= 2 else "extension", "path": path[1:] if flag & 1 else path[2:]}
+            key += entry["path"]
+            if flag >= 2:
+                value = rlp.decode(node[1])
+                entry["decoded"] = {
+                    "nonce": int.from_bytes(value[0], "big"), "balance": str(int.from_bytes(value[1], "big")),
+                    "storageRoot": hx(value[2]), "codeHash": hx(value[3]),
+                } if isinstance(value, list) else {"word": hx(bytes(value).rjust(32, b"\0"))}
+        entry["hash"] = hx(keccak256(raw))
+        nodes.append(entry)
+    return {"root": hx(keccak256(proof[0])), "key": key, "nodes": nodes}
 
 
 MESSAGE_TREE_DEPTH = 32  # MessageTree.DEPTH

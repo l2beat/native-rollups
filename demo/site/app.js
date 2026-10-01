@@ -977,8 +977,8 @@ function frameExplain(tx, f, i, layer) {
       DEFAULT: "Calls the target from EIP-8141's entry point address, not as the sender.",
     }[f.mode] + (noCode && (!f.data || f.data === "0x") ? " The target has no code, so the frame only moves its value." : ""),
     badges: known ? [badge("real")] : [],
-    extra: known ? argTable(f.call.args.params || f.call.args, fn === "advance" ? ADVANCE_NOTES : {}, ctx,
-      f.call.pathToRoot ? { path: pathView(f.call.pathToRoot, f.call.args.m.index, f.status === 1) } : {}) + rawInput(f.data) : inputData(f.data, f.call, ctx),
+    extra: known ? argTable(f.call.args.params || f.call.args, fn === "advance" ? ADVANCE_NOTES : {}, ctx, callViews(f.call, f.status === 1))
+      + rawInput(f.data) : inputData(f.data, f.call, ctx),
   };
 }
 
@@ -1033,6 +1033,69 @@ function pathView(p, index, proven) {
     <svg class="merkle" viewBox="0 0 ${GUTTER + maxX - minX + 10} ${Y(0) + H + 24}" width="${GUTTER + maxX - minX + 10}">${parts.join("")}</svg>`;
 }
 
+// A Merkle Patricia proof, drawn from its root down: a branch node has a
+// child per hex digit, and the proof follows the key's next digit; an
+// extension shares digits; the leaf holds the rest of the key and the value.
+function trieView(p, keyOf, rootLabel, valueLabel, ok) {
+  const CW = 22, CH = 22, X0 = 110, BW = 16 * CW, STEP = 62, MID = X0 + BW / 2;
+  const text = (x, y, s, cls = "mt-label", anchor = "start") => `<text class="${cls}" x="${x}" y="${y}" text-anchor="${anchor}">${s}</text>`;
+  const parts = [`<g class="mt-sib"><title>${esc(rootLabel)}: ${p.root}</title><rect x="${MID - 75}" y="0" width="150" height="${CH + 2}" rx="5"/>
+      ${text(MID, CH / 2 + 5, esc(short(p.root)), "", "middle")}</g>`, text(MID + 85, CH / 2 + 5, esc(rootLabel))];
+  const key = [];
+  let from = [MID, CH + 2], y = 0;
+  p.nodes.forEach((nd, i) => {
+    y = 46 + i * STEP;
+    parts.push(`<line class="mt-path" x1="${from[0]}" y1="${from[1]}" x2="${nd.kind === "branch" ? MID : MID}" y2="${y}"/>`,
+      text(4, y + CH / 2 + 4, `${nd.kind}`));
+    if (nd.kind === "branch") {
+      nd.children.forEach((has, d) => {
+        const x = X0 + d * CW, taken = d === nd.nibble, digit = d.toString(16);
+        parts.push(`<g class="mt-cell${taken ? " taken" : has ? " child" : ""}"><title>${taken ? `Followed: the key's next digit is ${digit}` : has ? `Another subtree, under ${digit}` : `Nothing under ${digit}`}</title>
+          <rect x="${x}" y="${y}" width="${CW}" height="${CH}"/>${text(x + CW / 2, y + CH / 2 + 4, digit, "", "middle")}</g>`);
+        if (has && !taken) parts.push(`<line class="mt-edge" x1="${x + CW / 2}" y1="${y + CH}" x2="${x + CW / 2 + (d - 7.5) * 0.8}" y2="${y + CH + 9}"/>`);
+      });
+      from = nd.nibble === null ? [MID, y + CH] : [X0 + nd.nibble * CW + CW / 2, y + CH];
+      key.push([nd.nibble === null ? "?" : nd.nibble.toString(16), "mt-k"]);
+    } else {
+      parts.push(`<g class="mt-node"><title>${nd.kind}: ${nd.hash}</title><rect x="${X0}" y="${y}" width="${BW}" height="${CH}" rx="5"/>
+        ${text(MID, y + CH / 2 + 4, nd.kind === "leaf" ? `the rest of the key, ${nd.path.length} digits` : `shared digits ${nd.path}`, "", "middle")}</g>`);
+      from = [MID, y + CH];
+      key.push([nd.path, nd.kind === "leaf" ? "mt-rest" : "mt-k"]);
+    }
+  });
+  const d = p.nodes[p.nodes.length - 1].decoded || {};
+  y += 50;
+  const lines = d.storageRoot ? [`nonce ${num(d.nonce)}, balance ${eth(d.balance)}`, `storage root ${short(d.storageRoot)}`] : [short(d.word || "")];
+  const VH = lines.length * 16 + 8;
+  parts.push(`<line class="mt-path" x1="${from[0]}" y1="${from[1]}" x2="${MID}" y2="${y}"/>`, text(4, y + VH / 2 + 4, "value"),
+    `<g class="${ok ? "mt-root" : "mt-node"}"><title>${esc(valueLabel)}: ${esc(d.word || JSON.stringify(d))}</title><rect x="${X0}" y="${y}" width="${BW}" height="${VH}" rx="5"/>
+      ${lines.map((l, i) => text(MID, y + 16 + 16 * i, esc(l), "", "middle")).join("")}</g>`,
+    text(MID, y + VH + 16, `${esc(valueLabel)}${ok ? " ✓" : ""}`, ok ? "mt-ok" : "mt-label", "middle"));
+  y += VH - CH;
+  return `<p class="tag-note">Key <span class="mono">${key.map(([s, c]) => `<span class="${c}">${s}</span>`).join("")}</span>, the hash of
+      ${keyOf}. Each branch node has a child per hex digit, and the proof follows the key's next digit, in blue. The leaf holds the
+      rest of the key.</p>
+    <svg class="merkle" viewBox="0 0 ${MID + 85 + 7 * rootLabel.length} ${y + CH + 24}" width="${MID + 85 + 7 * rootLabel.length}">${parts.join("")}</svg>`;
+}
+
+// Arguments drawn rather than listed: a deposit's Merkle path, and the
+// Merkle Patricia proofs of an account and one of its storage slots.
+function callViews(call, ok) {
+  const views = {};
+  if (!call) return views;
+  if (call.pathToRoot) views.path = pathView(call.pathToRoot, call.args.m.index, ok);
+  if (call.proofs) {
+    const l2 = call.function === "claimL2Message";
+    const storageRoot = call.proofs.storageProof.root;
+    views.accountProof = trieView(call.proofs.accountProof, `the ${l2 ? "L2 messenger's" : "rollup contract's"} address`,
+      l2 ? `state root of L2 block #${call.args.l2BlockNumber}` : "state root of the L1 block in l1Header",
+      `the ${l2 ? "L2 messenger's" : "rollup contract's"} account, whose storage root ${short(storageRoot)} starts the storage proof`, ok);
+    views.storageProof = trieView(call.proofs.storageProof, l2 ? `the slot of message #${call.args.m.index} in the messenger's queue` : "the slot of the message tree's root",
+      "storage root, from the account", l2 ? "the message's hash" : "the root of L1's message tree", ok);
+  }
+  return views;
+}
+
 function frameCards(tx, layer) {
   return `<div class="frames">${tx.frames.map((f, i) => {
     const e = frameExplain(tx, f, i, layer);
@@ -1071,7 +1134,7 @@ function rawInput(data, create = false) {
 function inputData(data, call, ctx) {
   if (!data || data === "0x") return "";
   if (!call) return `<p class="note">Function selector <code>${data.slice(0, 10)}</code>: none of the ABIs the explorer loaded has it.</p>${rawInput(data)}`;
-  return `<p><code>${esc(call.signature)}</code></p>${argTable(call.args, {}, ctx)}${rawInput(data)}`;
+  return `<p><code>${esc(call.signature)}</code></p>${argTable(call.args, {}, ctx, callViews(call, ctx.ok))}${rawInput(data)}`;
 }
 
 // The function a transaction calls, for tables: its name, its selector, or nothing.
@@ -1307,7 +1370,7 @@ async function l1TxPage(route) {
       ["Transaction type", frame ? "0x06, EIP-8141 frame transaction" : `0x0${tx.type}, ${TX_TYPES[tx.type] || "unknown"}`, ""],
       ["Nonce", tx.nonce, ""],
     ])}
-    ${!frame && tx.data && tx.data !== "0x" ? `<h2>Input data</h2>${inputData(tx.data, tx.call, { chain: "l1", fn: tx.call && tx.call.function })}${codeFor(tx.to, tx.call)}` : ""}`;
+    ${!frame && tx.data && tx.data !== "0x" ? `<h2>Input data</h2>${inputData(tx.data, tx.call, { chain: "l1", fn: tx.call && tx.call.function, ok: tx.status === 1 })}${codeFor(tx.to, tx.call)}` : ""}`;
   return `
     <h1>Transaction details <span class="chip">${esc(L1_KINDS[tx.kind] || tx.kind)}</span> <span class="net l1">L1</span></h1>
     ${tabs(base, [

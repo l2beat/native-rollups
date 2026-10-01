@@ -112,6 +112,14 @@ svg.merkle .mt-subtree { fill: #edf1ff; stroke: var(--accent); }
 svg.merkle .mt-sib.empty rect, svg.merkle .mt-subtree.empty { fill: #fff; stroke: #c9c6bd; stroke-dasharray: 3 3; }
 svg.merkle .mt-sib.empty text { fill: var(--muted); }
 svg.merkle .strong { font-weight: 600; fill: var(--ink); }
+svg.merkle .mt-cell rect { fill: #fff; stroke: #e6e3dc; }
+svg.merkle .mt-cell text { font-size: 10px; fill: #b8b5ae; }
+svg.merkle .mt-cell.child rect { fill: var(--soft); stroke: #c9c6bd; }
+svg.merkle .mt-cell.child text { fill: var(--muted); }
+svg.merkle .mt-cell.taken rect { fill: #edf1ff; stroke: var(--accent); }
+svg.merkle .mt-cell.taken text { fill: var(--accent); font-weight: 700; }
+.mt-k { color: var(--accent); font-weight: 700; }
+.mt-rest { color: var(--muted); }
 /* Lists name the addresses they know, with the address on hover. */
 table.txs .addr .muted { display: none; }
 .prose { font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
