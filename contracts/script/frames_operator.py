@@ -79,7 +79,11 @@ SENT_SLOT = 2  # L2Messenger.sentMessages
 
 
 def cast(*args: str) -> str:
-    return subprocess.run(["cast", *args], check=True, capture_output=True, text=True).stdout.strip()
+    out = subprocess.run(["cast", *args], capture_output=True, text=True)
+    if out.returncode != 0:
+        # The arguments can hold a whole blob transaction, so only the error.
+        raise SystemExit(f"cast {' '.join(a for a in args[:3] if len(a) < 80)} failed: {out.stderr.strip()[-500:]}")
+    return out.stdout.strip()
 
 
 def call(rpc: str, to: str, sig: str) -> str:
