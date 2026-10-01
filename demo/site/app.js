@@ -103,6 +103,11 @@ const fill = (bytes) => {
   return `<span class="minifill"><span style="width:${Math.max(2, 100 * x)}%"></span></span>${pct(x)}`;
 };
 
+// The caller of EIP-8141's DEFAULT and VERIFY frames. SENDER frames run as
+// the transaction's sender.
+const ENTRY_POINT = "0x00000000000000000000000000000000000000aa";
+const frameCaller = (tx, f) => (f.mode === "SENDER" ? tx.from : ENTRY_POINT);
+
 function labels() {
   const c = (state.session && state.session.contracts) || {};
   const l = {
@@ -116,6 +121,7 @@ function labels() {
     "0x0000f90827f1c53a10cb7a02335b175320002935": ["Block hash history (EIP-2935)", ""],
     "0x00000000219ab540356cbb839cbe05303d7705fa": ["Beacon deposit contract", ""],
     "0x0000000000000000000000000000000000008141": ["Expiry verifier (EIP-8141)", ""],
+    [ENTRY_POINT]: ["Entry point (EIP-8141)", ""],
   };
   const add = (a, name, kind) => a && (l[a.toLowerCase()] = [name, kind]);
   Object.entries((state.index && state.index.contracts) || {}).forEach(([a, x]) => x.name && !l[a] && add(a, x.name, ""));
@@ -867,7 +873,7 @@ function value(v, key, ctx = {}) {
   if (typeof v === "object") return argTable(v, {}, ctx);
   const s = String(v);
   if (/^0x[0-9a-f]{40}$/i.test(s)) return addr(s, chainFor(key, ctx));
-  if (key === "value" && /^\d+$/.test(s)) return eth(s);
+  if ((key === "value" || key === "fee") && /^\d+$/.test(s)) return eth(s);
   if (/^0x[0-9a-f]*$/i.test(s)) return s.length > 70 ? hash(s) + ` <span class="muted">(${(s.length - 2) / 2} bytes)</span>` : `<span class="mono">${s}</span>${tags(s)}`;
   return esc(typeof v === "number" ? num(v) : s);
 }
@@ -979,7 +985,7 @@ function frameCards(tx, layer) {
     const e = frameExplain(tx, f, i, layer);
     const status = f.status === undefined ? "" : f.status === 1 ? `<span class="check">succeeded</span>` : `<span class="bad">failed</span>`;
     return `<div class="frame"><div class="frame-head"><span class="idx">Frame ${i}</span><span class="mode">${f.mode}</span>
-        ${f.call ? `<code>${f.call.function}</code>` : ""} → ${addr(f.target, layer.toLowerCase(), false)} ${e.badges.join(" ")}<span class="status">${status}</span></div>
+        ${addr(frameCaller(tx, f), layer.toLowerCase(), false)} → ${addr(f.target, layer.toLowerCase(), false)} ${f.call ? `<code>${f.call.function}</code>` : ""} ${e.badges.join(" ")}<span class="status">${status}</span></div>
       <div class="frame-body"><p class="explain">${e.text}</p>
         <div class="gasbar"><span>Flags: ${f.flags.length ? f.flags.join(", ") : "none"}</span>
           <span>Execution gas: ${f.executionGasUsed !== undefined ? num(f.executionGasUsed) + " of " : ""}${num(f.executionGasLimit)}</span>
@@ -1161,7 +1167,7 @@ async function l2TxPage(route) {
       ["Timestamp", block ? `${ago(block.timestamp)} <span class="muted">(${new Date(block.timestamp * 1000).toLocaleString()})</span>` : "", ""],
       ["Transaction action", `<span class="prose">${(L2_SUMMARIES[tx.kind] || (() => ""))(tx)}</span>`, ""],
       [frame ? "Sender" : "From", addr(tx.from, "l2"), frame ? "The account the transaction acts for." : ""],
-      frame ? ["To", frameTargets(tx, "l2"), "A frame transaction has no single recipient: each frame calls its own target."]
+      frame ? ["To", frameTargets(tx, "l2"), "A frame transaction has no single recipient: each frame calls its own target, as the entry point, or as the sender in SENDER frames."]
         : ["To", tx.to ? addr(tx.to, "l2") : "contract creation", ""],
       ...((tx.created || []).length ? [["Created", tx.created.map((c) => addr(c.address, "l2")).join("<br>"), "Named when the explorer knows the creation code, from the ABIs it loaded."]] : []),
       ...linked,
@@ -1236,7 +1242,7 @@ async function l1TxPage(route) {
       ["Timestamp", `${ago(tx.timestamp)} <span class="muted">(${new Date(tx.timestamp * 1000).toLocaleString()})</span>`, ""],
       ["Transaction action", `<span class="prose">${summary}</span>`, ""],
       [frame ? "Sender" : "From", addr(tx.from, "l1"), ""],
-      frame ? ["To", frameTargets(tx, "l1"), "A frame transaction has no single recipient: each frame calls its own target."] : ["To", addr(tx.to, "l1"), ""],
+      frame ? ["To", frameTargets(tx, "l1"), "A frame transaction has no single recipient: each frame calls its own target, as the entry point, or as the sender in SENDER frames."] : ["To", addr(tx.to, "l1"), ""],
       ...linked,
       ...(frame ? [] : [["Value", eth(tx.value), ""]]),
       ...fees.overview,
