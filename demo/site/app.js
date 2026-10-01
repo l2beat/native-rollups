@@ -340,6 +340,8 @@ async function home() {
     if (latest.length >= 8) break;
   }
   const txs = await Promise.all(latest.slice(0, 8).map((t) => object(`l2/txs/${t.hash}`).then((x) => ({ ...t, ...(x || {}) }))));
+  const head = blocks.length ? await object(`l2/blocks/${blocks[0].number}`) : null;
+  const rec = head && state.session && state.session.events.find((e) => e.type === "advance" && e.l2.number === head.number);
   // What the status pills do not already say: activity, value, and cost on L1.
   const escrow = await rpc("eth_getBalance", [ix.rollup, "latest"]);
   const recent = blocks.slice(0, 20);
@@ -365,6 +367,7 @@ async function home() {
       from Ethereum.</p>
     <div class="legend">${badge("real")} runs as specified ${badge("mock")} stands in for an L1 feature that does not exist yet
       · <a href="#/about">details</a></div>
+    ${head ? `<h2>How block ${l2BlockLink(head.number)} reached L1</h2>${journey(head, rec)}` : ""}
     <div class="stats">${stats.map(([label, value, sub]) => `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`).join("")}</div>
     <div class="columns">
       <div class="panel"><div class="panel-head"><b>Latest L2 blocks</b><a href="#/blocks">View all blocks →</a></div>
@@ -459,6 +462,27 @@ function about() {
 // L2 block
 // ---------------------------------------------------------------------------
 
+// The six steps every L2 block takes to L1, each linked to what shows it.
+function journey(b, rec) {
+  const matches = b.hash === b.recordedHash;
+  const steps = [
+    ["Build", "real", `The operator's node executed its transactions with Ethereum's rules.`,
+      `<a href="#/l2/block/${b.number}/txs">${num(b.transactions.length)} transactions</a>`],
+    ["Check", "real", "Ethereum's own validation program ran on the block and accepted it.",
+      `<a href="#/l2/block/${b.number}/l1">${rec && rec.l2.validation.successful ? `accepted <span class="check">✓</span>` : "the run"}</a>`],
+    ["Prove", "mock", "A trusted key signed the result, standing in for a zk proof of that run.",
+      `<a href="#/l1/tx/${b.l1.tx}/frames">the proof frame</a>`],
+    ["Post", "real", "One L1 transaction carried the block's data in a blob.",
+      `${l1TxLink(b.l1.tx)} <a href="#/blob/${b.number}">${pct(b.payloadBytes / BLOB_USABLE_BYTES)} of a blob</a>`],
+    ["Verify", "real", "The rollup contract checked that the proof is for exactly this block.",
+      `<a href="#/l1/tx/${b.l1.tx}/frames">the check</a>`],
+    ["Follow", "real", "An independent node rebuilt the block from L1 data alone.",
+      matches ? `<a href="#/about">same hash <span class="check">✓</span></a>` : `<span class="bad">different hash</span>`],
+  ];
+  return `<ol class="journey">${steps.map(([title, kind, text, link], i) => `<li class="${kind}"><span class="dot">${i + 1}</span>
+    <b>${title}</b>${kind === "mock" ? ` ${badge("mock")}` : ""}<p>${text}</p><div class="evidence">${link}</div></li>`).join("")}</ol>`;
+}
+
 async function blockPage(route) {
   const b = await object(`l2/blocks/${route.n}`);
   if (!b) return `<h1>Block #${route.n}</h1><p class="note">The follower has not rebuilt this block yet.</p>`;
@@ -473,15 +497,6 @@ async function blockPage(route) {
     ${b.transactions.map((t, i) => `<tr><td>${i}</td><td>${l2TxLink(t.hash)}</td><td>${chip(t.kind)}</td><td>${method(t)}</td><td>${statusText(t.status)}</td><td>${counterpart(t)}</td><td>${addr(t.from, "l2")}</td>
       <td class="num">${num(t.gasUsed)}</td><td class="num">${t.fee !== undefined && t.fee !== null ? eth(t.fee) : ""}</td></tr>`).join("")}</tbody></table>`;
   const l1Panel = `
-      <p class="section-lead">How the block reached L1, and what the operator checked before posting it.</p>
-      <ol class="journey">
-        <li><b>1. Build</b>${badge("real")}<br>The operator executed ${b.transactions.length} transactions with Ethereum's rules.</li>
-        <li><b>2. Check</b>${badge("real")}<br>${rec ? `The operator ran Ethereum's validation program: accepted <span class="check">✓</span>` : "The operator ran Ethereum's validation program."}</li>
-        <li><b>3. Prove</b>${badge("mock")}<br>A trusted key signed the result, in place of a zk proof.</li>
-        <li><b>4. Post</b>${badge("real")}<br>${l1TxLink(b.l1.tx)} carried it, using ${pct(b.payloadBytes / BLOB_USABLE_BYTES)} of a blob.</li>
-        <li><b>5. Verify</b>${badge("real")}<br>The rollup contract checked the proof's input and accepted it.</li>
-        <li><b>6. Follow</b>${badge("real")}<br>Rebuilt from L1 alone, ${matches ? `same hash <span class="check">✓</span>` : `<span class="bad">different hash</span>`}</li>
-      </ol>
       <h2>Data on L1</h2>
       ${fields([
         ["L1 transaction", `${l1TxLink(b.l1.tx)} <span class="muted">in L1 block ${num(b.l1.block)}</span>`, "One frame transaction per L2 block: it carries the blob, the proof, and the call to the rollup contract."],
@@ -532,9 +547,7 @@ async function blockPage(route) {
     ])}`;
   return `
     <h1>Block #${b.number} <span class="net l2">L2</span></h1>
-    <div class="callout"><p>This block holds ${contents(kinds)}. It reached L1 in transaction ${l1TxLink(b.l1.tx)}, in L1 block
-      ${num(b.l1.block)}, whose blob carries its transactions. An independent follower rebuilt it from that L1 data alone and
-      got ${matches ? `the hash the rollup contract recorded <span class="check">✓</span>` : `<span class="bad">a different hash</span>`}.</p></div>
+    ${journey(b, rec)}
     ${tabs(base, [["", "Overview", undefined, overview], ["txs", "Transactions", b.transactions.length, txsPanel], ["l1", "On L1", undefined, l1Panel]], tab)}`;
 }
 
