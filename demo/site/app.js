@@ -333,7 +333,6 @@ function pager(route, total, base) {
 async function home() {
   const ix = state.index;
   const blocks = [...ix.l2Blocks].reverse();
-  const l1 = [...ix.l1Txs].sort((a, b) => b.block - a.block);
   // The latest transactions, from the latest blocks, newest first.
   const latest = [];
   for (const b of blocks.slice(0, 4)) {
@@ -382,9 +381,26 @@ async function home() {
             <div class="line">${t.to ? `<span class="muted">To</span> ${addr(t.to, "l2")}` : t.frames ? `<span class="muted">${t.frames.length} frames</span>` : '<span class="muted">contract creation</span>'}</div></div>
           <div class="num"><div class="line">${chip(t.kind)}</div><div class="line">${t.value ? eth(t.value) : ""}</div></div></div>`).join("")}</div>
     </div>
-    <h2>Latest rollup transactions on L1</h2>
-    <div class="row-links"><a href="#/l1">All L1 transactions →</a></div>
-    ${l1Rows(l1.slice(0, 6))}`;
+    ${story()}`;
+}
+
+// The message a deposit or withdrawal of the runner's story sent.
+function storyMessage(e) {
+  const find = (kind, key, value) => Object.values(state.index[kind]).find((m) => m[key] === value);
+  if (e.type === "deposit") return ["deposit", find("deposits", "l1Tx", e.l1.txHash)];
+  if (e.type === "withdrawal") return ["withdrawal", find("withdrawals", "l2Tx", e.l2Tx)];
+  return [null, null];
+}
+
+// The messages the demo's users send between the chains, newest first,
+// each with whether it was claimed.
+function story() {
+  const events = ((state.session && state.session.events) || []).map((e) => [e, ...storyMessage(e)]).filter(([, , m]) => m).slice(-8).reverse();
+  if (!events.length) return "";
+  return `<h2>Between the chains</h2>
+    <p class="section-lead">The demo's users deposit and withdraw. Each links to the message's journey.</p>
+    <div class="story">${events.map(([e, kind, m]) => `<a href="#/${kind}/${m.index}"><span class="muted">${ago(e.time)}</span>
+      <span>${esc(e.title)}</span><span class="muted">${(kind === "deposit" ? m.l2Tx : m.l1Tx) ? `claimed <span class="check">✓</span>` : "waiting to be claimed"}</span></a>`).join("")}</div>`;
 }
 
 function blockList(route) {

@@ -245,6 +245,12 @@ footer { text-align: center; color: var(--muted); font-size: 14px; padding: 30px
 .item:last-child { border-bottom: none; }
 @media (max-width: 860px) { .columns { grid-template-columns: 1fr; } }
 
+/* Home: the story */
+.story { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.story a { display: grid; grid-template-columns: 100px 1fr auto; gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--line); color: var(--ink); font-size: 14px; }
+.story a:last-child { border-bottom: none; }
+.story a:hover { background: var(--soft); text-decoration: none; }
+
 /* Feedback while a page loads */
 body.loading #app { opacity: 0.55; transition: opacity 0.15s; }
 body.loading::before { content: ""; position: fixed; top: 0; left: 0; z-index: 20; height: 3px; width: 40%;
