@@ -30,7 +30,6 @@ import json
 import os
 import random
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -235,8 +234,8 @@ class Episode:
 
     def start_follower(self) -> None:
         a = self.args
+        # The follower rebuilds it from L1, and the previous data serves meanwhile.
         explorer = os.path.join(DATA, "explorer")
-        shutil.rmtree(explorer, ignore_errors=True)
         log = open(os.path.join(DATA, "follower.log"), "a")
         self.follower = subprocess.Popen(
             ["uv", "run", "--project", a.zkevm_specs, "python", "script/l2_follower.py",

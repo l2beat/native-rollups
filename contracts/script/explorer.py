@@ -11,6 +11,7 @@ re-execution of the data those transactions carry.
 import json
 import os
 import re
+import shutil
 import time
 
 from eth_abi import decode as abi_decode
@@ -509,14 +510,21 @@ def method(tx: dict) -> str | None:
     return ", ".join((c.get("call") or {}).get("function") or c["data"][:10] for c in calls)
 
 
+EVENTS_KEPT = 100  # the latest events an address page shows
+
+
+def logs_of(tx: dict) -> list:
+    """A transaction's logs, from all its frames."""
+    return (tx.get("logs") or []) + [log for f in tx.get("frames") or [] for log in f.get("logs") or []]
+
+
 def addresses(tx: dict) -> list:
     """The addresses a decoded transaction involves: its sender, target,
     frame targets and payer, the emitters of its events, and the accounts its
     ETH transfer logs move ETH between."""
     found = [tx.get("from"), tx.get("to"), tx.get("payer")] + [f["target"] for f in tx.get("frames") or []]
     found += [c["address"] for c in tx.get("created") or []]
-    logs = (tx.get("logs") or []) + [log for f in tx.get("frames") or [] for log in f.get("logs") or []]
-    for log in logs:
+    for log in logs_of(tx):
         found.append(log["address"])
         event = log.get("event") or {}
         if event.get("name") == "Transfer":
@@ -530,17 +538,35 @@ def addresses(tx: dict) -> list:
 
 class Explorer:
     def __init__(self, directory: str, rollup: str, messenger: str, flatten=None):
-        self.dir = directory
+        # Builds in a directory next to `directory`, which keeps serving the
+        # previous data until `publish` swaps them.
+        self.live, self.dir = directory, directory + ".next"
+        shutil.rmtree(self.dir, ignore_errors=True)
         # Flattens a source file to one contract's flat source, or None.
         self.flatten = flatten
         self.flat = {}
         self.accounts = {}  # L2 address -> the transactions that involve it
+        self.events = {"l1": {}, "l2": {}}  # address -> the events it emitted
+        self.events_seen = set()
         self.index = {
             "rollup": rollup.lower(), "messenger": messenger.lower(), "l2Blocks": [], "l1Txs": [],
             "deposits": {}, "withdrawals": {}, "contracts": {},
         }
-        for sub in ("l2/blocks", "l2/txs", "l1/txs", "l2/accounts", "l2/sources"):
-            os.makedirs(os.path.join(directory, sub), exist_ok=True)
+        for sub in ("l2/blocks", "l2/txs", "l1/txs", "l1/events", "l2/accounts", "l2/sources"):
+            os.makedirs(os.path.join(self.dir, sub), exist_ok=True)
+
+    def publish(self) -> None:
+        """Makes the data built so far the live data, once the follower has
+        caught up with L1. Later writes go to the live directory."""
+        if self.dir == self.live:
+            return
+        old = self.live + ".old"
+        shutil.rmtree(old, ignore_errors=True)
+        if os.path.exists(self.live):
+            os.rename(self.live, old)
+        os.rename(self.dir, self.live)
+        shutil.rmtree(old, ignore_errors=True)
+        self.dir = self.live
 
     def write(self, path: str, value) -> None:
         full = os.path.join(self.dir, path)
@@ -552,9 +578,23 @@ class Explorer:
         self.index["updatedAt"] = int(time.time())
         self.write("index.json", self.index)
 
+    def add_events(self, chain: str, tx: dict, block: int) -> list:
+        """Records a transaction's events under their emitters, and returns
+        the emitters."""
+        if (chain, tx["hash"]) in self.events_seen:
+            return []
+        self.events_seen.add((chain, tx["hash"]))
+        emitters = []
+        for log in logs_of(tx):
+            self.events[chain].setdefault(log["address"], []).append({"hash": tx["hash"], "block": block, "log": log})
+            emitters.append(log["address"])
+        return emitters
+
     def add_l1_tx(self, tx: dict, kind: str, **links) -> None:
         tx.update({"kind": kind, **links})
         self.write(f"l1/txs/{tx['hash']}.json", tx)
+        for a in set(self.add_events("l1", tx, tx["block"])):
+            self.write(f"l1/events/{a}.json", self.events["l1"][a][-EVENTS_KEPT:])
         self.index["l1Txs"] = [t for t in self.index["l1Txs"] if t["hash"] != tx["hash"]]
         self.index["l1Txs"].append({
             "hash": tx["hash"], "kind": kind, "block": tx["block"], "timestamp": tx["timestamp"],
@@ -591,6 +631,7 @@ class Explorer:
         """Writes the state after `block` of every L2 account it touched."""
         touched = {block["feeRecipient"].lower()}
         for tx in transactions:
+            self.add_events("l2", tx, block["number"])
             for a in addresses(tx):
                 touched.add(a)
                 self.accounts.setdefault(a, []).append({
@@ -599,7 +640,10 @@ class Explorer:
                 })
         for a in touched:
             account = state.get_account_optional(Address(bytes.fromhex(a[2:])))
-            entry = {"address": a, "block": block["number"], "txs": self.accounts.get(a, [])[-200:], "exists": account is not None}
+            entry = {
+                "address": a, "block": block["number"], "txs": self.accounts.get(a, [])[-200:],
+                "events": self.events["l2"].get(a, [])[-EVENTS_KEPT:], "exists": account is not None,
+            }
             if account is not None:
                 code = b"" if account.code_hash == EMPTY_CODE_HASH else state.get_code(account.code_hash)
                 entry.update({"balance": str(int(account.balance)), "nonce": int(account.nonce), "codeSize": len(code), "codeHash": hx(account.code_hash)})

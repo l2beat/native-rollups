@@ -199,6 +199,8 @@ def main() -> None:
     parser.add_argument("--sys-asm", default=os.path.expanduser("~/work/sys-asm"), help="for the EIP-8357 registry's source")
     parser.add_argument("--l2beat", default=os.path.expanduser("~/work/l2beat"), help="for L2BEAT's flattener")
     args = parser.parse_args()
+    # Pages fetch many small files at once.
+    ThreadingHTTPServer.request_queue_size = 256
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     server.rpc, server.beacon = args.rpc, args.beacon
     server.snippets = extract_snippets()

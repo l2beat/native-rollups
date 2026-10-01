@@ -141,6 +141,7 @@ def follow(args: argparse.Namespace) -> None:
         if explorer:
             index_messages(args, explorer, seen)
             explorer.save_index()
+            explorer.publish()
         if not args.watch:
             break
         time.sleep(args.interval)
