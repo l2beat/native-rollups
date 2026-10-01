@@ -982,20 +982,45 @@ function frameExplain(tx, f, i, layer) {
   };
 }
 
-// A message's Merkle path, climbed from its hash to the root as
-// MessageTree.rootFromPath does: at each height, the index's bit says on
-// which side the node is, and the path gives the sibling.
+// A message's Merkle path as a tree, climbed from its hash to the root as
+// MessageTree.rootFromPath does: at each height, the index's bit puts the
+// node on the left or right of the sibling the path gives, and the pair
+// hashes into the node above.
 function pathView(p, index, proven) {
-  const bits = Number(index).toString(2).padStart(p.levels.length, "0");
-  const top = p.levels.length < 32
-    ? `<tr><td class="num">${p.levels.length} to 31</td><td class="num">0</td><td>left</td><td class="muted">empty subtrees</td><td>${hash(p.root)}</td></tr>` : "";
-  return `<p class="tag-note">Message #${index} is ${bits} in binary. Read from the right, each bit says on which side its node is
-      at that height, and the path gives the sibling.</p>
-    <table class="merkle"><thead><tr><th class="num">Height</th><th class="num">Bit</th><th>Node is</th><th>Sibling</th><th>Hash of the two</th></tr></thead><tbody>
-      <tr><td class="num">leaf</td><td></td><td></td><td></td><td>${hash(p.leaf)} <span class="muted">the message's hash</span></td></tr>
-      ${p.levels.map((l, h) => `<tr><td class="num">${h}</td><td class="num">${l.right ? 1 : 0}</td><td>${l.right ? "right" : "left"}</td><td>${hash(l.sibling)}</td><td>${hash(l.node)}</td></tr>`).join("")}
-      ${top}</tbody></table>
-    <p class="tag-note">Root ${hash(p.root, true)}${proven ? ` <span class="check">✓</span> the root the messenger proved` : ""}</p>`;
+  const n = p.levels.length;
+  const bits = Number(index).toString(2).padStart(n, "0");
+  const W = 150, H = 26, STEP = 52, CENTER = 300, SIDES = { left: 120, right: 480 };
+  const box = (x, y, h, cls, title) => `<g class="${cls}"><title>${esc(title)}</title><rect x="${x}" y="${y}" width="${W}" height="${H}" rx="5"/>
+    <text x="${x + W / 2}" y="${y + H / 2 + 4}" text-anchor="middle">${esc(short(h))}</text></g>`;
+  const label = (y, text) => `<text class="mt-label" x="108" y="${y + H / 2 + 4}" text-anchor="end">${text}</text>`;
+  const edge = (x, y, parentY, cls = "") => `<line class="mt-edge ${cls}" x1="${x + W / 2}" y1="${y}" x2="${CENTER + W / 2}" y2="${parentY + H}"/>`;
+  const parts = [box(CENTER, 0, p.root, "mt-root", `Root: ${p.root}`)];
+  if (proven) parts.push(`<text class="mt-ok" x="${CENTER + W + 12}" y="${H / 2 + 4}">✓ the root the messenger proved</text>`);
+  let y = 0, parentY = 0;
+  // Above the path, each node is hashed with an empty subtree on its right.
+  if (n < 32) {
+    y += 76;
+    const top = n ? p.levels[n - 1].node : p.leaf;
+    parts.push(edge(CENTER, y, parentY, "mt-dashed"),
+      `<text class="mt-label" x="${CENTER + W / 2 + 10}" y="${H + 30}">heights ${n} to 31: with an empty subtree on the right</text>`,
+      box(CENTER, y, top, "mt-node", `Node at height ${n}: ${top}`), label(y, `height ${n}`));
+    parentY = y;
+  }
+  for (let h = n - 1; h >= 0; h--) {
+    y += STEP;
+    const l = p.levels[h];
+    const node = h ? p.levels[h - 1].node : p.leaf;
+    const side = l.right ? SIDES.left : SIDES.right;
+    parts.push(edge(CENTER, y, parentY), edge(side, y, parentY),
+      box(CENTER, y, node, h ? "mt-node" : "mt-leaf", h ? `Node at height ${h}: ${node}` : `Hash of message #${index}: ${node}`),
+      box(side, y, l.sibling, "mt-sib", `Sibling from the path, at height ${h}: ${l.sibling}`),
+      label(y, `${h ? `height ${h}` : "leaf"} · bit ${l.right ? 1 : 0}`));
+    parentY = y;
+  }
+  parts.push(`<text class="mt-label" x="${CENTER + W / 2}" y="${y + H + 16}" text-anchor="middle">hash of message #${index}</text>`);
+  return `<p class="tag-note">Message #${index} is ${bits} in binary. Read from the right, each bit puts its node on the right (1) or left (0)
+      of the sibling the path gives, in blue, and each pair hashes into the node above. Hover a node for its full hash.</p>
+    <svg class="merkle" viewBox="0 0 700 ${y + H + 24}" width="700">${parts.join("")}</svg>`;
 }
 
 function frameCards(tx, layer) {

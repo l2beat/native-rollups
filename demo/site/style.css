@@ -95,9 +95,16 @@ table.fields td.value { font-family: var(--mono); font-size: 13px; overflow-wrap
 table.fields td.note { color: var(--muted); font-size: 13.5px; }
 a.addr { white-space: nowrap; }
 .nowrap { white-space: nowrap; }
-table.merkle { width: auto; margin: 6px 0; font-size: 12.5px; }
-table.merkle th, table.merkle td { padding: 3px 12px; }
-table.fields table.merkle td:first-child { width: auto; font-weight: 400; }
+svg.merkle { display: block; max-width: 100%; height: auto; margin: 8px 0; font: 11px var(--mono); }
+svg.merkle rect { fill: #fff; stroke: #c9c6bd; }
+svg.merkle text { fill: var(--ink); }
+svg.merkle .mt-sib rect { fill: #edf1ff; stroke: var(--accent); }
+svg.merkle .mt-root rect { fill: var(--real-bg); stroke: var(--real); }
+svg.merkle .mt-leaf rect { stroke: var(--ink); }
+svg.merkle .mt-label { font: 11px -apple-system, BlinkMacSystemFont, sans-serif; fill: var(--muted); }
+svg.merkle .mt-ok { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; fill: var(--real); }
+svg.merkle .mt-edge { stroke: #b9b6ad; }
+svg.merkle .mt-dashed { stroke-dasharray: 4 4; }
 /* Lists name the addresses they know, with the address on hover. */
 table.txs .addr .muted { display: none; }
 .prose { font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
