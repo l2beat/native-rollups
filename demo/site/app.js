@@ -469,9 +469,10 @@ function journey(b, rec) {
   const steps = [
     ["Build", "real", "The operator's node, holding the L2 state, built the block.",
       `<a href="#/l2/block/${b.number}/txs">${num(b.transactions.length)} transactions</a>`],
-    ["Prove", "mock", "Ethereum's stateless program checked it, given a witness.",
+    // The stateless check is real; only the proof of it is a stand-in.
+    ["Prove", "mixed", "Ethereum's stateless program checked it, given a witness.",
       `<a href="#/l2/block/${b.number}/l1">${rec && rec.l2.validation.successful ? `accepted <span class="check">✓</span>` : "the run"}</a> ·
-      <a href="#/l1/tx/${b.l1.tx}/frames" title="A trusted key signs in place of a zk proof">the signature</a>`],
+      <a href="#/l1/tx/${b.l1.tx}/frames" title="A trusted key signs the result in place of a zk proof">proof</a> ${badge("mock")}`],
     ["Post", "real", "One L1 transaction carried the block's data in a blob.",
       `<a href="#/l1/tx/${b.l1.tx}">the transaction</a> · <a href="#/blob/${b.number}">its blob</a>`],
     ["Verify", "real", "The rollup contract checked that the proof is for exactly this block.",
@@ -480,7 +481,7 @@ function journey(b, rec) {
       matches ? `<a href="#/about">same hash <span class="check">✓</span></a>` : `<span class="bad">different hash</span>`],
   ];
   return `<ol class="journey">${steps.map(([title, kind, text, link], i) => `<li class="${kind}"><span class="step">${i + 1}</span>
-    <div><b>${title}</b>${kind === "mock" ? ` ${badge("mock")}` : ""}</div><p>${text}</p><div class="evidence">${link}</div></li>`).join("")}</ol>`;
+    <div><b>${title}</b></div><p>${text}</p><div class="evidence">${link}</div></li>`).join("")}</ol>`;
 }
 
 async function blockPage(route) {

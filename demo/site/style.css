@@ -209,7 +209,7 @@ details.code > pre.code { margin: 0; border-radius: 0 0 10px 10px; background: #
 .journey li:last-child::before { right: 0; }
 .journey .step { position: absolute; top: 0; left: 0; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
   font: 700 12px var(--mono); color: #fff; background: var(--real); }
-.journey li.mock .step { background: var(--mock); }
+.journey li.mixed .step { background: linear-gradient(90deg, var(--real) 50%, var(--mock) 50%); }
 .journey b { font-size: 15px; }
 .journey p { margin: 4px 0 6px; color: #45454a; line-height: 1.45; }
 .journey .evidence { font-size: 13px; margin-top: auto; white-space: nowrap; }
