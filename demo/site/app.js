@@ -1030,7 +1030,7 @@ function frameCards(tx, layer) {
     return `<div class="frame"><div class="frame-head"><span class="idx">Frame ${i}</span><span class="mode">${f.mode}</span>
         ${f.call ? `<code>${f.call.function}</code>` : ""} → ${addr(f.target, layer.toLowerCase(), false)} ${e.badges.join(" ")}<span class="status">${status}</span></div>
       <div class="frame-body"><p class="explain">${e.text}</p>
-        <div class="gasbar"><span>Called by ${addr(frameCaller(tx, f), layer.toLowerCase(), false)}</span><span>Flags: ${f.flags.length ? f.flags.join(", ") : "none"}</span>
+        <div class="gasbar"><span>Called by ${addr(frameCaller(tx, f), layer.toLowerCase(), false)}</span><span>Flags: ${f.flags.length ? f.flags.map((x) => `<span class="flag">${x}</span>`).join(" ") : "none"}</span>
           <span>Execution gas: ${f.executionGasUsed !== undefined ? num(f.executionGasUsed) + " of " : ""}${num(f.executionGasLimit)}</span>
           <span>State gas: ${f.stateGasUsed !== undefined ? num(f.stateGasUsed) + " of " : ""}${num(f.stateGasLimit)}</span>
           ${f.value ? `<span>Value: ${eth(f.value)}</span>` : ""}</div>
