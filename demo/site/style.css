@@ -46,8 +46,7 @@ nav a { color: #3a3a3e; }
 .pill { font-size: 13px; padding: 3px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); white-space: nowrap; }
 .pill.ok { border-color: #b7dfc2; background: var(--real-bg); color: var(--real); }
 .pill.warn { border-color: #f3d19e; background: var(--mock-bg); color: var(--mock); }
-.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--real); margin-right: 6px; animation: pulse 2s infinite; }
-@keyframes pulse { 50% { opacity: 0.3; } }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--real); margin-right: 6px; }
 
 main { max-width: 1180px; margin: 0 auto; padding: 0 28px 60px; }
 h1 { font-size: 28px; line-height: 1.25; margin: 18px 0 10px; letter-spacing: -0.01em; }
@@ -205,15 +204,15 @@ details.code > pre.code { margin: 0; border-radius: 0 0 10px 10px; background: #
 
 /* The steps every block takes, on a line of numbered dots. */
 .journey { list-style: none; display: grid; grid-template-columns: repeat(5, 1fr); gap: 0 18px; padding: 0; margin: 18px 0 24px; }
-.journey li { position: relative; padding-top: 34px; font-size: 13.5px; }
+.journey li { position: relative; padding-top: 34px; font-size: 13.5px; display: flex; flex-direction: column; }
 .journey li::before { content: ""; position: absolute; top: 12px; left: 0; right: -18px; height: 2px; background: var(--line); }
 .journey li:last-child::before { right: 0; }
-.journey .dot { position: absolute; top: 0; left: 0; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+.journey .step { position: absolute; top: 0; left: 0; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
   font: 700 12px var(--mono); color: #fff; background: var(--real); }
-.journey li.mock .dot { background: var(--mock); }
+.journey li.mock .step { background: var(--mock); }
 .journey b { font-size: 15px; }
 .journey p { margin: 4px 0 6px; color: #45454a; line-height: 1.45; }
-.journey .evidence { font-size: 13px; }
+.journey .evidence { font-size: 13px; margin-top: auto; white-space: nowrap; }
 
 .pager { display: flex; gap: 12px; align-items: center; margin: 10px 0; font-size: 14px; }
 

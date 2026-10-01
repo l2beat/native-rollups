@@ -56,7 +56,7 @@ async function refresh() {
   }
   renderStatus();
   const route = parseRoute();
-  if (["home", "blocks", "txs", "l1list", "messages", "address"].includes(route.page)) render();
+  if (["home", "blocks", "txs", "l1list", "messages", "address"].includes(route.page)) render(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -228,14 +228,15 @@ function parseRoute() {
 }
 
 let renders = 0;
-async function render() {
+// `live` renders refresh the current page quietly; navigation shows when a
+// page takes a moment to load.
+async function render(live = false) {
   const app = document.getElementById("app");
   const route = parseRoute();
   const seq = ++renders;
-  // Show that something is happening when a page takes a moment to load.
-  const loading = setTimeout(() => document.body.classList.add("loading"), 120);
+  const loading = live ? null : setTimeout(() => document.body.classList.add("loading"), 120);
   if (!state.index && route.page !== "about") {
-    app.innerHTML = `<p class="note">Waiting for the follower's first data. The demo starts by deploying a rollup.</p>`;
+    app.innerHTML = `<p class="note">Waiting for the follower to rebuild the chain from L1.</p>`;
     return;
   }
   const pages = { home, blocks: blockList, txs: txList, l1list: l1List, block: blockPage, l2tx: l2TxPage, l1tx: l1TxPage, messages, about, address: addressPage, blob: blobPage };
@@ -466,20 +467,20 @@ function about() {
 function journey(b, rec) {
   const matches = b.hash === b.recordedHash;
   const steps = [
-    ["Build", "real", "The operator's node ordered users' transactions into a block, like any Ethereum client.",
+    ["Build", "real", "The operator's node, holding the L2 state, built the block.",
       `<a href="#/l2/block/${b.number}/txs">${num(b.transactions.length)} transactions</a>`],
-    ["Prove", "mock", "Ethereum's validation program ran on the block, and a trusted key signed the result in place of a zk proof of that run.",
-      `<a href="#/l2/block/${b.number}/l1">${rec && rec.l2.validation.successful ? `accepted <span class="check">✓</span>` : "the run"}</a>
-      <a href="#/l1/tx/${b.l1.tx}/frames">the proof frame</a>`],
+    ["Prove", "mock", "Ethereum's stateless program checked it, given a witness.",
+      `<a href="#/l2/block/${b.number}/l1">${rec && rec.l2.validation.successful ? `accepted <span class="check">✓</span>` : "the run"}</a> ·
+      <a href="#/l1/tx/${b.l1.tx}/frames" title="A trusted key signs in place of a zk proof">the signature</a>`],
     ["Post", "real", "One L1 transaction carried the block's data in a blob.",
-      `${l1TxLink(b.l1.tx)} <a href="#/blob/${b.number}">${pct(b.payloadBytes / BLOB_USABLE_BYTES)} of a blob</a>`],
+      `<a href="#/l1/tx/${b.l1.tx}">the transaction</a> · <a href="#/blob/${b.number}">its blob</a>`],
     ["Verify", "real", "The rollup contract checked that the proof is for exactly this block.",
       `<a href="#/l1/tx/${b.l1.tx}">the check</a>`],
     ["Follow", "real", "An independent node rebuilt the block from L1 data alone.",
       matches ? `<a href="#/about">same hash <span class="check">✓</span></a>` : `<span class="bad">different hash</span>`],
   ];
-  return `<ol class="journey">${steps.map(([title, kind, text, link], i) => `<li class="${kind}"><span class="dot">${i + 1}</span>
-    <b>${title}</b>${kind === "mock" ? ` ${badge("mock")}` : ""}<p>${text}</p><div class="evidence">${link}</div></li>`).join("")}</ol>`;
+  return `<ol class="journey">${steps.map(([title, kind, text, link], i) => `<li class="${kind}"><span class="step">${i + 1}</span>
+    <div><b>${title}</b>${kind === "mock" ? ` ${badge("mock")}` : ""}</div><p>${text}</p><div class="evidence">${link}</div></li>`).join("")}</ol>`;
 }
 
 async function blockPage(route) {
@@ -507,7 +508,7 @@ async function blockPage(route) {
       <div class="callout"><p>What the operator's node did before posting the block. None of it is on L1, and the follower's
         rebuild does not rely on it.</p></div>
       ${fields([
-        ["Validation program", `<code>verify_stateless_new_payload</code> ${badge("real")}`, "Ethereum's stateless validation program from execution-specs, with EIP-8141, run as ordinary code instead of inside a zkVM."],
+        ["Stateless program", `<code>verify_stateless_new_payload</code> ${badge("real")}`, "Ethereum's stateless validation program from execution-specs, with EIP-8141, run as ordinary code instead of inside a zkVM. It gets the block and a witness of the state it reads, not the state itself."],
         ["Result", `successful_validation = ${rec.l2.validation.successful}`, "The prover only signs blocks the program accepted."],
         ["Chain ID, schema ID", `${rec.l2.validation.chainId}, 0x${rec.l2.validation.schemaId.toString(16)}`, "Part of what the proof commits to, so a block cannot be proven under another chain's rules."],
         ["public_input_root", hash(rec.l2.publicInputRoot, true), "What the proof commits to. It is the data hash in the L1 transaction's proof frame."],
@@ -640,7 +641,7 @@ async function addressPage(route) {
       live = [["Prover", addr(wordAddress(await call(a, SELECTORS.prover)), "l1"), "The only key whose signatures it accepts."]];
     }
     const txs = state.index.l1Txs.filter((t) => (t.addresses || []).includes(a)).sort((x, y) => y.block - x.block);
-    emitted = await emittedEvents(a, txs.slice(0, EVENT_TXS).map((t) => [`l1/txs/${t.hash}`, t.hash, t.block, "l1"]));
+    emitted = [...((await object(`l1/events/${a}`)) || [])].reverse();
     count = txs.length;
     history = `<p class="section-lead">The rollup's L1 transactions that involve this address.</p>${txs.length ? l1Rows(txs.slice(0, 50)) : '<p class="note">None.</p>'}`;
   } else {
@@ -661,7 +662,7 @@ async function addressPage(route) {
         ];
       }
       const txs = [...acc.txs].reverse();
-      emitted = await emittedEvents(a, txs.slice(0, EVENT_TXS).map((t) => [`l2/txs/${t.hash}`, t.hash, t.block, "l2"]));
+      emitted = [...(acc.events || [])].reverse();
       count = txs.length;
       history = txs.length ? l2TxRows(txs.slice(0, 50), a) : '<p class="note">None.</p>';
       const created = (state.index.contracts || {})[a];
@@ -691,19 +692,12 @@ async function addressPage(route) {
 }
 
 // How many of an address's latest transactions the Events tab reads.
-const EVENT_TXS = 50;
 
-// The events an address emitted in some of its transactions, newest first.
+// The latest events an address emitted, newest first.
 // `txs` are [path of the transaction's file, hash, block, chain].
-async function emittedEvents(a, txs) {
-  const loaded = await Promise.all(txs.map(([path]) => object(path)));
-  return txs.flatMap(([, hash, block, chain], i) =>
-    (loaded[i] ? logsOf(loaded[i]) : []).filter((l) => l.address === a).map((log) => ({ hash, block, chain, log })));
-}
-
 function eventRows(emitted, chain) {
-  if (!emitted.length) return '<p class="note">No events in its latest transactions.</p>';
-  return `<p class="section-lead">The events it emitted in its latest ${EVENT_TXS} transactions.</p>
+  if (!emitted.length) return '<p class="note">No events yet.</p>';
+  return `<p class="section-lead">Its latest events, newest first.</p>
     <table><thead><tr><th>Transaction hash</th><th>Block</th><th>Event</th><th>Arguments</th></tr></thead><tbody>
     ${emitted.map(({ hash: tx, block, log }) => {
       const e = log.event;
