@@ -1174,6 +1174,17 @@ function feeRows(tx, chain) {
   };
 }
 
+// Gas used, against the limit when the transaction has one. A frame
+// transaction has limits per frame instead, which split execution gas from
+// EIP-8037 state gas.
+function gasRow(tx) {
+  const state = tx.frames ? tx.frames.reduce((s, f) => s + (f.stateGasUsed || 0), 0) : 0;
+  return [tx.gasLimit ? "Gas limit & usage" : "Gas usage",
+    `${num(tx.gasUsed)}${tx.gasLimit ? ` of ${num(tx.gasLimit)} <span class="muted">(${pct(tx.gasUsed / tx.gasLimit)})</span>` : ""}${state ? ` <span class="muted">· ${num(state)} of it state gas</span>` : ""}`,
+    tx.frames ? "Each frame has its own execution and state gas limits, in the Frames tab. State gas pays for new accounts and storage (EIP-8037)."
+      : "Includes EIP-8037 state gas for new accounts and storage."];
+}
+
 // The logs of a transaction, in all its frames.
 const logsOf = (tx) => tx.logs || (tx.frames || []).flatMap((f) => f.logs || []);
 
@@ -1290,10 +1301,9 @@ async function l2TxPage(route) {
       ...tokenTransfers(tx, "l2"),
       ...(frame ? [] : [["Value", eth(tx.value), ""]]),
       ...fees.overview,
+      gasRow(tx),
     ])}
     ${more([
-      ["Gas limit & usage", frame ? num(tx.gasUsed) : `${num(tx.gasUsed)} of ${num(tx.gasLimit)} <span class="muted">(${pct(tx.gasUsed / tx.gasLimit)})</span>`,
-        "Gas includes EIP-8037 state gas for new accounts and storage."],
       ...fees.details,
       ["Transaction type", `0x0${tx.type}, ${TX_TYPES[tx.type] || "unknown"}`, frame ? "EIP-8141: a list of frames, each a call with its own mode and gas." : ""],
       ["Nonce", tx.nonce, ""],
@@ -1362,9 +1372,9 @@ async function l1TxPage(route) {
       ...linked,
       ...(frame ? [] : [["Value", eth(tx.value), ""]]),
       ...fees.overview,
+      gasRow(tx),
     ])}
     ${more([
-      ["Gas usage", num(tx.gasUsed), "Includes EIP-8037 state gas for new storage."],
       ...fees.details,
       ...(tx.blobVersionedHashes.length ? [["Blob", `${hash(tx.blobVersionedHashes[0], true)}${tx.l2Block ? `<br><a href="#/blob/${tx.l2Block}">view it decoded and raw →</a>` : ""}`, "The L2 block's data, in EIP-8142's encoding."]] : []),
       ["Transaction type", frame ? "0x06, EIP-8141 frame transaction" : `0x0${tx.type}, ${TX_TYPES[tx.type] || "unknown"}`, ""],

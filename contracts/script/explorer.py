@@ -456,6 +456,7 @@ def l1_transaction(tx: dict, receipt: dict, block: dict) -> dict:
         "value": jsonable(int(tx.get("value") or "0x0", 16)), "block": int(tx["blockNumber"], 16),
         "timestamp": int(block["timestamp"], 16), "builder": bytes.fromhex(block["extraData"][2:]).decode(errors="replace"),
         "status": int(receipt["status"], 16), "gasUsed": int(receipt["gasUsed"], 16),
+        "gasLimit": int(tx["gas"], 16) if tx.get("gas") else None,
         "effectiveGasPrice": int(receipt.get("effectiveGasPrice", "0x0"), 16),
         "blobVersionedHashes": tx.get("blobVersionedHashes") or [],
         "blobGasUsed": int(receipt.get("blobGasUsed") or "0x0", 16),
