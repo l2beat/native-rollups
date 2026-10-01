@@ -44,6 +44,7 @@ async function refresh() {
   if (!state.snippets) state.snippets = await getJSON("/api/snippets");
   if (!state.sources) state.sources = await getJSON("/api/sources");
   if (!state.flat) state.flat = await getJSON("/api/flat");
+  if (state.ethUsd === undefined) state.ethUsd = ((await getJSON("/api/eth-price")) || {}).usd ?? null;
   const [index, session, head] = await Promise.all([getJSON("/api/explorer/index.json"), getJSON("/api/session"), rpc("eth_blockNumber")]);
   if (index && state.index && index.rollup !== state.index.rollup) state.cache = {}; // a new episode
   state.index = index;
@@ -349,7 +350,8 @@ async function home() {
   const bytes = recent.length ? recent.reduce((s, b) => s + b.payloadBytes, 0) / recent.length : 0;
   const stats = [
     ["L2 transactions", num(total), `${blocks.length ? (total / blocks.length).toFixed(1) : 0} per block`],
-    ["ETH on L2", escrow ? eth(BigInt(escrow).toString()) : "", "held in the rollup's escrow on L1"],
+    ["ETH on L2", escrow ? `${(Number(BigInt(escrow)) / 1e18).toLocaleString("en-US", { maximumFractionDigits: 2 })} <span class="unit">ETH</span>` : "",
+      "held in the rollup's escrow on L1"],
     ["Deposits", num(deposits.length), `${eth(sum(deposits, (d) => d.value).toString())}, ${num(deposits.filter((d) => d.l2Tx).length)} claimed on L2`],
     ["Withdrawals", num(withdrawals.length), `${eth(sum(withdrawals, (w) => w.value).toString())}, ${num(withdrawals.filter((w) => w.l1Tx).length)} claimed on L1`],
     ["Block time", interval ? `${Math.round(interval)} s` : "", "average of recent blocks, set by L1 inclusion"],
@@ -1152,6 +1154,15 @@ const perGas = (wei) => {
 };
 
 // What a transaction paid, for the overview, and how, for the details.
+// What the gas would cost on mainnet at a 1 gwei base fee, at ETH's
+// current price.
+function mainnetCost(gas) {
+  if (!state.ethUsd) return "";
+  const usd = (gas * 1e-9) * state.ethUsd;
+  const shown = usd < 0.01 ? "<$0.01" : `$${usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `<br><span class="muted">≈ ${shown} on mainnet at a 1 gwei base fee, with ETH at $${Math.round(state.ethUsd).toLocaleString("en-US")}</span>`;
+}
+
 function feeRows(tx, chain) {
   if (tx.effectiveGasPrice === undefined || tx.fee === undefined) return { overview: [], details: [] };
   const offered = tx.maxFeePerGas !== undefined
@@ -1160,7 +1171,7 @@ function feeRows(tx, chain) {
     : [];
   return {
     overview: [
-      ["Transaction fee", `${eth(tx.fee)} <span class="muted">= ${num(tx.gasUsed)} gas × ${num(tx.effectiveGasPrice)} wei</span>`,
+      ["Transaction fee", `${eth(tx.fee)} <span class="muted">= ${num(tx.gasUsed)} gas × ${num(tx.effectiveGasPrice)} wei</span>${mainnetCost(tx.gasUsed)}`,
         tx.payer && tx.payer !== tx.from ? `Paid by ${addr(tx.payer, chain)}, whose VERIFY frame approved the payment.` : ""],
       ["Gas price", perGas(tx.effectiveGasPrice), "The base fee plus the tip that the sender's limits allow."],
     ],

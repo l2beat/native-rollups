@@ -11,6 +11,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -31,6 +32,9 @@ READ_METHODS = {
     "eth_getTransactionCount",
 }
 BEACON_PATHS = ("/eth/v1/beacon/blobs/", "/eth/v1/beacon/genesis", "/eth/v1/config/spec")
+# ETH's price in USD, for the explorer's mainnet fee estimates.
+PRICE_URL = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+PRICE_TTL = 600  # seconds
 
 
 def extract_snippets() -> dict:
@@ -121,6 +125,20 @@ def flatten(l2beat: str) -> dict:
     return json.loads(out.stdout)
 
 
+def eth_price(server) -> float | None:
+    """The last ETH price fetched, refreshed after `PRICE_TTL`, or None if
+    it could not be fetched."""
+    if time.time() - server.price_time > PRICE_TTL:
+        try:
+            request = urllib.request.Request(PRICE_URL, headers={"User-Agent": "native-rollups-demo"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                server.price = json.load(response)["ethereum"]["usd"]
+            server.price_time = time.time()
+        except Exception:
+            pass
+    return server.price
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=os.path.join(DEMO, "site"), **kwargs)
@@ -148,6 +166,8 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path in ("/api/session", "/api/follower"):
             path = os.path.join(DATA, self.path.split("/")[-1] + ".json")
             return self.send_json(open(path, "rb").read() if os.path.exists(path) else b"null")
+        if self.path == "/api/eth-price":
+            return self.send_json(json.dumps({"usd": eth_price(self.server)}).encode())
         if self.path.startswith("/beacon/"):
             path = self.path[len("/beacon"):]
             if not path.startswith(BEACON_PATHS):
@@ -182,6 +202,7 @@ def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     server.rpc, server.beacon = args.rpc, args.beacon
     server.snippets = extract_snippets()
+    server.price, server.price_time = None, 0.0
     server.sources = load_sources(args.sys_asm)
     server.flat = flatten(args.l2beat)
     print(f"demo at http://127.0.0.1:{args.port}", flush=True)
