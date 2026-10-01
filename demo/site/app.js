@@ -55,7 +55,7 @@ async function refresh() {
   }
   renderStatus();
   const route = parseRoute();
-  if (["home", "blocks", "l1list", "messages", "address"].includes(route.page)) render();
+  if (["home", "blocks", "txs", "l1list", "messages", "address"].includes(route.page)) render();
 }
 
 // ---------------------------------------------------------------------------
@@ -70,6 +70,8 @@ const eth = (wei) => {
   const n = Number(wei);
   return n > 0 && n < 1e12 ? `${n.toLocaleString("en-US")} wei` : `${(n / 1e18).toLocaleString("en-US", { maximumFractionDigits: 6 })} ETH`;
 };
+// Fees in lists, as Etherscan shows them.
+const ethShort = (wei) => `${(Number(wei) / 1e18).toLocaleString("en-US", { maximumSignificantDigits: 3 })} ETH`;
 const badge = (kind, text) => `<span class="badge ${kind}">${text || kind}</span>`;
 const pct = (x) => `${(100 * x).toFixed(x < 0.1 ? 1 : 0)}%`;
 const ago = (t) => {
@@ -206,6 +208,7 @@ function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (!parts.length) return { page: "home" };
   if (parts[0] === "blocks") return { page: "blocks", n: Number(parts[1] || 1) };
+  if (parts[0] === "txs") return { page: "txs", n: Number(parts[1] || 1) };
   if (parts[0] === "l1" && parts[1] === "tx") return { page: "l1tx", hash: parts[2], tab: parts[3] || "" };
   if (parts[0] === "l1") return { page: "l1list", n: Number(parts[1] || 1) };
   if (parts[0] === "l2" && parts[1] === "block") return { page: "block", n: Number(parts[2]), tab: parts[3] || "" };
@@ -228,7 +231,7 @@ async function render() {
     app.innerHTML = `<p class="note">Waiting for the follower's first data. The demo starts by deploying a rollup.</p>`;
     return;
   }
-  const pages = { home, blocks: blockList, l1list: l1List, block: blockPage, l2tx: l2TxPage, l1tx: l1TxPage, messages, about, address: addressPage, blob: blobPage };
+  const pages = { home, blocks: blockList, txs: txList, l1list: l1List, block: blockPage, l2tx: l2TxPage, l1tx: l1TxPage, messages, about, address: addressPage, blob: blobPage };
   try {
     const html = await (pages[route.page] || (() => `<h1>Not found</h1>`))(route);
     if (seq === renders) update(app, html, location.hash);
@@ -278,6 +281,17 @@ function blockRows(blocks) {
       <td class="num">${b.transactions}</td><td>${contents(b.kinds)}</td><td class="num hide-narrow">${num(b.gasUsed)}</td>
       <td>${l1TxLink(b.l1Tx)} <span class="muted">in ${num(b.l1Block)}</span></td><td class="hide-narrow"><a href="#/blob/${b.number}">${fill(b.payloadBytes)}</a></td>
       <td><span class="check">✓</span></td></tr>`).join("")}</tbody></table>`;
+}
+
+// Etherscan's columns: the method, or what the transaction does when it calls none.
+function l2TxRows(txs, self) {
+  const party = (x) => (!x ? "" : x === self ? '<span class="muted">this address</span>' : addr(x, "l2"));
+  return `<table class="txs"><thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th class="hide-narrow">Age</th>
+    <th>From</th><th>To</th><th class="num">Value</th><th class="num">Fee</th></tr></thead><tbody>
+    ${txs.map((t) => `<tr><td>${l2TxLink(t.hash)}</td><td>${t.method ? `<code>${esc(t.method)}</code>` : chip(t.kind)}</td>
+      <td>${l2BlockLink(t.block)}</td><td class="hide-narrow nowrap">${t.time ? ago(t.time) : ""}</td>
+      <td>${party(t.from)}</td><td>${party(t.to)}</td>
+      <td class="num">${t.value ? eth(t.value) : ""}</td><td class="num">${t.fee !== undefined && t.fee !== null ? ethShort(t.fee) : ""}</td></tr>`).join("")}</tbody></table>`;
 }
 
 function l1Rows(txs) {
@@ -342,14 +356,14 @@ async function home() {
       Its L2 data is rebuilt from L1 alone by an independent node, so everything here is what anyone could reconstruct
       from Ethereum.</p>
     <div class="legend">${badge("real")} runs as specified ${badge("mock")} stands in for an L1 feature that does not exist yet
-      ${badge("shortcut")} a simplification of this demo · <a href="#/about">details</a></div>
+      · <a href="#/about">details</a></div>
     <div class="stats">${stats.map(([label, value, sub]) => `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`).join("")}</div>
     <div class="columns">
       <div class="panel"><div class="panel-head"><b>Latest L2 blocks</b><a href="#/blocks">View all blocks →</a></div>
         ${blocks.slice(0, 8).map((b) => `<div class="item"><div><div class="line">${l2BlockLink(b.number)}</div><div class="line muted">${ago(b.timestamp)}</div></div>
           <div><div class="line">${num(b.transactions)} transactions</div><div class="line"><span class="muted">posted in</span> ${l1TxLink(b.l1Tx)}</div></div>
           <div class="num"><div class="line muted">${num(b.gasUsed)} gas</div><div class="line" title="Its share of a blob">${fill(b.payloadBytes)}</div></div></div>`).join("")}</div>
-      <div class="panel"><div class="panel-head"><b>Latest L2 transactions</b><a href="#/blocks">View blocks →</a></div>
+      <div class="panel"><div class="panel-head"><b>Latest L2 transactions</b><a href="#/txs">View all transactions →</a></div>
         ${txs.map((t) => `<div class="item"><div><div class="line">${l2TxLink(t.hash)}</div><div class="line muted">${ago(t.timestamp)}</div></div>
           <div><div class="line"><span class="muted">From</span> ${addr(t.from, "l2")}</div>
             <div class="line">${t.to ? `<span class="muted">To</span> ${addr(t.to, "l2")}` : t.frames ? `<span class="muted">${t.frames.length} frames</span>` : '<span class="muted">contract creation</span>'}</div></div>
@@ -366,6 +380,29 @@ function blockList(route) {
   return `<h1>L2 blocks</h1>
     <p class="section-lead">Every L2 block the rollup contract accepted, newest first.</p>
     ${pager(route, blocks.length, "blocks")}${blockRows(blocks.slice((n - 1) * PAGE, n * PAGE))}${pager(route, blocks.length, "blocks")}`;
+}
+
+async function txList(route) {
+  const blocks = [...state.index.l2Blocks].reverse();
+  const total = blocks.reduce((s, b) => s + b.transactions, 0);
+  const first = (Math.max(route.n, 1) - 1) * PAGE;
+  // Only the blocks that hold the page's transactions.
+  const needed = [];
+  let seen = 0, skip = 0;
+  for (const b of blocks) {
+    if (seen + b.transactions > first) {
+      if (!needed.length) skip = first - seen;
+      needed.push(b);
+    }
+    seen += b.transactions;
+    if (seen >= first + PAGE) break;
+  }
+  const loaded = await Promise.all(needed.map((b) => object(`l2/blocks/${b.number}`)));
+  const txs = loaded.flatMap((block, i) =>
+    block ? [...block.transactions].reverse().map((t) => ({ ...t, block: needed[i].number, time: needed[i].timestamp })) : []);
+  return `<h1>L2 transactions</h1>
+    <p class="section-lead">Every transaction in the L2 blocks, newest first.</p>
+    ${pager(route, total, "txs")}${l2TxRows(txs.slice(skip, skip + PAGE))}${pager(route, total, "txs")}`;
 }
 
 function l1List(route) {
@@ -430,7 +467,7 @@ async function blockPage(route) {
   const l1Panel = `
       <p class="section-lead">How the block reached L1, and what the operator checked before posting it.</p>
       <ol class="journey">
-        <li><b>1. Build</b>${badge("real")} ${badge("shortcut")}<br>The operator executed ${b.transactions.length} transactions with Ethereum's rules.</li>
+        <li><b>1. Build</b>${badge("real")}<br>The operator executed ${b.transactions.length} transactions with Ethereum's rules.</li>
         <li><b>2. Check</b>${badge("real")}<br>${rec ? `The operator ran Ethereum's validation program: accepted <span class="check">✓</span>` : "The operator ran Ethereum's validation program."}</li>
         <li><b>3. Prove</b>${badge("mock")}<br>A trusted key signed the result, in place of a zk proof.</li>
         <li><b>4. Post</b>${badge("real")}<br>${l1TxLink(b.l1.tx)} carried it, using ${pct(b.payloadBytes / BLOB_USABLE_BYTES)} of a blob.</li>
@@ -511,7 +548,7 @@ const ROLES = {
   "Key registry": ["mock", "Stands in for the EIP-8357 registry of EVM verification keys. An admin registered the key, where a fork would."],
   "Trusted prover key": ["mock", "The key that signs the blocks Ethereum's validation program accepted, in place of a zk proof. It never sends transactions."],
   "Operator": ["", "The account that posts L2 blocks to L1. Its L2 node builds them from the transactions users send, and holds no user keys. The rollup contract accepts a valid block from anyone; this demo runs one operator."],
-  "Frames helper": ["shortcut", "Lets the rollup contract use EIP-8141's FRAMEPARAM and FRAMEDATACOPY instructions, which Solidity cannot emit yet. The rollup contract deploys it and calls it to read the proof frame. Written in assembly with geas."],
+  "Frames helper": ["", "Lets the rollup contract use EIP-8141's FRAMEPARAM and FRAMEDATACOPY instructions, which Solidity cannot emit yet. The rollup contract deploys it and calls it to read the proof frame. Written in assembly with geas."],
   Relayer: ["", "Claims L1 to L2 messages whose recipients cannot claim them, such as contracts, when their fee covers the claim. The claim pays it the fee before it approves payment, so it started with no ETH. Anyone can do the same."],
   Claimer: ["", "Claims on L1 the L2 to L1 messages whose recipients cannot claim them, when their fee covers the L1 gas. Anyone can claim a message: the ETH goes to its recipient and the fee to the claimer."],
   Spamoor: ["", "The funding wallet of spamoor, ethPandaOps' transaction generator, which funds child wallets that send ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, EIP-8141 frame transactions and messages between the chains."],
@@ -606,14 +643,7 @@ async function addressPage(route) {
       const txs = [...acc.txs].reverse();
       emitted = await emittedEvents(a, txs.slice(0, EVENT_TXS).map((t) => [`l2/txs/${t.hash}`, t.hash, t.block, "l2"]));
       count = txs.length;
-      // Etherscan's columns: the method, or what the transaction does when it calls none.
-      history = txs.length ? `<table><thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th class="hide-narrow">Age</th>
-        <th>From</th><th>To</th><th class="num">Value</th><th class="num">Fee</th></tr></thead><tbody>
-        ${txs.slice(0, 50).map((t) => `<tr><td>${l2TxLink(t.hash)}</td><td>${t.method ? `<code>${esc(t.method)}</code>` : chip(t.kind)}</td>
-          <td>${l2BlockLink(t.block)}</td><td class="hide-narrow nowrap">${t.time ? ago(t.time) : ""}</td>
-          <td>${t.from ? (t.from === a ? '<span class="muted">this address</span>' : addr(t.from, "l2")) : ""}</td>
-          <td>${t.to ? (t.to === a ? '<span class="muted">this address</span>' : addr(t.to, "l2")) : ""}</td>
-          <td class="num">${t.value ? eth(t.value) : ""}</td><td class="num">${t.fee !== undefined && t.fee !== null ? eth(t.fee) : ""}</td></tr>`).join("")}</tbody></table>` : '<p class="note">None.</p>';
+      history = txs.length ? l2TxRows(txs.slice(0, 50), a) : '<p class="note">None.</p>';
       const created = (state.index.contracts || {})[a];
       if (created) rows.push(["Contract creator", `created in ${l2TxLink(created.tx)}`, created.name ? `Named from its creation code.` : ""]);
     }

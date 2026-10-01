@@ -581,7 +581,7 @@ class Explorer:
                     })
         # What the block's transaction table shows, so it needs no other file.
         block["transactions"] = [
-            {k: tx.get(k) for k in ("hash", "kind", "from", "to", "gasUsed", "bytes", "status", "fee", "deposit")} | {"method": method(tx)}
+            {k: tx.get(k) for k in ("hash", "kind", "from", "to", "value", "gasUsed", "bytes", "status", "fee", "deposit")} | {"method": method(tx)}
             for tx in transactions
         ]
         self.write(f"l2/blocks/{block['number']}.json", block)

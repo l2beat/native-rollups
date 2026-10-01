@@ -10,8 +10,8 @@
   --real-bg: #e6f4ea;
   --mock: #b35c00;
   --mock-bg: #fff1dc;
-  --shortcut: #495057;
-  --shortcut-bg: #eceff3;
+  --tag: #495057;
+  --tag-bg: #eceff3;
   --bad: #c92a2a;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -63,7 +63,6 @@ h3 { font-size: 16px; margin: 20px 0 8px; }
 .badge { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 2px 6px; border-radius: 5px; vertical-align: 1px; }
 .badge.real { background: var(--real-bg); color: var(--real); }
 .badge.mock { background: var(--mock-bg); color: var(--mock); }
-.badge.shortcut { background: var(--shortcut-bg); color: var(--shortcut); }
 .chip { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--soft); border: 1px solid var(--line); white-space: nowrap; margin: 1px 2px 1px 0; }
 .chip.deposit { background: #e7f0ff; border-color: #c9dafc; }
 .chip.withdrawal { background: #fdecef; border-color: #f5c8d0; }
@@ -96,9 +95,11 @@ table.fields td.value { font-family: var(--mono); font-size: 13px; overflow-wrap
 table.fields td.note { color: var(--muted); font-size: 13.5px; }
 a.addr { white-space: nowrap; }
 .nowrap { white-space: nowrap; }
+/* Lists name the addresses they know, with the address on hover. */
+table.txs .addr .muted { display: none; }
 .prose { font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
 .tag-note { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); }
-.empty-hash { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--shortcut); background: var(--shortcut-bg); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+.empty-hash { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--tag); background: var(--tag-bg); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
 .net { display: inline-block; font: 700 9.5px/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: 0.03em; padding: 2px 4px; border-radius: 4px; margin-right: 4px; vertical-align: 1.5px; }
 .net.l1 { background: #e3e8f4; color: #34487a; }
 .net.l2 { background: #f1e4f7; color: #7b2fb5; }

@@ -1,6 +1,6 @@
 # Native rollup demo
 
-An annotated explorer for the native rollup of `contracts/`, running on a local copy of frames-devnet-0. It lists every L2 block and the rollup's L1 transactions, breaks each transaction down frame by frame with decoded calls and events, links deposits and withdrawals across both chains, and notes on every field what it is, where it comes from, and whether it is real, mocked, or a shortcut of the demo.
+An annotated explorer for the native rollup of `contracts/`, running on a local copy of frames-devnet-0. It lists every L2 block and the rollup's L1 transactions, breaks each transaction down frame by frame with decoded calls and events, links deposits and withdrawals across both chains, and notes on every field what it is, where it comes from, and whether it is real or mocked.
 
 Its L2 data comes from the follower, which rebuilds every block from L1 alone, and it reads live chain state directly from the L1 and beacon nodes.
 
