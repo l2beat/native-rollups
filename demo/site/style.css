@@ -113,6 +113,9 @@ svg.merkle .mt-subtree { fill: #edf1ff; stroke: var(--accent); }
 svg.merkle .mt-sib.empty rect, svg.merkle .mt-subtree.empty { fill: #fff; stroke: #c9c6bd; stroke-dasharray: 3 3; }
 svg.merkle .mt-sib.empty text { fill: var(--muted); }
 svg.merkle .strong { font-weight: 600; fill: var(--ink); }
+svg.merkle .pv-label { font: 11px -apple-system, BlinkMacSystemFont, sans-serif; fill: var(--muted); }
+svg.merkle .mt-bad rect { fill: #fdecec; stroke: var(--bad); }
+svg.merkle .mt-bad-text { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; fill: var(--bad); }
 svg.merkle .mt-cell rect { fill: #fff; stroke: #e6e3dc; }
 svg.merkle .mt-cell text { font-size: 10px; fill: #b8b5ae; }
 svg.merkle .mt-cell.child rect { fill: var(--soft); stroke: #c9c6bd; }
@@ -201,7 +204,7 @@ details.code > pre.code { margin: 0; border-radius: 0 0 10px 10px; background: #
 .tk-t { color: #1c6b8c; }
 
 /* The steps every block takes, on a line of numbered dots. */
-.journey { list-style: none; display: grid; grid-template-columns: repeat(6, 1fr); gap: 0 18px; padding: 0; margin: 18px 0 24px; }
+.journey { list-style: none; display: grid; grid-template-columns: repeat(5, 1fr); gap: 0 18px; padding: 0; margin: 18px 0 24px; }
 .journey li { position: relative; padding-top: 34px; font-size: 13.5px; }
 .journey li::before { content: ""; position: absolute; top: 12px; left: 0; right: -18px; height: 2px; background: var(--line); }
 .journey li:last-child::before { right: 0; }

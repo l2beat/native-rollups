@@ -35,6 +35,7 @@ from ethereum.forks.amsterdam import fork, vm
 from ethereum.forks.amsterdam.block_access_lists import BlockAccessListBuilder
 from ethereum.forks.amsterdam.blocks import Block
 from ethereum.forks.amsterdam.requests import compute_requests_hash
+from ethereum.forks.amsterdam.stateless import STATELESS_INPUT_SCHEMA_ID
 from ethereum.forks.amsterdam.state_tracker import BlockState
 from ethereum.forks.amsterdam.transactions import decode_transaction
 from ethereum.forks.amsterdam.transactions.frame_transaction import FrameMode
@@ -42,8 +43,11 @@ from ethereum.forks.amsterdam.transactions.frame_transaction import FrameMode
 import block_in_blobs as bib
 import explorer as ex
 import l2_node
+from ssz_roots import container4, payload_root, public_input_root, versioned_hashes_root
 
 BLOCK_ADDED = keccak256(b"BlockAdded(uint64,bytes32)")
+# NativeRollup.EMPTY_LIST_ROOT: the SSZ root of no withdrawals.
+EMPTY_LIST_ROOT = bytes.fromhex("f5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b")
 L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,uint256,bytes)")
 L2_MESSAGE_CLAIMED = keccak256(b"L2MessageClaimed(uint256,address,address,uint256,uint256,address)")
 ADVANCE_SELECTOR = keccak256(
@@ -157,6 +161,33 @@ def has_code(state, address: str) -> bool:
     return account is not None and account.code_hash != EMPTY_CODE_HASH
 
 
+def proof_input(h, params: dict, advance: dict) -> dict:
+    """The roots `NativeRollup.advance` rebuilds from its storage, the
+    calldata, BLOBHASH and BLOCKHASH, and the registry, up to the root it
+    requires the proof's data hash to equal."""
+    b = lambda x: bytes.fromhex(x[2:])  # noqa: E731
+    payload = payload_root({
+        "parentHash": bytes(h.parent_hash), "blockNumber": int(h.number), "gasLimit": int(h.gas_limit),
+        **{k: b(params[k]) for k in (
+            "feeRecipient", "stateRoot", "receiptsRoot", "logsBloom", "prevRandao", "extraData", "blockHash",
+            "transactionsRoot", "blockAccessListRoot",
+        )},
+        **{k: int(params[k]) for k in ("gasUsed", "timestamp", "baseFeePerGas")},
+        "withdrawalsRoot": EMPTY_LIST_ROOT, "blobGasUsed": 0, "excessBlobGas": 0, "slotNumber": 0,
+    })
+    hashes = versioned_hashes_root([b(x) for x in advance["blobVersionedHashes"]])
+    requests = b(params["executionRequestsRoot"])
+    np_root = container4(payload, hashes, bytes(h.parent_beacon_block_root), requests)
+    dependency = next(f["dependency"] for f in advance["frames"] if f.get("dependency"))
+    return {
+        "executionPayloadRoot": ex.hx(payload), "versionedHashesRoot": ex.hx(hashes), "anchor": ex.hx(h.parent_beacon_block_root),
+        "executionRequestsRoot": ex.hx(requests), "newPayloadRequestRoot": ex.hx(np_root),
+        "chainId": l2_node.L2_CHAIN_ID, "schemaId": int(STATELESS_INPUT_SCHEMA_ID),
+        "publicInputRoot": ex.hx(public_input_root(np_root, l2_node.L2_CHAIN_ID, int(STATELESS_INPUT_SCHEMA_ID))),
+        "dataHash": dependency["dataHash"], "verificationKeyHash": dependency["verificationKeyHash"],
+    }
+
+
 def index_block(args: argparse.Namespace, explorer: ex.Explorer, d: dict) -> None:
     """Writes a rebuilt L2 block, its transactions and the L1 transaction that carried it."""
     h, output = d["header"], d["output"]
@@ -183,6 +214,7 @@ def index_block(args: argparse.Namespace, explorer: ex.Explorer, d: dict) -> Non
         "sszRoots": {k: params[k] for k in ("transactionsRoot", "blockAccessListRoot", "executionRequestsRoot")},
         "l1": {"tx": advance["hash"], "block": advance["block"], "blobVersionedHashes": advance["blobVersionedHashes"]},
         "recordedHash": d["recordedHash"],
+        "proofInput": proof_input(h, params, advance),
     }
     explorer.add_l2_block(block, transactions)
     explorer.update_accounts(d["state"], block, transactions)

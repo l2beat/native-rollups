@@ -462,20 +462,19 @@ function about() {
 // L2 block
 // ---------------------------------------------------------------------------
 
-// The six steps every L2 block takes to L1, each linked to what shows it.
+// The steps every L2 block takes to L1, each linked to what shows it.
 function journey(b, rec) {
   const matches = b.hash === b.recordedHash;
   const steps = [
-    ["Build", "real", `The operator's node executed its transactions with Ethereum's rules.`,
+    ["Build", "real", "The operator's node ordered users' transactions into a block, like any Ethereum client.",
       `<a href="#/l2/block/${b.number}/txs">${num(b.transactions.length)} transactions</a>`],
-    ["Check", "real", "Ethereum's own validation program ran on the block and accepted it.",
-      `<a href="#/l2/block/${b.number}/l1">${rec && rec.l2.validation.successful ? `accepted <span class="check">✓</span>` : "the run"}</a>`],
-    ["Prove", "mock", "A trusted key signed the result, standing in for a zk proof of that run.",
-      `<a href="#/l1/tx/${b.l1.tx}/frames">the proof frame</a>`],
+    ["Prove", "mock", "Ethereum's validation program ran on the block, and a trusted key signed the result in place of a zk proof of that run.",
+      `<a href="#/l2/block/${b.number}/l1">${rec && rec.l2.validation.successful ? `accepted <span class="check">✓</span>` : "the run"}</a>
+      <a href="#/l1/tx/${b.l1.tx}/frames">the proof frame</a>`],
     ["Post", "real", "One L1 transaction carried the block's data in a blob.",
       `${l1TxLink(b.l1.tx)} <a href="#/blob/${b.number}">${pct(b.payloadBytes / BLOB_USABLE_BYTES)} of a blob</a>`],
     ["Verify", "real", "The rollup contract checked that the proof is for exactly this block.",
-      `<a href="#/l1/tx/${b.l1.tx}/frames">the check</a>`],
+      `<a href="#/l1/tx/${b.l1.tx}">the check</a>`],
     ["Follow", "real", "An independent node rebuilt the block from L1 data alone.",
       matches ? `<a href="#/about">same hash <span class="check">✓</span></a>` : `<span class="bad">different hash</span>`],
   ];
@@ -1386,10 +1385,58 @@ async function l2TxPage(route) {
     ], tab)}`;
 }
 
+// What the rollup contract checks a block's proof against, as
+// NativeRollup.advance rebuilds it: SSZ roots whose leaves come from its
+// storage, the calldata, BLOBHASH, BLOCKHASH and the EIP-8357 registry.
+function proofView(b, params) {
+  const pi = b.proofInput, ok = pi.publicInputRoot === pi.dataHash;
+  const W = 176, H = 42, Y1 = 96, Y2 = 200;
+  const box = (cx, y, label, value, cls, title) => `<g class="${cls}"><title>${esc(title)}</title>
+    <rect x="${cx - W / 2}" y="${y}" width="${W}" height="${H}" rx="6"/>
+    <text class="pv-label" x="${cx}" y="${y + 16}" text-anchor="middle">${label}</text>
+    <text x="${cx}" y="${y + 33}" text-anchor="middle">${esc(value)}</text></g>`;
+  const source = (cx, y, text) => `<text class="mt-label" x="${cx}" y="${y + H + 15}" text-anchor="middle">${text}</text>`;
+  const edge = (x1, y1, x2, y2) => `<line class="mt-edge" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+  const ROOT = 600, NP = 415, CHAIN = 790, SCHEMA = 980;
+  const leaves = [
+    [100, "execution payload", short(pi.executionPayloadRoot), "19 fields, below"],
+    [310, "blob hashes", short(pi.versionedHashesRoot), "BLOBHASH"],
+    [520, "L1 anchor", short(pi.anchor), `BLOCKHASH(${num(params.anchorBlockNumber)})`],
+    [730, "execution requests", short(pi.executionRequestsRoot), "calldata"],
+  ];
+  const svg = [
+    edge(ROOT, H, NP, Y1), edge(ROOT, H, CHAIN, Y1), edge(ROOT, H, SCHEMA, Y1),
+    ...leaves.map(([x]) => edge(NP, Y1 + H, x, Y2)),
+    box(ROOT, 0, "public input root", short(pi.publicInputRoot), ok ? "mt-root" : "mt-bad", `Public input root: ${pi.publicInputRoot}`),
+    `<text class="${ok ? "mt-ok" : "mt-bad-text"}" x="${ROOT + W / 2 + 12}" y="${H / 2 + 5}">${ok ? "= the proof frame's data hash ✓" : "≠ the proof frame's data hash"}</text>`,
+    box(NP, Y1, "new payload request", short(pi.newPayloadRequestRoot), "mt-node", `New payload request root: ${pi.newPayloadRequestRoot}`),
+    box(CHAIN, Y1, "chain ID", String(pi.chainId), "mt-node", "The L2's chain ID"), source(CHAIN, Y1, "the contract, set at deployment"),
+    box(SCHEMA, Y1, "schema ID", `0x${pi.schemaId.toString(16)}`, "mt-node", "The input schema of the fork's program"), source(SCHEMA, Y1, "EIP-8357 registry"),
+    ...leaves.map(([x, label, value, from]) => box(x, Y2, label, value, "mt-sib", `${label}: ${value}`) + source(x, Y2, from)),
+  ].join("");
+  const v = (k) => hash(params[k]);
+  return `<h2>What the proof is checked against</h2>
+    <p class="section-lead">The rollup contract rebuilds the root the proof commits to from data it trusts, and accepts the block only
+      if the proof frame's data hash is that root. Any field the operator gets wrong changes the root.</p>
+    <svg class="merkle" viewBox="0 0 1080 ${Y2 + H + 24}" width="1080">${svg}</svg>
+    ${fields([
+      ["From its storage", `parent hash ${hash(b.parentHash)}, block number ${num(b.number)}`, "So the block extends the chain the contract has."],
+      ["Fixed by the contract", `gas limit ${num(b.gasLimit)}, no withdrawals, no blob gas, slot 0`, "What every L2 block must have."],
+      ["From the operator", `state root ${v("stateRoot")}, block hash ${v("blockHash")}, receipts root, logs bloom, gas used, timestamp,
+        base fee, fee recipient, prev_randao, extra data, and the roots of the transactions and access list in the blob`,
+        "Claimed in calldata. The proof is for the block with exactly these values."],
+    ])}
+    <p class="tag-note">The contract also requires the proof's key hash, ${hash(pi.verificationKeyHash)}, to be the registry's current
+      one, and the block's timestamp to be at or below L1 time.</p>`;
+}
+
 async function l1TxPage(route) {
   const tx = await object(`l1/txs/${route.hash}`);
   if (!tx) return `<h1>L1 transaction</h1><p class="note">Not found.</p>`;
   const kinds = await kindsOf(tx, "l1");
+  // A block post: the block, whose proof the contract checked.
+  const advance = tx.kind === "advance" && tx.frames.find((f) => f.call && f.call.function === "advance");
+  const checked = advance && tx.l2Block ? await object(`l2/blocks/${tx.l2Block}`) : null;
   let summary = "";
   if (tx.kind === "advance") {
     summary = `The operator adds L2 block ${l2BlockLink(tx.l2Block)} to the rollup. One EIP-8141 frame transaction carries the
@@ -1438,6 +1485,7 @@ async function l1TxPage(route) {
       ...fees.overview,
       gasRow(tx),
     ])}
+    ${checked && checked.proofInput ? proofView(checked, advance.call.args.params) : ""}
     ${more([
       ...fees.details,
       ...(tx.blobVersionedHashes.length ? [["Blob", `${hash(tx.blobVersionedHashes[0], true)}${tx.l2Block ? `<br><a href="#/blob/${tx.l2Block}">view it decoded and raw →</a>` : ""}`, "The L2 block's data, in EIP-8142's encoding."]] : []),
