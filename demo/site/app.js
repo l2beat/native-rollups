@@ -878,12 +878,13 @@ function value(v, key, ctx = {}) {
   return esc(typeof v === "number" ? num(v) : s);
 }
 
-function argTable(args, notes = {}, ctx = {}) {
-  // A struct takes the value and note columns, so its own table has room.
+function argTable(args, notes = {}, ctx = {}, views = {}) {
+  // A struct takes the value and note columns, so its own table has room,
+  // as does an argument with its own view.
   const nested = (v) => v && typeof v === "object" && (!Array.isArray(v) || v.some((x) => x && typeof x === "object"));
   return `<table class="fields"><tbody>${Object.entries(args)
-    .map(([k, v]) => nested(v)
-      ? `<tr><td>${esc(k)}</td><td class="value nested" colspan="2">${value(v, k, ctx)}</td></tr>`
+    .map(([k, v]) => views[k] || nested(v)
+      ? `<tr><td>${esc(k)}</td><td class="value nested" colspan="2">${views[k] || value(v, k, ctx)}</td></tr>`
       : `<tr><td>${esc(k)}</td><td class="value">${value(v, k, ctx)}</td><td class="note">${notes[k] || ""}</td></tr>`)
     .join("")}</tbody></table>`;
 }
@@ -976,8 +977,25 @@ function frameExplain(tx, f, i, layer) {
       DEFAULT: "Calls the target from EIP-8141's entry point address, not as the sender.",
     }[f.mode] + (noCode && (!f.data || f.data === "0x") ? " The target has no code, so the frame only moves its value." : ""),
     badges: known ? [badge("real")] : [],
-    extra: known ? argTable(f.call.args.params || f.call.args, fn === "advance" ? ADVANCE_NOTES : {}, ctx) + rawInput(f.data) : inputData(f.data, f.call, ctx),
+    extra: known ? argTable(f.call.args.params || f.call.args, fn === "advance" ? ADVANCE_NOTES : {}, ctx,
+      f.call.pathToRoot ? { path: pathView(f.call.pathToRoot, f.call.args.m.index, f.status === 1) } : {}) + rawInput(f.data) : inputData(f.data, f.call, ctx),
   };
+}
+
+// A message's Merkle path, climbed from its hash to the root as
+// MessageTree.rootFromPath does: at each height, the index's bit says on
+// which side the node is, and the path gives the sibling.
+function pathView(p, index, proven) {
+  const bits = Number(index).toString(2).padStart(p.levels.length, "0");
+  const top = p.levels.length < 32
+    ? `<tr><td class="num">${p.levels.length} to 31</td><td class="num">0</td><td>left</td><td class="muted">empty subtrees</td><td>${hash(p.root)}</td></tr>` : "";
+  return `<p class="tag-note">Message #${index} is ${bits} in binary. Read from the right, each bit says on which side its node is
+      at that height, and the path gives the sibling.</p>
+    <table class="merkle"><thead><tr><th class="num">Height</th><th class="num">Bit</th><th>Node is</th><th>Sibling</th><th>Hash of the two</th></tr></thead><tbody>
+      <tr><td class="num">leaf</td><td></td><td></td><td></td><td>${hash(p.leaf)} <span class="muted">the message's hash</span></td></tr>
+      ${p.levels.map((l, h) => `<tr><td class="num">${h}</td><td class="num">${l.right ? 1 : 0}</td><td>${l.right ? "right" : "left"}</td><td>${hash(l.sibling)}</td><td>${hash(l.node)}</td></tr>`).join("")}
+      ${top}</tbody></table>
+    <p class="tag-note">Root ${hash(p.root, true)}${proven ? ` <span class="check">✓</span> the root the messenger proved` : ""}</p>`;
 }
 
 function frameCards(tx, layer) {

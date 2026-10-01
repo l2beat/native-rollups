@@ -223,7 +223,35 @@ def decode_call(data: bytes) -> dict | None:
                 "nodes": len(value), "bytes": sum(len(n) for n in value)
             }
         args[name] = jsonable(named(p, value))
-    return {"function": entry["name"], "signature": signature(entry), "args": args}
+    call = {"function": entry["name"], "signature": signature(entry), "args": args}
+    if entry["name"] == "claimL1Message":
+        call["pathToRoot"] = path_to_root(*values[:2])
+    return call
+
+
+MESSAGE_TREE_DEPTH = 32  # MessageTree.DEPTH
+
+
+def path_to_root(m: tuple, path: list) -> dict:
+    """The nodes from a message's leaf up to the message tree's root, as
+    `MessageTree.rootFromPath` computes them."""
+    sender, to, value, fee, data, index = m
+    node = keccak256(
+        bytes.fromhex(sender[2:]) + bytes.fromhex(to[2:]) + value.to_bytes(32, "big") + fee.to_bytes(32, "big")
+        + keccak256(data) + index.to_bytes(32, "big")
+    )
+    out = {"leaf": hx(node), "levels": []}
+    zero = bytes(32)
+    for height in range(MESSAGE_TREE_DEPTH):
+        right = index >> height & 1 == 1
+        # Above the path, the siblings are empty subtrees on the right.
+        sibling = path[height] if height < len(path) else zero
+        node = keccak256(sibling + node) if right else keccak256(node + sibling)
+        if height < len(path):
+            out["levels"].append({"right": right, "sibling": hx(sibling), "node": hx(node)})
+        zero = keccak256(zero + zero)
+    out["root"] = hx(node)
+    return out
 
 
 def decode_log(address: str, topics: list, data: bytes) -> dict:
