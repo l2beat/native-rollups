@@ -6,7 +6,7 @@ Runs the `NativeRollup` contract on a chain with [EIP-8141](https://eips.ethereu
 - The EIP-8357 registry runtime, with its system address replaced by an admin key that registers one EVM verification key hash.
 - `frame_introspection.eas`: exposes `TXPARAM`, `FRAMEPARAM` and `FRAMEDATACOPY` to Solidity, which does not support the frame instructions yet.
 
-The L2 blocks are real. `script/l2_node.py` is an L2 node that runs the chain with execution-specs under the L1 stateless validation program's rules, from a genesis holding the system contracts the Specification requires. It keeps the state in memory and serves a JSON-RPC with a mempool. The operator asks it for each block, anchored to the L1 block the operator picks. The node validates every block with `run_stateless_guest` and signs the dependency only if the program accepts it: a trusted signer instead of a zkVM proof, attesting to the real statement. It adds the block to its chain once the rollup contract has it.
+The L2 blocks are real. `script/l2_node.py` is an L2 node that runs the chain with execution-specs under the L1 stateless validation program's rules, from a genesis holding the system contracts the Specification requires. It keeps the state in memory and serves a JSON-RPC with a mempool. The rollup runs the book's [preconfirmations](../../src/preconfirmations.md) customization, `FramesSequencedRollup`: only its sequencer posts blocks, against a bond. The operator asks the node for each block, anchored to an L1 block a few slots behind the head. The node validates every block with `run_stateless_guest` and signs the dependency only if the program accepts it: a trusted signer instead of a zkVM proof, attesting to the real statement. It adds the block to its chain at once, preconfirmed with the sequencer's signature, and the operator posts it later.
 
 A native rollup runs its L1's rules, and this L1 has EIP-8141, so the program is execution-specs `projects/zkevm` merged with `eips/bogota/eip-8141`, which EEST labels as the `Bogota` pseudo-fork (Amsterdam with EIP-8141). The merge conflicts only where both sides add lines. The node uses EEST for the genesis and to sign claims.
 
@@ -31,7 +31,7 @@ forge build
 ROLLUP=$(cast compute-address <deployer> --nonce $(( $(cast nonce <deployer> --rpc-url <rpc>) + 3 )) | awk '{print $NF}')
 uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_node.py genesis --state <l2-state> --l1-rollup $ROLLUP
 
-PRIVATE_KEY=<key> PROVER=<address> GENESIS_HASH=<hash> GENESIS_STATE_ROOT=<root> ROLLUP=$ROLLUP \
+PRIVATE_KEY=<key> PROVER=<address> GENESIS_HASH=<hash> GENESIS_STATE_ROOT=<root> ROLLUP=$ROLLUP SEQUENCER=<address> \
     forge script script/DeployFrames.s.sol --rpc-url <rpc> --broadcast --slow --skip-simulation
 
 uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_node.py serve \
@@ -42,12 +42,15 @@ cast send $ROLLUP "sendMessage(address,uint256,uint256,bytes)" <l2-recipient> <f
 uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_claims.py \
     --l1-rpc <rpc> --rollup $ROLLUP --l2-rpc http://127.0.0.1:8547 --wallet <recipient key> [--relayer <key>]
 
-uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py advance \
+uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py preconfirm \
     --rpc <rpc> --rollup <rollup> --verifier <verifier> \
-    --operator-key <key> --prover-key <key> --l2-rpc http://127.0.0.1:8547
+    --sequencer-key <key> --prover-key <key> --l2-rpc http://127.0.0.1:8547
+
+uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py advance \
+    --rpc <rpc> --rollup <rollup> --verifier <verifier> --operator-key <key> --l2-rpc http://127.0.0.1:8547
 ```
 
-The node keeps the blocks the rollup contract has in the state file and replays them when it starts. Its RPC serves the latest state only, with the methods wallets and load generators use: balances, nonces, code, storage, `eth_call`, `eth_estimateGas`, `eth_sendRawTransaction`, blocks, receipts, logs and `eth_getProof`. `nr_buildBlock` is the operator's.
+Without `SEQUENCER`, the script deploys `FramesNativeRollup`, which takes blocks from anyone. `preconfirm` builds, validates and preconfirms the next block, and `advance` posts the oldest preconfirmed block the rollup does not have yet. The node keeps the blocks the rollup contract has and those preconfirmed after them in the state file, and replays them when it starts. Its RPC serves the methods wallets and load generators use: balances, nonces, code, storage, `eth_call`, `eth_estimateGas`, `eth_sendRawTransaction`, blocks, receipts, logs and `eth_getProof`. Its `latest` block is preconfirmed and its `safe` block posted, which L2 to L1 claims prove against. `nr_preconfirm`, `nr_nextPost` and `nr_getPreconfirmation` are the operator's.
 
 The two scripts use different execution-specs environments: the operator builds L1 frame transactions with the devnet branch, and the L2 runs the merged program. Each `advance` sends one frame transaction: the operator's `VERIFY` frame, the dependency frame, and a `SENDER` frame calling `advance`. `--corrupt-proof` sends an invalid proof, which makes the dependency frame and `advance` fail.
 
@@ -60,7 +63,7 @@ uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_foll
     --l1-rpc <rpc> --beacon <cl-url> --rollup <rollup> --genesis <l2-state>
 ```
 
-`advance` anchors the block to the latest L1 block, and the block includes the transactions in the node's mempool. Messages sent by the anchor can be claimed in the next block. An L2 account withdraws with the messenger's `sendMessage`, which `claim-l2-message` claims on L1 once the rollup has the block:
+`preconfirm` anchors the block to an L1 block two slots behind the head, and the block includes the transactions in the node's mempool. Messages sent by the anchor can be claimed in the next block. An L2 account withdraws with the messenger's `sendMessage`, which `claim-l2-message` claims on L1 once the rollup has the block:
 
 ```shell
 cast send 0x8079000000000000000000000000000000000001 "sendMessage(address,uint256,uint256,bytes)" <l1-recipient> <fee> <gas-limit> 0x \

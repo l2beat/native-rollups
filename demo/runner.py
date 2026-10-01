@@ -1,9 +1,11 @@
 """
 Runs the native rollup demo on the local frames devnet (`contracts/frames/`).
 
-It deploys a fresh rollup, starts the L2 node with its RPC and a follower
-that rebuilds the L2 chain from L1 on its own, then plays a scripted story,
-adding one L2 block per step: Alice and Bob deposit from L1, and once an
+It deploys a fresh rollup with the preconfirmations customization, starts
+the L2 node with its RPC and a follower that rebuilds the L2 chain from L1 on
+its own, then plays a scripted story, adding one L2 block per step: the
+sequencer preconfirms it at once and posts it a few blocks later, the time a
+real proof would take. Alice and Bob deposit from L1, and once an
 L2 block anchors their deposits, each claims theirs with a frame transaction
 they sign, which pays for itself. The users pay each other through the
 L2 RPC, and Charlie, who never deposits, withdraws ETH received on L2 to L1
@@ -82,6 +84,11 @@ L1_CLAIM_GAS = 400_000
 ETH = 10**18
 # What a user keeps on L2 for fees.
 RESERVE = ETH // 20
+# How many preconfirmed blocks wait for L1, standing in for proving time.
+POST_LAG = 2
+# The sequencer's bond, which the rollup contract slashes if a block it
+# preconfirmed is not the one the rollup has at that height.
+BOND = 10 * ETH
 
 
 def run(cmd: list, cwd: str = CONTRACTS) -> str:
@@ -152,6 +159,7 @@ class Episode:
             ["forge", "script", "script/DeployFrames.s.sol", "--rpc-url", a.rpc, "--broadcast", "--slow", "--skip-simulation"],
             cwd=CONTRACTS, capture_output=True, text=True, timeout=300,
             env={**os.environ, "PRIVATE_KEY": OPERATOR_KEY, "PROVER": prover["address"], "ROLLUP": rollup,
+                 "SEQUENCER": cast("wallet", "address", "--private-key", OPERATOR_KEY), "BOND": str(BOND),
                  "GENESIS_HASH": genesis["genesisHash"], "GENESIS_STATE_ROOT": genesis["genesisStateRoot"]},
         )
         found = dict(re.findall(r"^\s+(registry|verifier|rollup|helper)\s+(0x[0-9a-fA-F]{40})", out.stdout, re.M))
@@ -194,7 +202,7 @@ class Episode:
             return None
         self.session, self.contracts, self.users, self.prover_key = session, contracts, contracts["users"], prover["key"]
         self.number = session["episode"]
-        steps = sum(1 for e in session["events"] if e["type"] == "advance")
+        steps = sum(1 for e in session["events"] if e["type"] == "preconfirm")
         self.event("resumed", "Resumed the rollup")
         self.start()
         if steps > 3 and self.args.spamoor:
@@ -343,13 +351,30 @@ class Episode:
             to = random.choice([u for u in USER_KEYS if u != sender])
             self.pay(sender, to, self.spendable(sender) * random.randint(2, 12) // 100 // 10**14 * 10**14)
 
+    def preconfirm(self) -> None:
+        a = self.args
+        run([
+            "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "preconfirm",
+            "--rpc", a.rpc, "--rollup", self.contracts["rollup"], "--verifier", self.contracts["verifier"],
+            "--sequencer-key", OPERATOR_KEY, "--prover-key", self.prover_key, "--l2-rpc", self.l2_rpc,
+            "--record", self.record,
+        ])
+        record = json.load(open(self.record))
+        n = record["l2"]["number"]
+        self.event("preconfirm", f"L2 block {n} is preconfirmed", **{k: v for k, v in record.items() if k != "type"})
+
     def advance(self) -> None:
+        """Posts the oldest preconfirmed block once POST_LAG others follow it."""
+        latest = int(json_rpc(self.l2_rpc, "eth_blockNumber"), 16)
+        posted = int(json_rpc(self.l2_rpc, "eth_getBlockByNumber", "safe", False)["number"], 16)
+        if latest - posted <= POST_LAG:
+            return
         a = self.args
         run([
             "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "advance",
             "--rpc", a.rpc, "--submit-rpc", a.submit_rpc, "--rollup", self.contracts["rollup"],
             "--verifier", self.contracts["verifier"], "--operator-key", OPERATOR_KEY,
-            "--prover-key", self.prover_key, "--l2-rpc", self.l2_rpc, "--record", self.record,
+            "--l2-rpc", self.l2_rpc, "--record", self.record,
         ])
         record = json.load(open(self.record))
         n = record["l2"]["number"]
@@ -359,7 +384,7 @@ class Episode:
         """The withdrawals in L2 blocks the rollup has, with their index,
         recipient, fee and gas limit."""
         logs = json_rpc(self.l2_rpc, "eth_getLogs", {
-            "address": L2_MESSENGER, "fromBlock": "0x0", "toBlock": "latest", "topics": [L2_MESSAGE_SENT],
+            "address": L2_MESSENGER, "fromBlock": "0x0", "toBlock": "safe", "topics": [L2_MESSAGE_SENT],
         })
         return [
             (int(log["topics"][1], 16), "0x" + log["topics"][3][-40:], int(log["data"][66:130], 16), int(log["data"][130:194], 16))
@@ -462,6 +487,7 @@ class Episode:
                     busy = (rich,)
             for _ in range(random.randint(1, 2)):
                 self.random_payment(busy)
+        self.preconfirm()
         self.advance()
 
 

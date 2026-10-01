@@ -51,11 +51,10 @@ contract TestNativeRollup is NativeRollup {
     }
 }
 
-/// @notice Advances the rollup through a chain whose public input roots were
-///         computed with the compiled consensus-specs types
-///         (`script/native_rollup_vectors.py`), against the real EIP-8357
-///         registry runtime.
-contract NativeRollupTest is Test {
+/// @notice A chain whose public input roots were computed with the compiled
+///         consensus-specs types (`script/native_rollup_vectors.py`), and the
+///         real EIP-8357 registry runtime.
+abstract contract NativeRollupFixture is Test {
     using stdJson for string;
 
     address constant REGISTRY = 0x00005e9c1447C1A05A642ec9eB76D9C125468357;
@@ -68,7 +67,7 @@ contract NativeRollupTest is Test {
     uint16 schemaId;
     TestNativeRollup rollup;
 
-    function setUp() public {
+    function setUp() public virtual {
         json = vm.readFile("test/native_rollup_vectors.json");
         schemaId = uint16(json.readUint(".schemaId"));
 
@@ -147,6 +146,11 @@ contract NativeRollupTest is Test {
         r.setDependency(LEANSTARK, _publicInputRoot(i), vkHash);
         r.advance(_params(i), 1);
     }
+}
+
+/// @notice Advances the rollup through the fixture's chain.
+contract NativeRollupTest is NativeRollupFixture {
+    using stdJson for string;
 
     event BlockAdded(uint64 indexed number, bytes32 blockHash);
 

@@ -5,6 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 
 import {NativeRollup} from "../src/NativeRollup.sol";
 import {FramesNativeRollup} from "../src/frames/FramesNativeRollup.sol";
+import {FramesSequencedRollup} from "../src/frames/FramesSequencedRollup.sol";
 import {MockDependencyVerifier} from "../src/frames/MockDependencyVerifier.sol";
 
 /// @notice Deploys a native rollup on an EIP-8141 chain without EIP-8288 or
@@ -18,7 +19,9 @@ import {MockDependencyVerifier} from "../src/frames/MockDependencyVerifier.sol";
 ///         The L2 genesis stores the rollup's address in the L2 messenger
 ///         while the rollup stores the genesis hash, so the genesis is built
 ///         for the address the rollup will have, ROLLUP, which is the
-///         deployer's address at its current nonce plus 3.
+///         deployer's address at its current nonce plus 3. With SEQUENCER,
+///         it deploys the preconfirmations customization, whose sequencer
+///         bonds BOND wei, 10 ETH by default.
 contract DeployFrames is Script {
     bytes20 constant SYSTEM_ADDRESS = hex"fffffffffffffffffffffffffffffffffffffffe";
     // Constructor of the sys-asm registry initcode: copies and returns the
@@ -45,17 +48,31 @@ contract DeployFrames is Script {
         require(ok, "registration");
 
         MockDependencyVerifier verifier = new MockDependencyVerifier(prover);
-        FramesNativeRollup rollup = new FramesNativeRollup(
-            L2_CHAIN_ID,
-            L2_GAS_LIMIT,
-            vm.envBytes32("GENESIS_HASH"),
-            vm.envBytes32("GENESIS_STATE_ROOT"),
-            NativeRollup.VkPolicy.FollowCurrent,
-            bytes32(0),
-            registry,
-            L2_MESSENGER,
-            address(verifier)
-        );
+        address sequencer = vm.envOr("SEQUENCER", address(0));
+        FramesNativeRollup rollup = sequencer == address(0)
+            ? new FramesNativeRollup(
+                L2_CHAIN_ID,
+                L2_GAS_LIMIT,
+                vm.envBytes32("GENESIS_HASH"),
+                vm.envBytes32("GENESIS_STATE_ROOT"),
+                NativeRollup.VkPolicy.FollowCurrent,
+                bytes32(0),
+                registry,
+                L2_MESSENGER,
+                address(verifier)
+            )
+            : new FramesSequencedRollup{value: vm.envOr("BOND", uint256(10 ether))}(
+                L2_CHAIN_ID,
+                L2_GAS_LIMIT,
+                vm.envBytes32("GENESIS_HASH"),
+                vm.envBytes32("GENESIS_STATE_ROOT"),
+                NativeRollup.VkPolicy.FollowCurrent,
+                bytes32(0),
+                registry,
+                L2_MESSENGER,
+                address(verifier),
+                sequencer
+            );
         require(address(rollup) == vm.envAddress("ROLLUP"), "rollup address differs from the L2 genesis");
 
         vm.stopBroadcast();

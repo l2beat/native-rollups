@@ -1,11 +1,15 @@
 """
 Operator for a native rollup on an EIP-8141 chain without EIP-8288, such as
-frames-devnet-0 (see FramesNativeRollup).
+frames-devnet-0, with the preconfirmations customization (see
+FramesSequencedRollup).
 
-`advance` anchors the next L2 block to the latest L1 block, has the L2 node
-(`l2_node.py`, through its RPC) build it on the rollup's head from its
-mempool, validate it with the L1 stateless validation program, and sign the
-dependency, then sends one frame transaction:
+`preconfirm` anchors the next L2 block to an L1 block a few slots behind the
+head, and has the L2 node (`l2_node.py`, through its RPC) build it on its
+latest block from its mempool, validate it with the L1 stateless validation
+program, sign the dependency, and preconfirm it with the sequencer's key.
+
+`advance` posts the oldest preconfirmed block the rollup does not have yet,
+in one frame transaction:
 
     frame 0  VERIFY   the operator's account approves execution and payment
     frame 1  DEFAULT  MockDependencyVerifier(scheme || data_hash || vk_hash || proof)
@@ -19,7 +23,7 @@ ethrex do not.
 
 `claim-l2-message` claims an L2 to L1 message, which an L2 account sent with
 `L2Messenger.sendMessage`, with a proof from the L2 node's `eth_getProof`
-against the rollup's latest L2 block.
+against the latest L2 block the rollup has.
 
 `check-vectors` checks the Python root computation against the
 consensus-specs vectors that the Solidity tests use.
@@ -28,8 +32,10 @@ Run with the execution-specs `devnets/frames/0` environment, which provides
 the frame transaction types, and Foundry's `cast` on the PATH:
 
     uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py \
-        advance --rpc <url> --rollup <address> --verifier <address> \
-        --operator-key <key> --prover-key <key> --l2-rpc <url>
+        preconfirm --rpc <url> --rollup <address> --verifier <address> \
+        --sequencer-key <key> --prover-key <key> --l2-rpc <url>
+    uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py \
+        advance --rpc <url> --rollup <address> --verifier <address> --operator-key <key> --l2-rpc <url>
 """
 
 import argparse
@@ -67,6 +73,8 @@ ADVANCE_SIGNATURE = (
 )
 CLAIM_L2_MESSAGE_SIGNATURE = "claimL2Message((address,address,uint256,uint256,uint256,bytes,uint256),uint256,bytes[],bytes[],address)"
 DEPENDENCY_FRAME_INDEX = 1
+# How many L1 blocks behind the head the operator anchors L2 blocks.
+ANCHOR_DEPTH = 2
 L2_MESSENGER = "0x8079000000000000000000000000000000000001"
 L2_MESSAGE_SENT = keccak256(b"L2MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
 SENT_SLOT = 2  # L2Messenger.sentMessages
@@ -127,33 +135,56 @@ def wait_for_receipt(rpc: str, tx_hash: str, blocks: int = 40) -> dict:
     raise SystemExit(f"{tx_hash} not included within {blocks} blocks")
 
 
-def advance(args: argparse.Namespace) -> None:
+def preconfirm(args: argparse.Namespace) -> None:
     rpc = args.rpc
-    operator = cast("wallet", "address", "--private-key", args.operator_key)
-
-    # Rollup head and the registry's current entry.
-    head_hash = call(rpc, args.rollup, "blockHash()(bytes32)")
+    # The registry's current entry, under which the block must be posted.
     registry = call(rpc, args.rollup, "evmVkRegistry()(address)")
     entry = cast("call", "--rpc-url", rpc, registry, "0x" + "00" * 32)
     vk_hash, schema_id = "0x" + entry[2:66], int(entry[66:130], 16)
 
-    # Anchor to the latest L1 block, whose hash is available to `advance`
-    # in any later block.
-    anchor_number = int(cast("block-number", "--rpc-url", rpc))
+    # Anchor a few slots behind the L1 head, so that a short L1 reorg does
+    # not remove the anchor and, with it, the block. The block must reach L1
+    # while the anchor is in the BLOCKHASH window.
+    l1_block = int(cast("block-number", "--rpc-url", rpc))
+    anchor_number = l1_block - ANCHOR_DEPTH
     anchor_hash = cast("block", "--rpc-url", rpc, str(anchor_number), "--field", "hash")
 
-    # The L2 node builds the next block on the rollup's head, validates it
-    # with the stateless program, and signs the dependency.
-    bundle = l2_rpc(args.l2_rpc, "nr_buildBlock", {
-        "headHash": head_hash,
+    # The L2 node builds the next block on its latest one, validates it with
+    # the stateless program, signs the dependency, and preconfirms it.
+    preconfirmed = l2_rpc(args.l2_rpc, "nr_preconfirm", {
         "anchorNumber": anchor_number,
         "anchorHash": anchor_hash,
         "schemaId": schema_id,
         "vkHash": vk_hash,
         "l1ChainId": int(cast("chain-id", "--rpc-url", rpc)),
         "verifier": args.verifier,
+        "rollup": args.rollup,
         "proverKey": args.prover_key,
+        "sequencerKey": args.sequencer_key,
     })
+    print(
+        f"preconfirmed L2 block {preconfirmed['number']} ({preconfirmed['transactions']} transactions), "
+        f"hash {preconfirmed['blockHash']}, anchor L1 block {anchor_number}"
+    )
+    if args.record:
+        record(args.record, {
+            "type": "preconfirm",
+            "l2": {k: v for k, v in preconfirmed.items() if k not in ("proof", "triple", "preconfirmation")},
+            "preconfirmation": preconfirmed["preconfirmation"],
+            "l1Block": l1_block,
+        })
+
+
+def advance(args: argparse.Namespace) -> None:
+    rpc = args.rpc
+    operator = cast("wallet", "address", "--private-key", args.operator_key)
+
+    # The oldest preconfirmed block after the rollup's head, if any.
+    bundle = l2_rpc(args.l2_rpc, "nr_nextPost", call(rpc, args.rollup, "blockHash()(bytes32)"))
+    if bundle is None:
+        print("no preconfirmed block to post")
+        return
+    anchor_number = bundle["anchor"]["number"]
     p = bundle["params"]
     triple = bytes.fromhex(bundle["triple"][2:])
     proof = bytes.fromhex(bundle["proof"][2:])
@@ -261,7 +292,8 @@ def advance(args: argparse.Namespace) -> None:
     if args.record:
         record(args.record, {
             "type": "advance",
-            "l2": {k: v for k, v in bundle.items() if k not in ("blobs", "proof", "triple")},
+            "l2": {k: v for k, v in bundle.items() if k not in ("blobs", "proof", "triple", "preconfirmation")},
+            "preconfirmation": bundle["preconfirmation"],
             "proof": {"kind": "mock", "triple": bundle["triple"], "signature": bundle["proof"]},
             "l1": {
                 "txHash": tx_hash,
@@ -284,11 +316,11 @@ def record(path: str, entry: dict) -> None:
 def claim_l2_message(args: argparse.Namespace) -> None:
     rpc = args.rpc
     head_hash = call(rpc, args.rollup, "blockHash()(bytes32)")
-    latest = l2_rpc(args.l2_rpc, "eth_getBlockByNumber", "latest", False)
+    latest = l2_rpc(args.l2_rpc, "eth_getBlockByNumber", "safe", False)
     if latest["hash"] != head_hash:
-        raise SystemExit(f"the L2 node is at {latest['hash']}, the rollup at {head_hash}")
+        raise SystemExit(f"the L2 node's latest posted block is {latest['hash']}, the rollup's {head_hash}")
     logs = l2_rpc(args.l2_rpc, "eth_getLogs", {
-        "address": L2_MESSENGER, "fromBlock": "0x0", "toBlock": "latest",
+        "address": L2_MESSENGER, "fromBlock": "0x0", "toBlock": "safe",
         "topics": [hx(L2_MESSAGE_SENT), f"0x{args.index:064x}"],
     })
     if not logs:
@@ -304,7 +336,7 @@ def claim_l2_message(args: argparse.Namespace) -> None:
     # The claimer receives the message's fee, if any.
     claimer = cast("wallet", "address", "--private-key", args.key)
     slot = int.from_bytes(keccak256(SENT_SLOT.to_bytes(32, "big")), "big") + args.index
-    proof = l2_rpc(args.l2_rpc, "eth_getProof", L2_MESSENGER, [f"0x{slot:064x}"], "latest")
+    proof = l2_rpc(args.l2_rpc, "eth_getProof", L2_MESSENGER, [f"0x{slot:064x}"], "safe")
     p = {
         "blockNumber": int(latest["number"], 16),
         "accountProof": proof["accountProof"],
@@ -348,13 +380,20 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     check = sub.add_parser("check-vectors")
     check.add_argument("--vectors", default="test/native_rollup_vectors.json")
+    pre = sub.add_parser("preconfirm")
+    pre.add_argument("--rpc", required=True)
+    pre.add_argument("--rollup", required=True)
+    pre.add_argument("--verifier", required=True)
+    pre.add_argument("--sequencer-key", required=True)
+    pre.add_argument("--prover-key", required=True)
+    pre.add_argument("--l2-rpc", required=True, help="the L2 node's RPC")
+    pre.add_argument("--record", help="write what happened to this JSON file")
     adv = sub.add_parser("advance")
     adv.add_argument("--rpc", required=True)
     adv.add_argument("--submit-rpc", help="the client to send the blob-carrying transaction to, by default --rpc")
     adv.add_argument("--rollup", required=True)
     adv.add_argument("--verifier", required=True)
     adv.add_argument("--operator-key", required=True)
-    adv.add_argument("--prover-key", required=True)
     adv.add_argument("--l2-rpc", required=True, help="the L2 node's RPC")
     adv.add_argument("--corrupt-proof", action="store_true", help="send an invalid mock proof")
     adv.add_argument("--record", help="write what happened to this JSON file")
@@ -368,6 +407,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "check-vectors":
         check_vectors(args.vectors)
+    elif args.command == "preconfirm":
+        preconfirm(args)
     elif args.command == "advance":
         advance(args)
     else:

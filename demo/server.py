@@ -21,7 +21,8 @@ ROOT = os.path.dirname(DEMO)
 
 # The contracts the explorer shows code from.
 SOURCES = [
-    "src/NativeRollup.sol", "src/frames/FramesNativeRollup.sol", "src/frames/MockDependencyVerifier.sol", "src/frames/Frames.sol",
+    "src/NativeRollup.sol", "src/SequencedNativeRollup.sol", "src/frames/FramesNativeRollup.sol",
+    "src/frames/FramesSequencedRollup.sol", "src/frames/MockDependencyVerifier.sol", "src/frames/Frames.sol",
     "src/l2/L2Messenger.sol", "src/libs/Messages.sol", "src/libs/MessageTree.sol", "src/libs/MptProof.sol",
     "src/NativeRollupSsz.sol",
 ]
