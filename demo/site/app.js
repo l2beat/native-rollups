@@ -944,7 +944,7 @@ function frameExplain(tx, f, i, layer) {
     const pays = f.flags.includes("APPROVE_PAYMENT");
     const approves = f.flags.filter((x) => x.startsWith("APPROVE"));
     return {
-      text: `${approves.length ? `The sender's account ${pays ? "approves the transaction and pays for it" : "approves the transaction"}.` : "A read-only check that must not revert."}
+      text: `${approves.length ? `The sender's account, the frame's target, ${pays ? "approves the transaction and pays for it" : "approves the transaction"}.` : "A read-only check that must not revert."}
         Without code at the target, EIP-8141's default code checks the transaction's signature. ${
         pays && claimsBefore(tx, i, tx.from) ? "The fee is taken now, from the ETH the claim above just delivered: that is how a deposit pays for its own claim." : ""}`,
       badges: [badge("real")],
@@ -1028,9 +1028,9 @@ function frameCards(tx, layer) {
     const e = frameExplain(tx, f, i, layer);
     const status = f.status === undefined ? "" : f.status === 1 ? `<span class="check">succeeded</span>` : `<span class="bad">failed</span>`;
     return `<div class="frame"><div class="frame-head"><span class="idx">Frame ${i}</span><span class="mode">${f.mode}</span>
-        ${addr(frameCaller(tx, f), layer.toLowerCase(), false)} → ${addr(f.target, layer.toLowerCase(), false)} ${f.call ? `<code>${f.call.function}</code>` : ""} ${e.badges.join(" ")}<span class="status">${status}</span></div>
+        ${f.call ? `<code>${f.call.function}</code>` : ""} → ${addr(f.target, layer.toLowerCase(), false)} ${e.badges.join(" ")}<span class="status">${status}</span></div>
       <div class="frame-body"><p class="explain">${e.text}</p>
-        <div class="gasbar"><span>Flags: ${f.flags.length ? f.flags.join(", ") : "none"}</span>
+        <div class="gasbar"><span>Called by ${addr(frameCaller(tx, f), layer.toLowerCase(), false)}</span><span>Flags: ${f.flags.length ? f.flags.join(", ") : "none"}</span>
           <span>Execution gas: ${f.executionGasUsed !== undefined ? num(f.executionGasUsed) + " of " : ""}${num(f.executionGasLimit)}</span>
           <span>State gas: ${f.stateGasUsed !== undefined ? num(f.stateGasUsed) + " of " : ""}${num(f.stateGasLimit)}</span>
           ${f.value ? `<span>Value: ${eth(f.value)}</span>` : ""}</div>
