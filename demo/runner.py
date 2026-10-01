@@ -191,10 +191,6 @@ class Episode:
         steps = sum(1 for e in session["events"] if e["type"] == "advance")
         self.event("resumed", "Resumed the rollup")
         self.start()
-        # Withdrawals already claimed on L1.
-        for index, _, _ in self.withdrawals():
-            if cast("call", "--rpc-url", self.args.rpc, rollup, "claimedL2Messages(uint256)(bool)", str(index)) == "true":
-                self.claimed.add(index)
         if steps > 3 and self.args.spamoor:
             self.start_spamoor()
         return steps
@@ -202,6 +198,11 @@ class Episode:
     def start(self) -> None:
         self.start_node()
         self.start_follower()
+        # Withdrawals already claimed on L1, when resuming, before the claimer
+        # looks for withdrawals to claim.
+        for index, _, _ in self.withdrawals():
+            if cast("call", "--rpc-url", self.args.rpc, self.contracts["rollup"], "claimedL2Messages(uint256)(bool)", str(index)) == "true":
+                self.claimed.add(index)
         threading.Thread(target=self.relay_withdrawals, daemon=True).start()
 
     def receiver_code(self, messenger: str, on_l2: bool) -> str:
