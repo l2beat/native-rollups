@@ -317,6 +317,17 @@ def frame_flags(flags: int) -> list:
     return [name for bit, name in FLAGS.items() if flags & bit]
 
 
+def builder(extra: bytes) -> str:
+    """Who built an L1 block, from its extra data: text, or geth's RLP list
+    of its version, name, Go version and OS."""
+    try:
+        version, name, go, _ = rlp.decode(extra)
+        v = int.from_bytes(version, "big")
+        return f"{name.decode()} {v >> 16}.{v >> 8 & 0xFF}.{v & 0xFF} ({go.decode()})"
+    except Exception:
+        return extra.decode(errors="replace")
+
+
 def dependency(data: bytes) -> dict | None:
     """The frame data of the mock EIP-8288 verifier: the dependency triple and a signature."""
     if len(data) != 96 + 65:
@@ -455,7 +466,7 @@ def l1_transaction(tx: dict, receipt: dict, block: dict) -> dict:
         "hash": tx["hash"], "type": int(tx["type"], 16), "from": tx["from"].lower(),
         "to": (tx.get("to") or "").lower() or None, "nonce": int(tx["nonce"], 16),
         "value": jsonable(int(tx.get("value") or "0x0", 16)), "block": int(tx["blockNumber"], 16),
-        "timestamp": int(block["timestamp"], 16), "builder": bytes.fromhex(block["extraData"][2:]).decode(errors="replace"),
+        "timestamp": int(block["timestamp"], 16), "builder": builder(bytes.fromhex(block["extraData"][2:])),
         "status": int(receipt["status"], 16), "gasUsed": int(receipt["gasUsed"], 16),
         "gasLimit": int(tx["gas"], 16) if tx.get("gas") else None,
         "effectiveGasPrice": int(receipt.get("effectiveGasPrice", "0x0"), 16),

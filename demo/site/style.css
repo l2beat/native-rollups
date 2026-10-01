@@ -124,7 +124,7 @@ svg.merkle .mt-cell.taken text { fill: var(--accent); font-weight: 700; }
 .mt-k { color: var(--accent); font-weight: 700; }
 .mt-rest { color: var(--muted); }
 /* Lists name the addresses they know, with the address on hover. */
-table.txs .addr .muted, .targets .addr .muted { display: none; }
+table.txs .addr .muted, .targets .addr .muted, .item .addr .muted { display: none; }
 .targets { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; align-items: baseline; }
 .prose { font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
 .tag-note { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); }
@@ -160,6 +160,7 @@ details.more > table { margin-top: 6px; }
 .kind { font: 11.5px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); background: var(--soft); border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; white-space: nowrap; }
 .kind.verified { color: var(--real); background: var(--real-bg); border-color: #bfe0c8; }
 .kind.unverified { border-style: dashed; }
+.term { text-decoration: underline dotted #a9a6a0; text-underline-offset: 3px; cursor: help; }
 .flag { font: 600 11.5px var(--mono); color: var(--accent); background: #edf1ff; border: 1px solid #c9d4fb; padding: 1px 6px; border-radius: 5px; }
 
 .fill { position: relative; height: 10px; background: #efece5; border-radius: 5px; overflow: hidden; margin: 6px 0; max-width: 520px; }
@@ -240,7 +241,7 @@ footer { text-align: center; color: var(--muted); font-size: 14px; padding: 30px
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .panel-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--soft); font-size: 14px; }
 /* minmax(0, …) keeps each row's columns the same width whatever their content. */
-.item { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr) minmax(0, 0.9fr); gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--line); font-size: 13.5px; line-height: 1.7; }
+.item { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.5fr) minmax(0, 0.9fr); gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--line); font-size: 13.5px; line-height: 1.7; }
 .item .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item:last-child { border-bottom: none; }
 @media (max-width: 860px) { .columns { grid-template-columns: 1fr; } }

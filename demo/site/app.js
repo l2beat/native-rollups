@@ -66,10 +66,12 @@ async function refresh() {
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const short = (h) => (h && h.length > 18 ? `${h.slice(0, 10)}…${h.slice(-6)}` : h || "");
 const num = (n) => Number(n).toLocaleString("en-US");
-// Amounts in ETH, or in wei when too small to show in ETH.
+// Amounts in ETH, or in gwei below a millionth of an ETH, or in wei for dust.
 const eth = (wei) => {
   const n = Number(wei);
-  return n > 0 && n < 1e12 ? `${n.toLocaleString("en-US")} wei` : `${(n / 1e18).toLocaleString("en-US", { maximumFractionDigits: 6 })} ETH`;
+  if (n === 0 || n >= 1e12) return `${(n / 1e18).toLocaleString("en-US", { maximumFractionDigits: 6 })} ETH`;
+  if (n >= 1e3) return `${(n / 1e9).toLocaleString("en-US", { maximumSignificantDigits: 6 })} gwei`;
+  return `${n} wei`;
 };
 // Fees in lists, as Etherscan shows them.
 const ethShort = (wei) => `${(Number(wei) / 1e18).toLocaleString("en-US", { maximumSignificantDigits: 3 })} ETH`;
@@ -272,10 +274,10 @@ function renderStatus() {
   if (state.index && state.rollupHead != null) {
     const n = state.index.l2Blocks.length;
     pills.push(n >= state.rollupHead
-      ? `<span class="pill ok">follower rebuilt all ${num(n)} from L1</span>`
+      ? `<a class="pill ok" href="#/about" title="An independent node rebuilt every L2 block from L1 data alone">follower rebuilt all ${num(n)} from L1</a>`
       : `<span class="pill warn">follower rebuilt ${num(n)} of ${num(state.rollupHead)}</span>`);
   }
-  if (state.session) pills.push(`<a class="pill" href="#/about">rollup deployed ${ago(state.session.startedAt)}</a>`);
+  if (state.session && state.index) pills.push(`<a class="pill" href="#/address/l1/${state.index.rollup}">rollup deployed ${ago(state.session.startedAt)}</a>`);
   document.getElementById("status").innerHTML = pills.join("");
 }
 
@@ -485,6 +487,14 @@ function about() {
 // L2 block
 // ---------------------------------------------------------------------------
 
+// Terms the steppers use, defined on hover.
+const TERMS = {
+  witness: "The parts of the state a block reads, with proofs that they belong to the previous state root. Enough to check the block without the state.",
+  blob: "Data an L1 transaction carries for about 18 days, cheaper than calldata. The rollup contract sees only its hash.",
+  anchored: "Each L2 block names a recent L1 block, its anchor. L2 contracts read the anchor's hash, and prove L1 state against it.",
+};
+const term = (word, key = word) => `<span class="term" title="${esc(TERMS[key])}">${word}</span>`;
+
 // The steps every L2 block takes to L1, each linked to what shows it.
 function journey(b, rec) {
   const matches = b.hash === b.recordedHash;
@@ -492,10 +502,10 @@ function journey(b, rec) {
     ["Build", "real", "The operator's node, holding the L2 state, built the block.",
       `<a href="#/l2/block/${b.number}/txs">${num(b.transactions.length)} transactions</a>`],
     // The stateless check is real; only the proof of it is a stand-in.
-    ["Prove", "mixed", "Ethereum's stateless program checked it, given a witness.",
+    ["Prove", "mixed", `Ethereum's stateless program checked it, given a ${term("witness")}.`,
       `<a href="#/l2/block/${b.number}/l1">${rec && rec.l2.validation.successful ? `accepted <span class="check">✓</span>` : "the run"}</a> ·
       <a href="#/l1/tx/${b.l1.tx}/frames" title="A trusted key signs the result in place of a zk proof">proof</a> ${badge("mock")}`],
-    ["Post", "real", "One L1 transaction carried the block's data in a blob.",
+    ["Post", "real", `One L1 transaction carried the block's data in a ${term("blob")}.`,
       `<a href="#/l1/tx/${b.l1.tx}">the transaction</a> · <a href="#/blob/${b.number}">its blob</a>`],
     ["Verify", "real", "The rollup contract checked that the proof is for exactly this block.",
       `<a href="#/l1/tx/${b.l1.tx}">the check</a>`],
@@ -534,7 +544,7 @@ async function messagePage(route) {
       ["Send", "real", "The rollup contract added it to its message tree and holds its ETH.",
         `${l1TxLink(m.l1Tx)} <span class="muted">L1 block ${num(m.l1Block)}</span>`],
       anchoring
-        ? ["Anchor", "real", `An L2 block anchored an L1 block with this tree, so L2 can prove its root.`, l2BlockLink(anchoring.number)]
+        ? ["Anchor", "real", `An L2 block ${term("anchored")} an L1 block with this tree, so L2 can prove its root.`, l2BlockLink(anchoring.number)]
         : ["Anchor", "pending", "Waiting for an L2 block to anchor an L1 block with it.", ""],
       m.l2Tx
         ? ["Claim", "real", `${claimer}, proving it against that root, and the L2 messenger delivered it.`, l2TxLink(m.l2Tx)]
@@ -763,19 +773,15 @@ async function addressPage(route) {
     <p class="mono">${a}</p>
     ${role ? `<div class="callout ${role[0] === "mock" ? "mock" : ""}"><p>${role[1]}</p></div>` : ""}
     ${other}
-    ${fields(rows)}
+    ${fields([...rows, ...live])}
     ${tabs(base, [
       ["", "Transactions", count, history],
       code && ["contract", "Contract", undefined, code],
       (code || emitted.length) && ["events", "Events", emitted.length, eventRows(emitted, chain)],
-      live.length && ["state", "State", undefined, `<p class="section-lead">${chain === "l1" ? "Read from the contract on L1 now." : "From the follower's rebuilt L2 state."}</p>${fields(live)}`],
     ], tab)}`;
 }
 
-// How many of an address's latest transactions the Events tab reads.
-
 // The latest events an address emitted, newest first.
-// `txs` are [path of the transaction's file, hash, block, chain].
 function eventRows(emitted, chain) {
   if (!emitted.length) return '<p class="note">No events yet.</p>';
   return `<p class="section-lead">Its latest events, newest first.</p>
@@ -1400,7 +1406,7 @@ const L2_SUMMARIES = {
 
 async function l2TxPage(route) {
   const tx = await object(`l2/txs/${route.hash}`);
-  if (!tx) return `<h1>Transaction details</h1><p class="note">Not found. The follower may not have rebuilt its block yet.</p>`;
+  if (!tx) return `<h1>Transaction details</h1><p class="note">Not in an L2 block the follower rebuilt. A transaction shows here once its block is on L1.</p>`;
   const block = await object(`l2/blocks/${tx.block}`);
   const w = tx.kind === "withdrawal" && withdrawalOf(tx);
   const d = tx.kind === "deposit claim" && depositOf(tx);
@@ -1769,6 +1775,7 @@ document.getElementById("search").addEventListener("submit", async (e) => {
   e.preventDefault();
   const q = e.target.q.value.trim().toLowerCase();
   if (/^#?\d+$/.test(q)) location.hash = `#/l2/block/${q.replace("#", "")}`;
+  else if (/^0x[0-9a-f]{40}$/.test(q)) location.hash = `#/address/${(await object(`l2/accounts/${q}`)) ? "l2" : "l1"}/${q}`;
   else if (/^0x[0-9a-f]{64}$/.test(q)) {
     if (state.index.l1Txs.some((t) => t.hash === q)) location.hash = `#/l1/tx/${q}`;
     else if (await object(`l2/txs/${q}`)) location.hash = `#/l2/tx/${q}`;
