@@ -44,7 +44,7 @@ Native rollups prove the same function as L1, and therefore share its block stru
 
 Fields marked **constrained** are validated during execution (wrong value = proof fails). Fields marked **unconstrained** are free inputs chosen by the operator. Fields marked **fixed** have a constant value for L2.
 
-The unconstrained fields (`fee_recipient`, `prev_randao`, `parent_beacon_block_root`) correspond to the [`PayloadAttributes`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py) that on L1 are trusted to come from the consensus layer. The EL never validates them; it accepts whatever the CL provides. Since native rollups have no CL, these become free inputs for the operator. `timestamp` is also CL-provided on L1 but additionally constrained by the EL (`> parent_header.timestamp`). The EL sets no upper bound, so the rollup contract requires `timestamp <= block.timestamp`, as Taiko bounds its L2 timestamps by the proposal's L1 timestamp. Without it, anyone could halt the rollup with a valid block at the maximum `uint64` timestamp, since no block could follow it.
+The unconstrained fields (`fee_recipient`, `prev_randao`, `parent_beacon_block_root`) correspond to the [`PayloadAttributes`](https://github.com/ethereum/execution-specs/blob/projects/zkevm/src/ethereum/forks/amsterdam/execution_engine/types.py) that on L1 are trusted to come from the consensus layer. The EL never validates them; it accepts whatever the CL provides. Since native rollups have no CL, these become free inputs for the operator. `timestamp` is also CL-provided on L1 but additionally constrained by the EL (`> parent_header.timestamp`). The EL sets no upper bound, so the rollup contract requires `timestamp <= block.timestamp`, as Taiko bounds its L2 timestamps by the proposal's L1 timestamp. Without it, anyone could halt the rollup with a valid block at the maximum `uint64` timestamp, since no block could follow it. The contract also requires the timestamp to lag `block.timestamp` by at most `MAX_TIMESTAMP_LAG`, one hour, so that whoever builds a block cannot hold L2 time back, past the deadlines of L2 users. A block must reach L1 while its [anchor](./messaging.md#l1-anchoring) is in the `BLOCKHASH` window, about 51 minutes, so the bound does not shorten the time an operator has to post it.
 
 ### StatelessInput
 
@@ -84,7 +84,7 @@ The input carries no fork schedule. The guest reads it as `schema_id || SSZ(Stat
 | `block_number` | yes | storage | Must equal `parent_header.number + 1` |
 | `gas_limit` | yes | immutable | Fixed at deployment, so the 1/1024 bound against the parent always holds. TBD: ZK gas handling |
 | `gas_used` | yes | calldata | Computed during execution |
-| `timestamp` | yes | calldata | Must be `> parent_header.timestamp`. The contract also requires `<= block.timestamp` |
+| `timestamp` | yes | calldata | Must be `> parent_header.timestamp`. The contract also requires `<= block.timestamp`, and at most an hour less |
 | `extra_data` | no | various | Max 32 bytes |
 | `base_fee_per_gas` | yes | calldata | Must match EIP-1559 formula from parent header |
 | `block_hash` | yes | calldata | Computed from header |
@@ -186,10 +186,11 @@ contract NativeRollup {
     // SSZ root of an empty progressive list: sha256 of 64 zero bytes.
     bytes32 constant EMPTY_LIST_ROOT = 0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b;
     uint256 constant STATE_ROOT_HISTORY = 8191;
+    uint256 constant MAX_TIMESTAMP_LAG = 1 hours;
 
     // Fixed at deployment
     uint64 immutable chainId;
-    uint64 immutable gasLimit;
+    uint64 immutable l2GasLimit;
     enum VkPolicy { FollowCurrent, Pinned } // see EIP-8357
     VkPolicy immutable vkPolicy;
     bytes32 immutable pinnedVkHash;
@@ -217,22 +218,24 @@ contract NativeRollup {
     // Emitted so that the message can be claimed on L2, where only its
     // hash is proven.
     event L1MessageSent(
-        uint256 indexed index, address indexed sender, address indexed to, uint256 value, uint256 fee, bytes data
+        uint256 indexed index, address indexed sender, address indexed to,
+        uint256 value, uint256 fee, uint256 gasLimit, bytes data
     );
 
     // Emitted for each L2 block, so that L2 nodes can find the transaction
     // that carries it and its blobs.
     event BlockAdded(uint64 indexed number, bytes32 blockHash);
 
-    // Sends msg.value - fee to `to` on L2, and `fee` to whoever claims the
-    // message there.
-    function sendMessage(address to, uint256 fee, bytes calldata data) external payable {
+    // Sends msg.value - fee to `to` on L2, with a call that gets gasLimit,
+    // and `fee` to whoever claims the message there (see Messaging).
+    function sendMessage(address to, uint256 fee, uint256 gasLimit, bytes calldata data) external payable {
         require(msg.value >= fee, "fee exceeds value");
+        require(to != l2Messenger, "message to the messenger");
         uint256 index = l1Messages.count;
-        l1Messages.insert(
-            keccak256(abi.encodePacked(msg.sender, to, msg.value - fee, fee, keccak256(data), index))
-        );
-        emit L1MessageSent(index, msg.sender, to, msg.value - fee, fee, data);
+        l1Messages.insert(keccak256(
+            abi.encodePacked(msg.sender, to, msg.value - fee, fee, gasLimit, keccak256(data), index)
+        ));
+        emit L1MessageSent(index, msg.sender, to, msg.value - fee, fee, gasLimit, data);
     }
 
     function advance(BlockParams calldata params, uint256 dependencyFrameIndex) external {
@@ -248,6 +251,7 @@ contract NativeRollup {
 
         // 3. Bound the L2 timestamp by L1 time (see Data layout).
         require(params.timestamp <= block.timestamp, "timestamp in the future");
+        require(params.timestamp + MAX_TIMESTAMP_LAG >= block.timestamp, "timestamp too old");
 
         // 4. Compute new_payload_request_root from storage, calldata,
         //    versioned hashes, and the L1 anchor (see Messaging), with SSZ
@@ -261,7 +265,7 @@ contract NativeRollup {
             logsBloom:           params.logsBloom,
             prevRandao:          params.prevRandao,
             blockNumber:         blockNumber + 1,        // from storage
-            gasLimit:            gasLimit,                // fixed at deployment
+            gasLimit:            l2GasLimit,              // fixed at deployment
             gasUsed:             params.gasUsed,
             timestamp:           params.timestamp,
             extraData:           params.extraData,
@@ -302,7 +306,7 @@ contract NativeRollup {
     }
 
     function claimL2Message(
-        Message calldata m, // sender, to, value, fee, data, index
+        Message calldata m, // sender, to, value, fee, gasLimit, data, index
         uint256 l2BlockNumber,
         bytes[] calldata accountProof,
         bytes[] calldata storageProof,
@@ -315,8 +319,8 @@ contract NativeRollup {
         );
         require(entry == hashMessage(m), "message not queued");
         // Pay out of the ETH escrowed by sendMessage: the value to the
-        // destination, which can read m.sender from l2Sender() during the
-        // call, then the fee to feeRecipient.
+        // destination, with a call that gets m.gasLimit and can read m.sender
+        // from l2Sender(), then the fee to feeRecipient.
         deliver(m, feeRecipient);
     }
 
@@ -348,8 +352,8 @@ Replay is constrained by state: the expected root commits to the parent L2 block
 | Call | Gas |
 |---|---|
 | `advance`, one blob | 121k, plus 131,072 blob gas, plus 98k of state gas per block until the state root history wraps. Includes the mock dependency frame |
-| `sendMessage` | 73k to 77k, plus 98k of state gas when the message count first reaches a new power of two |
-| `claimL2Message` | 124k to an existing account. The first claim in each 256 adds 98k of state gas for its flag slot, and a new recipient 184k for its account |
+| `sendMessage` | 74k to 81k, plus 98k of state gas when the message count first reaches a new power of two |
+| `claimL2Message` | 100k to 180k to an existing account, growing with the proof, here 1.9 to 2.6 KB. The first claim in each 256 adds 98k of state gas for its flag slot, and a new recipient 184k for its account |
 
 See also: [Messaging](./messaging.md)
 
