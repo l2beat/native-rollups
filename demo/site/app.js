@@ -509,7 +509,7 @@ const ROLES = {
   "Frames helper": ["shortcut", "Lets the rollup contract use EIP-8141's FRAMEPARAM and FRAMEDATACOPY instructions, which Solidity cannot emit yet. The rollup contract deploys it and calls it to read the proof frame. Written in assembly with geas."],
   Relayer: ["shortcut", "Claims deposits to addresses that cannot claim themselves, such as contracts, and pays the claims' fees. Messages carry no fee, so nothing pays it back. It runs in the L2 node and funded itself with a deposit, whose claim paid for itself."],
   Claimer: ["shortcut", "Claims on L1 the withdrawals to addresses outside the story, which the demo holds no keys for. Anyone can claim a withdrawal, and the ETH goes to its recipient, but nothing pays the claimer back."],
-  Spamoor: ["", "The funding wallet of spamoor, ethPandaOps' transaction generator, which funds child wallets that send ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, ERC-4337 bundles, EIP-8141 frame transactions and messages between the chains."],
+  Spamoor: ["", "The funding wallet of spamoor, ethPandaOps' transaction generator, which funds child wallets that send ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, EIP-8141 frame transactions and messages between the chains."],
   "Message receiver": ["", "An example app for messages between the chains. It accepts any call from the messenger on its chain, the L2 messenger on L2 or the rollup contract on L1, and records the message with its sender on the other chain."],
   Alice: ["", USER_ROLE],
   Bob: ["", USER_ROLE],

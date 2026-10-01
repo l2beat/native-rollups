@@ -13,10 +13,9 @@ replays its blocks, the follower rebuilds the chain from L1, and the story
 goes on. `--new` deploys a new rollup instead.
 
 Around the story, spamoor (github.com/ethpandaops/spamoor, `--spamoor`)
-generates activity: ERC-20 transfers, Uniswap swaps, EIP-7702 delegations,
-ERC-4337 bundles and EIP-8141 frame transactions on L2, and messages in both
-directions, with ETH to random addresses or calls to a `MessageReceiver` on
-the other chain. Those recipients cannot claim, so relayers do: the L2
+generates activity: ERC-20 transfers, Uniswap swaps, EIP-7702 delegations
+and EIP-8141 frame transactions on L2, and messages in both directions, with
+ETH to random addresses or calls to a `MessageReceiver` on the other chain. Those recipients cannot claim, so relayers do: the L2
 node's relayer account on L2, and a claimer account on L1.
 
 Only uses the standard library: it runs the contract scripts in their uv
@@ -264,7 +263,6 @@ class Episode:
             {"scenario": "erctx", "name": "ERC-20 transfers", "config": {"throughput": 1, "max_wallets": 3, "random_amount": True}},
             {"scenario": "uniswap-swaps", "name": "Uniswap swaps", "config": {"throughput": 1, "max_wallets": 3}},
             {"scenario": "setcodetx", "name": "EIP-7702 delegations", "config": {"throughput": 1, "max_wallets": 2, "max_authorizations": 3}},
-            {"scenario": "erc4337", "name": "ERC-4337 bundles", "config": {"throughput": 1, "max_wallets": 2}},
             {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {"throughput": 1, "max_wallets": 3, "envelope": "base"}},
             messages("withdrawals", L2_MESSENGER, "{randomaddr}", "0x", 1_000_000),
             messages("messages-to-l1", L2_MESSENGER, c["receiverL1"], "0xc0ffee", 0),
