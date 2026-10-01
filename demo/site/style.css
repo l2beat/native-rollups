@@ -247,3 +247,21 @@ body.loading #app { opacity: 0.55; transition: opacity 0.15s; }
 body.loading::before { content: ""; position: fixed; top: 0; left: 0; z-index: 20; height: 3px; width: 40%;
   background: var(--accent); animation: loading 0.9s ease-in-out infinite; }
 @keyframes loading { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+
+/* Phones: fields stack, the header scrolls away, and wide tables scroll
+   within themselves. */
+@media (max-width: 640px) {
+  .top { position: static; padding: 10px 14px; gap: 10px 16px; }
+  main { padding: 0 14px 40px; }
+  .status { padding: 8px 14px; }
+  table.fields, table.fields > tbody, table.fields > tbody > tr, table.fields > tbody > tr > td { display: block; }
+  table.fields > tbody > tr > td, table.fields td.value { width: auto; border-bottom: none; }
+  table.fields > tbody > tr { border-bottom: 1px solid var(--line); }
+  table.fields > tbody > tr:last-child { border-bottom: none; }
+  table.fields > tbody > tr > td:first-child { padding-bottom: 0; }
+  table.fields > tbody > tr > td.note { padding-top: 0; }
+  main table:not(.fields) { display: block; overflow-x: auto; }
+  .tabs { overflow-x: auto; white-space: nowrap; }
+  .journey { grid-template-columns: 1fr; gap: 14px; }
+  .journey li::before { display: none; }
+}
