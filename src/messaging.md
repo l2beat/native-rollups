@@ -8,6 +8,7 @@
 - [L1 to L2 messaging](#l1-to-l2-messaging)
 - [L2 to L1 messaging](#l2-to-l1-messaging)
 - [Existing rollups](#existing-rollups)
+- [Open questions](#open-questions)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
@@ -54,3 +55,7 @@ A shallower interface, such as a dedicated root of L2 to L1 messages, cannot be 
 | Orbit stack | None: each L1 message becomes its own transaction | Delayed messages in the L1 `Bridge` become unsigned transactions with an aliased L1 sender, force-included after a delay | ArbOS accumulates messages in a Merkle tree whose root is confirmed on L1. The `Outbox` executes them with Merkle proofs |
 
 Each stack relies on transaction types or system logic that L1 does not have, or on a permissioned relayer. Native rollups get the same functionality from the reused anchor, storage proofs, and messenger contracts.
+
+## Open questions
+
+- **Claim fees**: anyone can claim a message, in either direction, but the reference messages carry no fee, so whoever claims a message for someone else pays for it. Deposits to contracts, which cannot approve payment for their own claim, depend on such claimers, and so do withdrawals whose recipients do not claim them. Linea's `sendMessage` and Taiko's `Message` include a fee that the sender pays to whoever claims the message.
