@@ -710,7 +710,44 @@ function mainSource(a) {
   if (is(c.verifier)) return "contracts/src/frames/MockDependencyVerifier.sol";
   if (is(c.framesHelper)) return "contracts/frames/frame_introspection.eas";
   if (is(c.registry)) return "sys-asm/src/verification_key_registry/main.eas";
+  if (is(c.receiverL1)) return "contracts/src/examples/MessageReceiver.sol";
   return null;
+}
+
+// The system contracts of Ethereum's specification, by label: their source
+// is in ethereum/sys-asm.
+const SYSTEM_CONTRACT = /EIP-(7002|7251|8282|2935|4788|8141)|deposit contract/;
+
+// Whether an address is a key's account, one that EIP-7702 delegated to a
+// contract's code, or a contract with or without a source the explorer has.
+async function accountKind(a, chain) {
+  let code;
+  if (chain === "l1") code = (await rpc("eth_getCode", [a, "latest"])) || "0x";
+  else {
+    const acc = await object(`l2/accounts/${a}`);
+    if (!acc) return null;
+    code = acc.exists && acc.codeSize ? acc.code || "0x00" : "0x";
+  }
+  if (code === "0x") return "eoa";
+  if (code.startsWith("0xef0100") && code.length === 48) return "delegated";
+  const created = chain === "l2" && (state.index.contracts || {})[a];
+  const label = labels()[a];
+  return (created && created.source) || mainSource(a) || (label && SYSTEM_CONTRACT.test(label[0])) ? "verified" : "unverified";
+}
+
+const KINDS = {
+  eoa: ["EOA", "An externally owned account, which a key controls."],
+  delegated: ["EOA · delegated", "A key's account that runs a contract's code, delegated with EIP-7702."],
+  verified: ["Contract · verified", "A contract whose source the explorer shows."],
+  unverified: ["Contract · unverified", "A contract whose source the explorer does not have."],
+};
+const kindTag = (k) => (k ? ` <span class="kind ${k}" title="${KINDS[k][1]}">${KINDS[k][0]}</span>` : "");
+
+// The kinds of a transaction's sender and recipients.
+async function kindsOf(tx, chain) {
+  const addresses = [...new Set([tx.from, tx.to, ...(tx.frames || []).map((f) => f.target)].filter(Boolean))];
+  const kinds = await Promise.all(addresses.map((a) => accountKind(a, chain)));
+  return Object.fromEntries(addresses.map((a, i) => [a, kinds[i]]));
 }
 
 // A file and the files it imports, transitively.
@@ -771,7 +808,7 @@ function sourceSection(a, name, bytecode, chain, verified) {
       <p class="section-lead">${notes[main] || `The contract's source and the files it imports, as in the repository's <code>contracts/</code>.`}${
         external.length ? ` It also imports ${external.map((e) => `<code>${esc(e)}</code>`).join(", ")}, not shown.` : ""}</p>
       ${files.map((p) => sourceFile(p, isContract(p))).join("")}`;
-  } else if (bytecode && /EIP-(7002|7251|8282|2935|4788|8141)|deposit contract/.test(name)) {
+  } else if (bytecode && SYSTEM_CONTRACT.test(name)) {
     html += `<h2>Source</h2><p class="section-lead">A system contract from Ethereum's specification, whose source is in
       <a href="https://github.com/ethereum/sys-asm">ethereum/sys-asm</a>. The L2 genesis holds the bytecode EEST uses for L1.</p>`;
   }
@@ -1237,10 +1274,10 @@ function counterpart(tx) {
 }
 
 // The targets of a frame transaction, with the frames that call each.
-function frameTargets(tx, chain) {
+function frameTargets(tx, chain, kinds = {}) {
   const targets = {};
   tx.frames.forEach((f, i) => (targets[f.target] = targets[f.target] || []).push(`${i} ${f.mode}`));
-  return Object.entries(targets).map(([t, frames]) => `${addr(t, chain)} <span class="muted">frame ${frames.join(", ")}</span>`).join("<br>");
+  return Object.entries(targets).map(([t, frames]) => `${addr(t, chain)}${kindTag(kinds[t])} <span class="muted">frame ${frames.join(", ")}</span>`).join("<br>");
 }
 
 const L2_SUMMARIES = {
@@ -1283,6 +1320,7 @@ async function l2TxPage(route) {
   const frame = tx.type === 6;
   const logs = logsOf(tx);
   const fees = feeRows(tx, "l2");
+  const kinds = await kindsOf(tx, "l2");
   const position = block ? block.transactions.findIndex((t) => t.hash === tx.hash) : -1;
   const key = !frame && tx.to && tx.call && snippetKey(tx.to, tx.call.function);
   const code = key ? codeBlock(key) : "";
@@ -1304,9 +1342,9 @@ async function l2TxPage(route) {
         "The L1 transaction's blob carries this transaction's bytes, which is where the follower read them from."],
       ["Timestamp", block ? `${ago(block.timestamp)} <span class="muted">(${new Date(block.timestamp * 1000).toLocaleString()})</span>` : "", ""],
       ["Transaction action", `<span class="prose">${(L2_SUMMARIES[tx.kind] || (() => ""))(tx)}</span>`, ""],
-      [frame ? "Sender" : "From", addr(tx.from, "l2"), frame ? "The account the transaction acts for." : ""],
-      frame ? ["To", frameTargets(tx, "l2"), "A frame transaction has no single recipient: each frame calls its own target, as the entry point, or as the sender in SENDER frames."]
-        : ["To", tx.to ? addr(tx.to, "l2") : "contract creation", ""],
+      [frame ? "Sender" : "From", addr(tx.from, "l2") + kindTag(kinds[tx.from]), frame ? "The account the transaction acts for." : ""],
+      frame ? ["To", frameTargets(tx, "l2", kinds), "A frame transaction has no single recipient: each frame calls its own target, as the entry point, or as the sender in SENDER frames."]
+        : ["To", tx.to ? addr(tx.to, "l2") + kindTag(kinds[tx.to]) : "contract creation", ""],
       ...((tx.created || []).length ? [["Created", tx.created.map((c) => addr(c.address, "l2")).join("<br>"), "Named when the explorer knows the creation code, from the ABIs it loaded."]] : []),
       ...linked,
       ...tokenTransfers(tx, "l2"),
@@ -1338,6 +1376,7 @@ async function l2TxPage(route) {
 async function l1TxPage(route) {
   const tx = await object(`l1/txs/${route.hash}`);
   if (!tx) return `<h1>L1 transaction</h1><p class="note">Not found.</p>`;
+  const kinds = await kindsOf(tx, "l1");
   let summary = "";
   if (tx.kind === "advance") {
     summary = `The operator adds L2 block ${l2BlockLink(tx.l2Block)} to the rollup. One EIP-8141 frame transaction carries the
@@ -1378,8 +1417,9 @@ async function l1TxPage(route) {
       ["Block", `${num(tx.block)} <span class="muted">built by ${esc(tx.builder)}</span>`, frame && tx.blobVersionedHashes.length ? "Only Nethermind and Reth accept blob-carrying frame transactions on this devnet." : ""],
       ["Timestamp", `${ago(tx.timestamp)} <span class="muted">(${new Date(tx.timestamp * 1000).toLocaleString()})</span>`, ""],
       ["Transaction action", `<span class="prose">${summary}</span>`, ""],
-      [frame ? "Sender" : "From", addr(tx.from, "l1"), ""],
-      frame ? ["To", frameTargets(tx, "l1"), "A frame transaction has no single recipient: each frame calls its own target, as the entry point, or as the sender in SENDER frames."] : ["To", addr(tx.to, "l1"), ""],
+      [frame ? "Sender" : "From", addr(tx.from, "l1") + kindTag(kinds[tx.from]), ""],
+      frame ? ["To", frameTargets(tx, "l1", kinds), "A frame transaction has no single recipient: each frame calls its own target, as the entry point, or as the sender in SENDER frames."]
+        : ["To", addr(tx.to, "l1") + kindTag(kinds[tx.to]), ""],
       ...linked,
       ...(frame ? [] : [["Value", eth(tx.value), ""]]),
       ...fees.overview,

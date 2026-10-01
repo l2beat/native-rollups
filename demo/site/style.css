@@ -154,6 +154,9 @@ details.more > table { margin-top: 6px; }
 .frame-body .explain { margin: 2px 0 10px; max-width: 880px; }
 .frame table { border: none; border-radius: 0; }
 .gasbar { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 4px 0 8px; }
+.kind { font: 11.5px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); background: var(--soft); border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; white-space: nowrap; }
+.kind.verified { color: var(--real); background: var(--real-bg); border-color: #bfe0c8; }
+.kind.unverified { border-style: dashed; }
 .flag { font: 600 11.5px var(--mono); color: var(--accent); background: #edf1ff; border: 1px solid #c9d4fb; padding: 1px 6px; border-radius: 5px; }
 
 .fill { position: relative; height: 10px; background: #efece5; border-radius: 5px; overflow: hidden; margin: 6px 0; max-width: 520px; }
