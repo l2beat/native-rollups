@@ -694,4 +694,5 @@ class Explorer:
             "number": block["number"], "hash": block["hash"], "timestamp": block["timestamp"],
             "transactions": len(transactions), "kinds": kinds, "gasUsed": block["gasUsed"],
             "l1Tx": block["l1"]["tx"], "l1Block": block["l1"]["block"], "payloadBytes": block["payloadBytes"],
+            "anchor": block["anchorBlockNumber"],
         })

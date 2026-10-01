@@ -56,7 +56,7 @@ async function refresh() {
   }
   renderStatus();
   const route = parseRoute();
-  if (["home", "blocks", "txs", "l1list", "messages", "address"].includes(route.page)) render(true);
+  if (["home", "blocks", "txs", "l1list", "messages", "message", "address"].includes(route.page)) render(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +220,8 @@ function parseRoute() {
   if (parts[0] === "l1") return { page: "l1list", n: Number(parts[1] || 1) };
   if (parts[0] === "l2" && parts[1] === "block") return { page: "block", n: Number(parts[2]), tab: parts[3] || "" };
   if (parts[0] === "l2" && parts[1] === "tx") return { page: "l2tx", hash: parts[2], tab: parts[3] || "" };
-  if (parts[0] === "messages") return { page: "messages" };
+  if (parts[0] === "messages") return { page: "messages", tab: parts[1] || "", n: Number(parts[2] || 1) };
+  if (parts[0] === "deposit" || parts[0] === "withdrawal") return { page: "message", kind: parts[0], n: Number(parts[1]) };
   if (parts[0] === "blob") return { page: "blob", n: Number(parts[1]) };
   if (parts[0] === "address") return { page: "address", chain: parts[1], address: (parts[2] || "").toLowerCase(), tab: parts[3] || "" };
   if (parts[0] === "about") return { page: "about" };
@@ -239,7 +240,7 @@ async function render(live = false) {
     app.innerHTML = `<p class="note">Waiting for the follower to rebuild the chain from L1.</p>`;
     return;
   }
-  const pages = { home, blocks: blockList, txs: txList, l1list: l1List, block: blockPage, l2tx: l2TxPage, l1tx: l1TxPage, messages, about, address: addressPage, blob: blobPage };
+  const pages = { home, blocks: blockList, txs: txList, l1list: l1List, block: blockPage, l2tx: l2TxPage, l1tx: l1TxPage, messages, message: messagePage, about, address: addressPage, blob: blobPage };
   try {
     const html = await (pages[route.page] || (() => `<h1>Not found</h1>`))(route);
     if (seq === renders) update(app, html, location.hash);
@@ -310,16 +311,16 @@ function l1Rows(txs) {
       <td>${t.l2Block ? `L2 block ${l2BlockLink(t.l2Block)}` : ""}</td></tr>`).join("")}</tbody></table>`;
 }
 
-function messageRows(kind) {
-  const entries = Object.values(state.index[kind]).sort((a, b) => b.index - a.index);
+function messageRows(kind, entries) {
   if (!entries.length) return `<p class="note">None yet.</p>`;
+  const one = kind === "deposits" ? "deposit" : "withdrawal";
   if (kind === "deposits") {
     return `<table><thead><tr><th>#</th><th class="num">Amount</th><th class="num">Fee</th><th>From (L1)</th><th>To (L2)</th><th>Sent on L1</th><th>Claimed on L2</th></tr></thead><tbody>
-      ${entries.map((d) => `<tr><td>${d.index}</td><td class="num">${d.value !== undefined ? eth(d.value) : ""}</td><td class="num">${d.fee ? eth(d.fee) : ""}</td><td>${addr(d.from, "l1")}</td><td>${addr(d.to, "l2")}</td>
+      ${entries.map((d) => `<tr><td><a href="#/${one}/${d.index}">${d.index}</a></td><td class="num">${d.value !== undefined ? eth(d.value) : ""}</td><td class="num">${d.fee ? eth(d.fee) : ""}</td><td>${addr(d.from, "l1")}</td><td>${addr(d.to, "l2")}</td>
         <td>${d.l1Tx ? l1TxLink(d.l1Tx) : ""}</td><td>${d.l2Tx ? `${l2TxLink(d.l2Tx)} in ${l2BlockLink(d.l2Block)}` : '<span class="muted">waiting for an L2 block that anchors it</span>'}</td></tr>`).join("")}</tbody></table>`;
   }
   return `<table><thead><tr><th>#</th><th class="num">Amount</th><th class="num">Fee</th><th>From (L2)</th><th>To (L1)</th><th>Sent on L2</th><th>Claimed on L1</th></tr></thead><tbody>
-    ${entries.map((w) => `<tr><td>${w.index}</td><td class="num">${w.value !== undefined ? eth(w.value) : ""}</td><td class="num">${w.fee ? eth(w.fee) : ""}</td><td>${addr(w.from, "l2")}</td><td>${addr(w.to, "l1")}</td>
+    ${entries.map((w) => `<tr><td><a href="#/${one}/${w.index}">${w.index}</a></td><td class="num">${w.value !== undefined ? eth(w.value) : ""}</td><td class="num">${w.fee ? eth(w.fee) : ""}</td><td>${addr(w.from, "l2")}</td><td>${addr(w.to, "l1")}</td>
       <td>${w.l2Tx ? `${l2TxLink(w.l2Tx)} in ${l2BlockLink(w.l2Block)}` : ""}</td><td>${w.l1Tx ? l1TxLink(w.l1Tx) : '<span class="muted">not claimed yet</span>'}</td></tr>`).join("")}</tbody></table>`;
 }
 
@@ -426,18 +427,23 @@ function l1List(route) {
     ${pager(route, txs.length, "l1")}${l1Rows(txs.slice((n - 1) * PAGE, n * PAGE))}${pager(route, txs.length, "l1")}`;
 }
 
-function messages() {
+function messages(route) {
+  const panel = (kind, key, lead) => {
+    const entries = Object.values(state.index[kind]).sort((a, b) => b.index - a.index);
+    const page = { n: route.tab === key ? route.n : 1 };
+    const n = Math.max(page.n, 1);
+    return [key, kind === "deposits" ? "Deposits" : "Withdrawals", entries.length, `<p class="section-lead">${lead}</p>
+      ${pager(page, entries.length, `messages/${kind}`)}${messageRows(kind, entries.slice((n - 1) * PAGE, n * PAGE))}`];
+  };
   return `<h1>Deposits and withdrawals</h1>
     <p class="lead">All L2 ETH comes from deposits: the L2 starts with no ETH outside a pre-minted supply held by the L2
       messenger, which only L1 deposits release, so the L1 escrow backs every L2 ETH.</p>
-    <h2>Deposits, L1 to L2</h2>
-    <p class="section-lead">The rollup contract adds each deposit to a Merkle tree of messages. On L2, a claim proves it
-      against the tree's root in an L1 block the L2 anchored, and the deposit pays for its own claim.</p>
-    ${messageRows("deposits")}
-    <h2>Withdrawals, L2 to L1</h2>
-    <p class="section-lead">The L2 messenger records each withdrawal in its storage. Once the block is on L1, the rollup
-      contract pays it from its escrow, against a storage proof of the message in a recent L2 state root.</p>
-    ${messageRows("withdrawals")}`;
+    ${tabs("/messages", [
+      panel("deposits", "", `L1 to L2. The rollup contract adds each deposit to a Merkle tree of messages. On L2, a claim proves it
+        against the tree's root in an L1 block the L2 anchored.`),
+      panel("withdrawals", "withdrawals", `L2 to L1. The L2 messenger records each withdrawal in its storage. Once its block is on L1,
+        a claim proves it against the block's state root, and the rollup contract pays it from its escrow.`),
+    ], route.tab === "deposits" ? "" : route.tab)}`;
 }
 
 function about() {
@@ -480,8 +486,66 @@ function journey(b, rec) {
     ["Follow", "real", "An independent node rebuilt the block from L1 data alone.",
       matches ? `<a href="#/about">same hash <span class="check">✓</span></a>` : `<span class="bad">different hash</span>`],
   ];
-  return `<ol class="journey">${steps.map(([title, kind, text, link], i) => `<li class="${kind}"><span class="step">${i + 1}</span>
-    <div><b>${title}</b></div><p>${text}</p><div class="evidence">${link}</div></li>`).join("")}</ol>`;
+  return stepper(steps);
+}
+
+// Steps on a line of numbered dots: [title, kind, text, evidence], where kind
+// is real, mock, mixed, or pending for a step not reached yet.
+function stepper(steps) {
+  return `<ol class="journey" style="--steps: ${steps.length}">${steps.map(([title, kind, text, link], i) =>
+    `<li class="${kind}"><span class="step">${i + 1}</span><div><b>${title}</b></div><p>${text}</p><div class="evidence">${link}</div></li>`).join("")}</ol>`;
+}
+
+const msgLink = (kind, i) => `<a href="#/${kind}/${i}">${kind} #${i}</a>`;
+
+// A message's journey between the chains, with what it carries.
+async function messagePage(route) {
+  const deposit = route.kind === "deposit";
+  const m = state.index[deposit ? "deposits" : "withdrawals"][String(route.n)];
+  const title = `${deposit ? "Deposit" : "Withdrawal"} #${route.n} ${net(deposit ? "l1" : "l2")} → ${net(deposit ? "l2" : "l1")}`;
+  if (!m) return `<h1>${title}</h1><p class="note">Not found.</p>`;
+  const [sent, claim] = await Promise.all([
+    object(deposit ? `l1/txs/${m.l1Tx}` : `l2/txs/${m.l2Tx}`),
+    deposit ? m.l2Tx && object(`l2/txs/${m.l2Tx}`) : m.l1Tx && object(`l1/txs/${m.l1Tx}`),
+  ]);
+  const [from, to] = deposit ? ["l1", "l2"] : ["l2", "l1"];
+  const claimer = claim && claim.from === m.to ? "Its recipient claimed it" : claim ? `${addr(claim.from, to)} claimed it for the fee` : "";
+  const waiting = "Its recipient can claim it for free, or anyone for its fee.";
+  let steps;
+  if (deposit) {
+    const anchoring = state.index.l2Blocks.find((b) => b.anchor >= m.l1Block);
+    steps = [
+      ["Send", "real", "The rollup contract added it to its message tree and holds its ETH.",
+        `${l1TxLink(m.l1Tx)} <span class="muted">L1 block ${num(m.l1Block)}</span>`],
+      anchoring
+        ? ["Anchor", "real", `An L2 block anchored an L1 block with this tree, so L2 can prove its root.`, l2BlockLink(anchoring.number)]
+        : ["Anchor", "pending", "Waiting for an L2 block to anchor an L1 block with it.", ""],
+      m.l2Tx
+        ? ["Claim", "real", `${claimer}, proving it against that root, and the L2 messenger delivered it.`, l2TxLink(m.l2Tx)]
+        : ["Claim", "pending", waiting, ""],
+    ];
+  } else {
+    const posted = state.index.l2Blocks.find((b) => b.number === m.l2Block);
+    steps = [
+      ["Send", "real", "The L2 messenger recorded it in its storage.", `${l2TxLink(m.l2Tx)} <span class="muted">in</span> ${l2BlockLink(m.l2Block)}`],
+      posted
+        ? ["Post", "real", "Its block reached L1, and the rollup contract stored its state root.", l1TxLink(posted.l1Tx)]
+        : ["Post", "pending", "Waiting for its block to reach L1.", ""],
+      m.l1Tx
+        ? ["Claim", "real", `${claimer}, proving it against that state root, and the rollup contract paid it.`, l1TxLink(m.l1Tx)]
+        : ["Claim", "pending", waiting, ""],
+    ];
+  }
+  const data = sent && sent.call && sent.call.args.data;
+  return `<h1>${title}</h1>
+    ${stepper(steps)}
+    ${fields([
+      ["Amount", m.value !== undefined ? eth(m.value) : "", ""],
+      ["Fee", m.fee ? eth(m.fee) : "none", "For whoever claims it. Its recipient claims it for free."],
+      ["From", addr(m.from, from), ""],
+      ["To", addr(m.to, to), ""],
+      ...(data && data !== "0x" ? [["Data", hash(data, true), "Delivered as the call's data."]] : []),
+    ])}`;
 }
 
 async function blockPage(route) {
@@ -1281,10 +1345,10 @@ function counterpart(tx) {
 }
 
 // The targets of a frame transaction, with the frames that call each.
+// One row per frame: its index and mode, then its target.
 function frameTargets(tx, chain, kinds = {}) {
-  const targets = {};
-  tx.frames.forEach((f, i) => (targets[f.target] = targets[f.target] || []).push(`${i} ${f.mode}`));
-  return Object.entries(targets).map(([t, frames]) => `${addr(t, chain)}${kindTag(kinds[t])} <span class="muted">frame ${frames.join(", ")}</span>`).join("<br>");
+  return `<div class="targets">${tx.frames.map((f, i) => `<span class="muted">${i} ${f.mode}</span>
+    <span>${addr(f.target, chain)}${kindTag(kinds[f.target])}</span>`).join("")}</div>`;
 }
 
 const L2_SUMMARIES = {
@@ -1334,11 +1398,11 @@ async function l2TxPage(route) {
   const linked = [];
   if (d) {
     linked.push(["Deposit on L1", d.l1Tx ? `${l1TxLink(d.l1Tx)} <span class="muted">in L1 block ${num(d.l1Block)}</span>` : "",
-      `The L1 transaction that sent deposit #${d.index}. The rollup contract added its hash to the message tree, which this claim proves against.`]);
+      `The L1 transaction that sent ${msgLink("deposit", d.index)}. The rollup contract added its hash to the message tree, which this claim proves against.`]);
   }
   if (w) {
     linked.push(["Claim on L1", w.l1Tx ? `${l1TxLink(w.l1Tx)} <span class="muted">in L1 block ${num(w.l1Block)}</span>` : '<span class="muted">not claimed yet</span>',
-      "The L1 transaction that paid this withdrawal from the escrow, against an L2 state root that includes it."]);
+      `The L1 transaction that paid ${msgLink("withdrawal", w.index)} from the escrow, against an L2 state root that includes it.`]);
   }
   const base = `/l2/tx/${tx.hash}`;
   const tab = route.tab;
@@ -1455,11 +1519,11 @@ async function l1TxPage(route) {
   if (tx.kind === "deposit") {
     const d = Object.values(state.index.deposits).find((x) => x.l1Tx === tx.hash);
     if (d) linked.push(["Claim on L2", d.l2Tx ? `${l2TxLink(d.l2Tx)} <span class="muted">in L2 block</span> ${l2BlockLink(d.l2Block)}` : '<span class="muted">waiting for an L2 block that anchors it</span>',
-      `The L2 transaction that delivered deposit #${d.index}.`]);
+      `The L2 transaction that delivered ${msgLink("deposit", d.index)}.`]);
   }
   if (tx.kind === "withdrawal claim") {
     const w = state.index.withdrawals[String(tx.call.args.m.index)];
-    if (w && w.l2Tx) linked.push(["Withdrawal on L2", `${l2TxLink(w.l2Tx)} <span class="muted">in L2 block</span> ${l2BlockLink(w.l2Block)}`, `The L2 transaction that sent withdrawal #${w.index}.`]);
+    if (w && w.l2Tx) linked.push(["Withdrawal on L2", `${l2TxLink(w.l2Tx)} <span class="muted">in L2 block</span> ${l2BlockLink(w.l2Block)}`, `The L2 transaction that sent ${msgLink("withdrawal", w.index)}.`]);
   }
   if (tx.kind === "advance") linked.push(["L2 block", l2BlockLink(tx.l2Block), "The L2 block this transaction adds."]);
   const logs = tx.logs || [];
