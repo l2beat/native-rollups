@@ -982,45 +982,55 @@ function frameExplain(tx, f, i, layer) {
   };
 }
 
-// A message's Merkle path as a tree, climbed from its hash to the root as
-// MessageTree.rootFromPath does: at each height, the index's bit puts the
-// node on the left or right of the sibling the path gives, and the pair
-// hashes into the node above.
+// A message's Merkle path, drawn in the tree of messages. From the root
+// down, the path branches left (0) or right (1) by the index's bits, and
+// each sibling the path gives is the root of a subtree of other messages.
+// MessageTree.rootFromPath hashes the other way, from the message up.
 function pathView(p, index, proven) {
   const n = p.levels.length;
-  const bits = Number(index).toString(2).padStart(n, "0");
-  const W = 150, H = 26, STEP = 52, CENTER = 300, SIDES = { left: 120, right: 480 };
-  const box = (x, y, h, cls, title) => `<g class="${cls}"><title>${esc(title)}</title><rect x="${x}" y="${y}" width="${W}" height="${H}" rx="5"/>
-    <text x="${x + W / 2}" y="${y + H / 2 + 4}" text-anchor="middle">${esc(short(h))}</text></g>`;
-  const label = (y, text) => `<text class="mt-label" x="108" y="${y + H / 2 + 4}" text-anchor="end">${text}</text>`;
-  const edge = (x, y, parentY, cls = "") => `<line class="mt-edge ${cls}" x1="${x + W / 2}" y1="${y}" x2="${CENTER + W / 2}" y2="${parentY + H}"/>`;
-  const parts = [box(CENTER, 0, p.root, "mt-root", `Root: ${p.root}`)];
-  if (proven) parts.push(`<text class="mt-ok" x="${CENTER + W + 12}" y="${H / 2 + 4}">✓ the root the messenger proved</text>`);
-  let y = 0, parentY = 0;
-  // Above the path, each node is hashed with an empty subtree on its right.
-  if (n < 32) {
-    y += 76;
-    const top = n ? p.levels[n - 1].node : p.leaf;
-    parts.push(edge(CENTER, y, parentY, "mt-dashed"),
-      `<text class="mt-label" x="${CENTER + W / 2 + 10}" y="${H + 30}">heights ${n} to 31: with an empty subtree on the right</text>`,
-      box(CENTER, y, top, "mt-node", `Node at height ${n}: ${top}`), label(y, `height ${n}`));
-    parentY = y;
-  }
+  const W = 136, H = 24, D = 92, STEP = 72, GUTTER = 64;
+  const bit = (h) => (p.levels[h].right ? 1 : 0);
+  // Centers of the path's node and its sibling at each height.
+  const pathX = { [n]: 0 }, sibX = {};
   for (let h = n - 1; h >= 0; h--) {
-    y += STEP;
-    const l = p.levels[h];
-    const node = h ? p.levels[h - 1].node : p.leaf;
-    const side = l.right ? SIDES.left : SIDES.right;
-    parts.push(edge(CENTER, y, parentY), edge(side, y, parentY),
-      box(CENTER, y, node, h ? "mt-node" : "mt-leaf", h ? `Node at height ${h}: ${node}` : `Hash of message #${index}: ${node}`),
-      box(side, y, l.sibling, "mt-sib", `Sibling from the path, at height ${h}: ${l.sibling}`),
-      label(y, `${h ? `height ${h}` : "leaf"} · bit ${l.right ? 1 : 0}`));
-    parentY = y;
+    pathX[h] = pathX[h + 1] + (bit(h) ? D : -D);
+    sibX[h] = pathX[h + 1] - (bit(h) ? D : -D);
   }
-  parts.push(`<text class="mt-label" x="${CENTER + W / 2}" y="${y + H + 16}" text-anchor="middle">hash of message #${index}</text>`);
-  return `<p class="tag-note">Message #${index} is ${bits} in binary. Read from the right, each bit puts its node on the right (1) or left (0)
-      of the sibling the path gives, in blue, and each pair hashes into the node above. Hover a node for its full hash.</p>
-    <svg class="merkle" viewBox="0 0 700 ${y + H + 24}" width="700">${parts.join("")}</svg>`;
+  const xs = [...Object.values(pathX), ...Object.values(sibX)];
+  const minX = Math.min(...xs) - W / 2, maxX = Math.max(...xs, W / 2 + 230) + W / 2;
+  const X = (x) => GUTTER + x - minX;
+  const top = n < 32 ? 84 : 0;
+  const Y = (h) => top + (n - h) * STEP;
+  const box = (x, y, h, cls, title) => `<g class="${cls}"><title>${esc(title)}</title><rect x="${X(x) - W / 2}" y="${y}" width="${W}" height="${H}" rx="5"/>
+    <text x="${X(x)}" y="${y + H / 2 + 4}" text-anchor="middle">${esc(short(h))}</text></g>`;
+  const text = (x, y, s, cls = "mt-label", anchor = "middle") => `<text class="${cls}" x="${x}" y="${y}" text-anchor="${anchor}">${s}</text>`;
+  const node = (h) => (h === n ? (n ? p.levels[n - 1].node : p.leaf) : h ? p.levels[h - 1].node : p.leaf);
+  const parts = [];
+  if (n < 32) {
+    parts.push(box(0, 0, p.root, "mt-root", `Root: ${p.root}`),
+      `<line class="mt-path mt-dashed" x1="${X(0)}" y1="${H}" x2="${X(0)}" y2="${top}"/>`,
+      text(X(0) + 10, H + 36, `heights ${n} to 31: always left (0), beside empty subtrees`, "mt-label", "start"));
+  }
+  if (proven) parts.push(text(X(0) + W / 2 + 12, H / 2 + 4, "✓ the root the messenger proved", "mt-ok", "start"));
+  parts.push(box(0, Y(n), node(n), n < 32 ? "mt-node" : "mt-root", `Node at height ${n}: ${node(n)}`), text(4, Y(n) + H / 2 + 4, `height ${n}`, "mt-label", "start"));
+  for (let h = n - 1; h >= 0; h--) {
+    const l = p.levels[h], y = Y(h), parentY = Y(h + 1) + H;
+    const edge = (x, cls, b) => `<line class="${cls}" x1="${X(pathX[h + 1])}" y1="${parentY}" x2="${X(x)}" y2="${y}"/>`
+      + text((X(pathX[h + 1]) + X(x)) / 2 + (x > pathX[h + 1] ? 12 : -12), (parentY + y) / 2, b, cls === "mt-path" ? "mt-bit" : "mt-bit off");
+    const start = ((index >> h) ^ 1) << h;
+    const covers = h ? `#${start}–#${start + 2 ** h - 1}` : `message #${start}`;
+    parts.push(edge(pathX[h], "mt-path", bit(h)), edge(sibX[h], "mt-edge", 1 - bit(h)),
+      box(pathX[h], y, node(h), h ? "mt-node" : "mt-leaf", h ? `Node at height ${h}: ${node(h)}` : `Hash of message #${index}: ${node(h)}`),
+      box(sibX[h], y, l.sibling, `mt-sib${l.empty ? " empty" : ""}`, `Sibling from the path, at height ${h}: ${l.sibling}${l.empty ? " (an empty subtree)" : ""}`),
+      h ? `<path class="mt-subtree${l.empty ? " empty" : ""}" d="M${X(sibX[h])} ${y + H + 2} l-22 16 h44 z"/>` : "",
+      text(X(sibX[h]), y + H + (h ? 30 : 14), `${covers}${l.empty ? ", none yet" : ""}`),
+      text(4, y + H / 2 + 4, `height ${h}`, "mt-label", "start"));
+  }
+  parts.push(text(X(pathX[0]), Y(0) + H + 14, `message #${index}`, "mt-label strong"));
+  return `<p class="tag-note">The tree of messages, with only this claim's path drawn. From the root down, left edges are 0 and right edges
+      are 1, so the bold path spells #${index} in binary, ${Number(index).toString(2)}. The claim carries the blue siblings, each the root of
+      a subtree of other messages, and hashes from the message up to the root. Hover a node for its full hash.</p>
+    <svg class="merkle" viewBox="0 0 ${GUTTER + maxX - minX + 10} ${Y(0) + H + 24}" width="${GUTTER + maxX - minX + 10}">${parts.join("")}</svg>`;
 }
 
 function frameCards(tx, layer) {

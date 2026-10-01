@@ -248,7 +248,8 @@ def path_to_root(m: tuple, path: list) -> dict:
         sibling = path[height] if height < len(path) else zero
         node = keccak256(sibling + node) if right else keccak256(node + sibling)
         if height < len(path):
-            out["levels"].append({"right": right, "sibling": hx(sibling), "node": hx(node)})
+            # A sibling equal to the empty subtree holds no messages yet.
+            out["levels"].append({"right": right, "sibling": hx(sibling), "node": hx(node), "empty": sibling == zero})
         zero = keccak256(zero + zero)
     out["root"] = hx(node)
     return out
