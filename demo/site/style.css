@@ -97,6 +97,7 @@ table.fields td.note { color: var(--muted); font-size: 13.5px; }
 a.addr { white-space: nowrap; }
 .nowrap { white-space: nowrap; }
 .prose { font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
+.tag-note { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); }
 .empty-hash { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--shortcut); background: var(--shortcut-bg); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
 .net { display: inline-block; font: 700 9.5px/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: 0.03em; padding: 2px 4px; border-radius: 4px; margin-right: 4px; vertical-align: 1.5px; }
 .net.l1 { background: #e3e8f4; color: #34487a; }

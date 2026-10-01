@@ -82,8 +82,15 @@ const EMPTY_HASHES = {
   "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421": "the root of an empty trie",
   "0x87b69a306c8e430d0857f7c4ac5e27cecffa1108d43c2e5df7388056fea7a423": "the SSZ root of no execution requests",
 };
-const empty = (h) => (EMPTY_HASHES[h] ? ` <span class="empty-hash">empty: ${EMPTY_HASHES[h]}</span>` : "");
-const hash = (h, full = false) => `<span class="mono" title="${esc(h)}">${esc(full ? h : short(h))}</span>${empty(h)}`;
+// Values that stand in for something the demo cannot have yet.
+const MOCKED = {
+  // keccak256("frames-devnet mock EVM verification key"), in contracts/script/DeployFrames.s.sol
+  "0xf0cc70b85867f9592b138c7425d60e0bed9b7034cac36a485dd8a06ba68c88f1": "a placeholder EVM verification key hash",
+};
+// What a value is, when the explorer knows: the hash of nothing, or a mock.
+const tags = (h) => (EMPTY_HASHES[h] ? ` <span class="empty-hash">empty: ${EMPTY_HASHES[h]}</span>` : "")
+  + (MOCKED[h] ? ` <span class="nowrap">${badge("mock")} <span class="tag-note">${MOCKED[h]}</span></span>` : "");
+const hash = (h, full = false) => `<span class="mono" title="${esc(h)}">${esc(full ? h : short(h))}</span>${tags(h)}`;
 // Every link to a block, transaction or address says which chain it is on.
 const net = (chain) => `<span class="net ${chain}">${chain.toUpperCase()}</span>`;
 const l2BlockLink = (n) => `<span class="nowrap">${net("l2")}<a href="#/l2/block/${n}">#${n}</a></span>`;
@@ -809,7 +816,7 @@ function value(v, key, ctx = {}) {
   const s = String(v);
   if (/^0x[0-9a-f]{40}$/i.test(s)) return addr(s, chainFor(key, ctx));
   if (key === "value" && /^\d+$/.test(s)) return eth(s);
-  if (/^0x[0-9a-f]*$/i.test(s)) return s.length > 70 ? hash(s) + ` <span class="muted">(${(s.length - 2) / 2} bytes)</span>` : `<span class="mono">${s}</span>${empty(s)}`;
+  if (/^0x[0-9a-f]*$/i.test(s)) return s.length > 70 ? hash(s) + ` <span class="muted">(${(s.length - 2) / 2} bytes)</span>` : `<span class="mono">${s}</span>${tags(s)}`;
   return esc(typeof v === "number" ? num(v) : s);
 }
 
