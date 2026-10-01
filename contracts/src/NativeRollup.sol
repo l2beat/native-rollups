@@ -12,8 +12,9 @@ import {MessageTree, Tree} from "./libs/MessageTree.sol";
 ///         requires the transaction's EIP-8288 dependency to carry that root
 ///         under the EVM verification key hash of the EIP-8357 registry. In a
 ///         valid L1 block, EIP-8288 guarantees that the dependency is proven.
-/// @dev    Abstract only because reading the dependency frame needs the
-///         EIP-8141 introspection instructions; see `_readDependency`.
+/// @dev    Abstract only because reading the dependency frame and the state
+///         gas left need the EIP-8141 introspection instructions; see
+///         `_readDependency` and `_stateGasLeft`.
 abstract contract NativeRollup {
     struct BlockParams {
         // Constrained fields (validated by the L2 proof)
@@ -55,12 +56,16 @@ abstract contract NativeRollup {
     // Number of recent L2 state roots kept, as EIP-2935 keeps L1 block
     // hashes. A ring buffer only creates new storage for the first blocks.
     uint256 public constant STATE_ROOT_HISTORY = 8191;
+    // How far L2 time may lag L1 time. A block must reach L1 while its anchor
+    // is in the BLOCKHASH window, 256 L1 blocks, under an hour, so the bound
+    // only rejects blocks whose builder held L2 time back.
+    uint256 public constant MAX_TIMESTAMP_LAG = 1 hours;
 
     // The EIP-8357 registry, at 0x00005e9c1447C1A05A642ec9eB76D9C125468357
     // on chains that activate it.
     address public immutable evmVkRegistry;
     uint64 public immutable chainId;
-    uint64 public immutable gasLimit;
+    uint64 public immutable l2GasLimit;
     VkPolicy public immutable vkPolicy;
     bytes32 public immutable pinnedVkHash;
     // The L2 messenger predeploy, whose queue holds the L2 to L1 messages.
@@ -86,7 +91,7 @@ abstract contract NativeRollup {
 
     constructor(
         uint64 chainId_,
-        uint64 gasLimit_,
+        uint64 l2GasLimit_,
         bytes32 genesisBlockHash,
         bytes32 genesisStateRoot,
         VkPolicy vkPolicy_,
@@ -97,7 +102,7 @@ abstract contract NativeRollup {
         evmVkRegistry = evmVkRegistry_;
         l2Messenger = l2Messenger_;
         chainId = chainId_;
-        gasLimit = gasLimit_;
+        l2GasLimit = l2GasLimit_;
         vkPolicy = vkPolicy_;
         pinnedVkHash = pinnedVkHash_;
         blockHash = genesisBlockHash;
@@ -107,7 +112,13 @@ abstract contract NativeRollup {
     /// @notice Emitted so the message can be claimed on L2, where only its
     ///         hash is proven.
     event L1MessageSent(
-        uint256 indexed index, address indexed sender, address indexed to, uint256 value, uint256 fee, bytes data
+        uint256 indexed index,
+        address indexed sender,
+        address indexed to,
+        uint256 value,
+        uint256 fee,
+        uint256 gasLimit,
+        bytes data
     );
 
     /// @notice Emitted for each L2 block, so that nodes can find the
@@ -117,13 +128,16 @@ abstract contract NativeRollup {
         uint256 indexed index, address indexed sender, address indexed to, uint256 value, uint256 fee, address feeRecipient
     );
 
-    /// @notice Sends `msg.value - fee` to `to` on L2, and `fee` to whoever
-    ///         claims the message there.
-    function sendMessage(address to, uint256 fee, bytes calldata data) external payable {
+    /// @notice Sends `msg.value - fee` to `to` on L2, with a call that gets
+    ///         `gasLimit`, and `fee` to whoever claims the message there.
+    function sendMessage(address to, uint256 fee, uint256 gasLimit, bytes calldata data) external payable {
         require(msg.value >= fee, "fee exceeds value");
+        // A call from the L2 messenger to itself could send an L2 to L1
+        // message in its name.
+        require(to != l2Messenger, "message to the messenger");
         uint256 index = l1Messages.count;
-        MessageTree.insert(l1Messages, Messages.hash(msg.sender, to, msg.value - fee, fee, data, index));
-        emit L1MessageSent(index, msg.sender, to, msg.value - fee, fee, data);
+        MessageTree.insert(l1Messages, Messages.hash(msg.sender, to, msg.value - fee, fee, gasLimit, data, index));
+        emit L1MessageSent(index, msg.sender, to, msg.value - fee, fee, gasLimit, data);
     }
 
     function l1MessageRoot() external view returns (bytes32) {
@@ -176,7 +190,7 @@ abstract contract NativeRollup {
         Messages.requireQueued(m, stateRootAt(l2BlockNumber), l2Messenger, L2_QUEUE_SLOT, accountProof, storageProof);
 
         currentL2Sender = m.sender;
-        Messages.deliver(m, feeRecipient);
+        Messages.deliver(m, feeRecipient, _stateGasLeft());
         currentL2Sender = address(0);
         emit L2MessageClaimed(m.index, m.sender, m.to, m.value, m.fee, feeRecipient);
     }
@@ -194,8 +208,11 @@ abstract contract NativeRollup {
 
         // 3. Bound the L2 timestamp by L1 time. The program only requires
         //    timestamps to increase, so a block at the maximum timestamp
-        //    would halt the rollup: no block could follow it.
+        //    would halt the rollup, since no block could follow it, and
+        //    blocks far in the past would hold L2 time back, past users'
+        //    deadlines.
         require(params.timestamp <= block.timestamp, "timestamp in the future");
+        require(params.timestamp + MAX_TIMESTAMP_LAG >= block.timestamp, "timestamp too old");
 
         // 4. Rebuild the proof's public output from storage, calldata, the
         //    versioned hashes, and the L1 anchor, and compare it with the
@@ -232,7 +249,7 @@ abstract contract NativeRollup {
         header.logsBloom = params.logsBloom;
         header.prevRandao = params.prevRandao;
         header.blockNumber = blockNumber + 1; // from storage
-        header.gasLimit = gasLimit; // fixed
+        header.gasLimit = l2GasLimit; // fixed
         header.gasUsed = params.gasUsed;
         header.timestamp = params.timestamp;
         header.extraData = params.extraData;
@@ -279,4 +296,9 @@ abstract contract NativeRollup {
         view
         virtual
         returns (uint8 scheme, bytes32 dataHash, bytes32 vkHash);
+
+    /// @notice The state gas a call can draw on (see `Messages.deliver`).
+    /// @dev    In an EIP-8141 frame transaction, `TXPARAM(0x0C)`, which
+    ///         Solidity cannot express yet.
+    function _stateGasLeft() internal view virtual returns (uint256);
 }

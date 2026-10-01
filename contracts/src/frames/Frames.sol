@@ -13,9 +13,12 @@ library Frames {
 
     uint256 internal constant STATUS_SUCCESS = 1;
 
+    // `TXPARAM` parameter: the state gas left in the executing frame.
+    uint256 internal constant STATE_GAS_LEFT = 0x0C;
+
     // Runtime of `frames/frame_introspection.eas`.
     bytes internal constant HELPER_RUNTIME =
-        hex"3660401460115736606014601e575f5ffd5b5f35602035b35f5260205ff35b5f356040356020355fb26040355ff3";
+        hex"366020146018573660401460225736606014602f575f5ffd5b5f35b05f5260205ff35b5f35602035b35f5260205ff35b5f356040356020355fb26040355ff3";
 
     /// @notice Deploys the helper behind a constructor that returns the rest
     ///         of the initcode as runtime code.
@@ -32,6 +35,16 @@ library Frames {
         (bool ok, bytes memory out) = helper.staticcall(abi.encode(which, frameIndex));
         require(ok && out.length == 32, "FRAMEPARAM");
         return abi.decode(out, (uint256));
+    }
+
+    /// @notice The state gas a call can draw on. A frame transaction pays
+    ///         state gas only out of the executing frame's budget, which
+    ///         `TXPARAM(0x0C)` reads. Elsewhere the frame instructions halt,
+    ///         and state gas spills into the call's gas once the
+    ///         transaction's reservoir is empty, so it has no separate bound.
+    function stateGasLeft(address helper) internal view returns (uint256) {
+        (bool ok, bytes memory out) = helper.staticcall{gas: 1_000}(abi.encode(STATE_GAS_LEFT));
+        return ok && out.length == 32 ? abi.decode(out, (uint256)) : type(uint256).max;
     }
 
     /// @notice `length` bytes of frame `frameIndex`'s data from `offset`.

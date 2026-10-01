@@ -568,6 +568,7 @@ async function messagePage(route) {
     ${fields([
       ["Amount", m.value !== undefined ? eth(m.value) : "", ""],
       ["Fee", m.fee ? eth(m.fee) : "none", "For whoever claims it. Its recipient claims it for free."],
+      ...(Number(m.gasLimit) ? [["Gas limit", num(m.gasLimit), "The gas its call gets, whoever claims it."]] : []),
       ["From", addr(m.from, from), ""],
       ["To", addr(m.to, to), ""],
       ...(data && data !== "0x" ? [["Data", hash(data, true), "Delivered as the call's data."]] : []),
@@ -1381,7 +1382,7 @@ const L2_SUMMARIES = {
     return `${own ? `${addr(claim.to, "l2")} claims a deposit of ${eth(claim.value)} and pays the fee from it. It is an EIP-8141 frame
       transaction: the claim frames run first, then the VERIFY frame approves the payment from the balance the claim
       just delivered.` : `${addr(tx.from, "l2")} claims a deposit of ${eth(claim.value)} for ${addr(claim.to, "l2")}.
-      ${claim.fee > 0 ? `The message's fee of ${eth(claim.fee)}, which the claim pays it first, covers the claim's gas, so the claimer needs no funds.` : "The message carries no fee, so the claimer pays the gas itself."}`}${proves ? " It also proves the root of L1's message tree, against the anchor of a recent L2 block." : ""}`;
+      ${claim.fee > 0 ? `The claimer earns the message's fee of ${eth(claim.fee)}, which covers the claim's gas, but pays the gas from its own funds: only a message to the claimer can pay for its own claim.` : "The message carries no fee, so the claimer pays the gas itself."}`}${proves ? " It also proves the root of L1's message tree, against the anchor of a recent L2 block." : ""}`;
   },
   withdrawal: (tx) => {
     const fee = Number(tx.call.args.fee || 0);

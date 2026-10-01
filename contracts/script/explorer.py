@@ -267,10 +267,10 @@ MESSAGE_TREE_DEPTH = 32  # MessageTree.DEPTH
 def path_to_root(m: tuple, path: list) -> dict:
     """The nodes from a message's leaf up to the message tree's root, as
     `MessageTree.rootFromPath` computes them."""
-    sender, to, value, fee, data, index = m
+    sender, to, value, fee, gas_limit, data, index = m
     node = keccak256(
         bytes.fromhex(sender[2:]) + bytes.fromhex(to[2:]) + value.to_bytes(32, "big") + fee.to_bytes(32, "big")
-        + keccak256(data) + index.to_bytes(32, "big")
+        + gas_limit.to_bytes(32, "big") + keccak256(data) + index.to_bytes(32, "big")
     )
     out = {"leaf": hx(node), "levels": []}
     zero = bytes(32)
@@ -619,7 +619,7 @@ class Explorer:
                     entry = self.index["deposits"].setdefault(str(a["index"]), {})
                     entry.update({
                         "index": a["index"], "from": a["sender"], "to": a["to"], "value": a["value"], "fee": a["fee"],
-                        "l1Tx": tx["hash"], "l1Block": tx["block"],
+                        "gasLimit": a["gasLimit"], "l1Tx": tx["hash"], "l1Block": tx["block"],
                     })
         if kind == "withdrawal claim":
             index = tx["call"]["args"]["m"]["index"]
@@ -693,7 +693,7 @@ class Explorer:
                     entry = self.index["withdrawals"].setdefault(str(a["index"]), {"index": a["index"]})
                     entry.update({
                         "from": a["sender"], "to": a["to"], "value": a["value"], "fee": a["fee"],
-                        "l2Tx": tx["hash"], "l2Block": block["number"],
+                        "gasLimit": a["gasLimit"], "l2Tx": tx["hash"], "l2Block": block["number"],
                     })
         # What the block's transaction table shows, so it needs no other file.
         block["transactions"] = [

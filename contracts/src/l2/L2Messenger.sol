@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import {MessageTree} from "../libs/MessageTree.sol";
 import {Message, Messages} from "../libs/Messages.sol";
 import {MptProof} from "../libs/MptProof.sol";
+import {Frames} from "../frames/Frames.sol";
 
 /// @notice L2 predeploy of the book's messaging design. It holds the
 ///         pre-minted supply of the gas token and handles both directions:
@@ -18,12 +19,15 @@ import {MptProof} from "../libs/MptProof.sol";
 ///           supply and appends the message hash to `sentMessages`, which the
 ///           rollup contract proves against an L2 state root.
 /// @dev    Lives in the L2 genesis with its code, its balance, and `l1Rollup`
-///         in storage, so it has no constructor.
+///         in storage, so it has no constructor. The genesis also holds the
+///         frame introspection helper at `FRAMES_HELPER`.
 contract L2Messenger {
     // EIP-4788 beacon roots contract, which stores each L2 block's anchor.
     address internal constant BEACON_ROOTS = 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02;
     // Storage slot of the root of `NativeRollup.l1Messages`.
     uint256 internal constant L1_MESSAGE_ROOT_SLOT = 3;
+    // Predeploy of `frames/frame_introspection.eas`, for the state gas left.
+    address internal constant FRAMES_HELPER = 0x8079000000000000000000000000000000000002;
 
     address public l1Rollup;
     // L1->L2 messages already delivered, as a bitmap (see Messages).
@@ -43,7 +47,13 @@ contract L2Messenger {
     /// @notice Emitted so the message can be claimed on L1, where only its
     ///         hash is proven.
     event L2MessageSent(
-        uint256 indexed index, address indexed sender, address indexed to, uint256 value, uint256 fee, bytes data
+        uint256 indexed index,
+        address indexed sender,
+        address indexed to,
+        uint256 value,
+        uint256 fee,
+        uint256 gasLimit,
+        bytes data
     );
 
     function claimed(uint256 index) external view returns (bool) {
@@ -56,13 +66,16 @@ contract L2Messenger {
         return currentL1Sender;
     }
 
-    /// @notice Sends `msg.value - fee` to `to` on L1, and `fee` to whoever
-    ///         claims the message there.
-    function sendMessage(address to, uint256 fee, bytes calldata data) external payable {
+    /// @notice Sends `msg.value - fee` to `to` on L1, with a call that gets
+    ///         `gasLimit`, and `fee` to whoever claims the message there.
+    function sendMessage(address to, uint256 fee, uint256 gasLimit, bytes calldata data) external payable {
         require(msg.value >= fee, "fee exceeds value");
+        // A call from the rollup contract to itself could send an L1 to L2
+        // message in its name.
+        require(to != l1Rollup, "message to the rollup");
         uint256 index = sentMessages.length;
-        sentMessages.push(Messages.hash(msg.sender, to, msg.value - fee, fee, data, index));
-        emit L2MessageSent(index, msg.sender, to, msg.value - fee, fee, data);
+        sentMessages.push(Messages.hash(msg.sender, to, msg.value - fee, fee, gasLimit, data, index));
+        emit L2MessageSent(index, msg.sender, to, msg.value - fee, fee, gasLimit, data);
     }
 
     /// @notice Proves the rollup contract's L1 message root in an anchored L1
@@ -103,11 +116,11 @@ contract L2Messenger {
     ///                     names the recipient instead.
     function claimL1Message(Message calldata m, bytes32[] calldata path, address feeRecipient) external {
         Messages.markClaimed(claimedBits, m.index);
-        bytes32 leaf = Messages.hash(m.sender, m.to, m.value, m.fee, m.data, m.index);
+        bytes32 leaf = Messages.hash(m);
         require(MessageTree.rootFromPath(leaf, m.index, path) == provenL1MessageRoot, "message not in root");
 
         currentL1Sender = m.sender;
-        Messages.deliver(m, feeRecipient);
+        Messages.deliver(m, feeRecipient, Frames.stateGasLeft(FRAMES_HELPER));
         currentL1Sender = address(0);
         emit L1MessageClaimed(m.index, m.sender, m.to, m.value, m.fee, feeRecipient);
     }

@@ -1,6 +1,7 @@
 ;;; EIP-8141 frame introspection for contracts compiled without the frame
 ;;; instructions, which solc does not support yet.
 ;;;
+;;; 32-byte calldata `param` returns TXPARAM(param).
 ;;; 64-byte calldata `param || frameIndex` returns FRAMEPARAM(param, frameIndex).
 ;;; 96-byte calldata `frameIndex || offset || length` returns `length` bytes of
 ;;; frame `frameIndex`'s data from `offset`, read with FRAMEDATACOPY.
@@ -12,6 +13,10 @@
 #pragma target "prague"
 
     calldatasize        ; [cds]
+    push 32             ; [32, cds]
+    eq                  ; [cds==32]
+    jumpi @txparam      ; []
+    calldatasize        ; [cds]
     push 64             ; [64, cds]
     eq                  ; [cds==64]
     jumpi @param        ; []
@@ -22,6 +27,16 @@
     push 0              ; [0]
     push 0              ; [0, 0]
     revert              ; []
+
+txparam:
+    push 0              ; [0]
+    calldataload        ; [param]
+    #bytes 0xb0         ; TXPARAM: [value]
+    push 0              ; [0, value]
+    mstore              ; []
+    push 32             ; [32]
+    push 0              ; [0, 32]
+    return              ; []
 
 param:
     push 0              ; [0]

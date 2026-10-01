@@ -17,7 +17,7 @@ contract FramesNativeRollup is NativeRollup {
 
     constructor(
         uint64 chainId_,
-        uint64 gasLimit_,
+        uint64 l2GasLimit_,
         bytes32 genesisBlockHash,
         bytes32 genesisStateRoot,
         VkPolicy vkPolicy_,
@@ -28,7 +28,7 @@ contract FramesNativeRollup is NativeRollup {
     )
         NativeRollup(
             chainId_,
-            gasLimit_,
+            l2GasLimit_,
             genesisBlockHash,
             genesisStateRoot,
             vkPolicy_,
@@ -59,5 +59,9 @@ contract FramesNativeRollup is NativeRollup {
             abi.decode(Frames.data(framesHelper, frameIndex, 0, 96), (uint256, bytes32, bytes32));
         require(schemeWord <= type(uint8).max, "scheme");
         scheme = uint8(schemeWord);
+    }
+
+    function _stateGasLeft() internal view override returns (uint256) {
+        return Frames.stateGasLeft(framesHelper);
     }
 }

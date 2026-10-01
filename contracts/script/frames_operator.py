@@ -65,10 +65,10 @@ ADVANCE_SIGNATURE = (
     "advance((bytes32,bytes32,bytes,uint64,uint64,uint256,bytes32,bytes32,"
     "bytes32,uint256,bytes32,uint256,address,bytes32,bytes),uint256)"
 )
-CLAIM_L2_MESSAGE_SIGNATURE = "claimL2Message((address,address,uint256,uint256,bytes,uint256),uint256,bytes[],bytes[],address)"
+CLAIM_L2_MESSAGE_SIGNATURE = "claimL2Message((address,address,uint256,uint256,uint256,bytes,uint256),uint256,bytes[],bytes[],address)"
 DEPENDENCY_FRAME_INDEX = 1
 L2_MESSENGER = "0x8079000000000000000000000000000000000001"
-L2_MESSAGE_SENT = keccak256(b"L2MessageSent(uint256,address,address,uint256,uint256,bytes)")
+L2_MESSAGE_SENT = keccak256(b"L2MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
 SENT_SLOT = 2  # L2Messenger.sentMessages
 
 
@@ -294,10 +294,11 @@ def claim_l2_message(args: argparse.Namespace) -> None:
     if not logs:
         raise SystemExit(f"L2 to L1 message {args.index} is not in an L2 block the rollup has")
     topics, data = logs[0]["topics"], bytes.fromhex(logs[0]["data"][2:])
-    offset = int.from_bytes(data[64:96], "big")
+    offset = int.from_bytes(data[96:128], "big")
     m = {
         "index": args.index, "sender": "0x" + topics[2][-40:], "to": "0x" + topics[3][-40:],
         "value": int.from_bytes(data[0:32], "big"), "fee": int.from_bytes(data[32:64], "big"),
+        "gasLimit": int.from_bytes(data[64:96], "big"),
         "data": hx(data[offset + 32 : offset + 32 + int.from_bytes(data[offset : offset + 32], "big")]),
     }
     # The claimer receives the message's fee, if any.
@@ -313,7 +314,7 @@ def claim_l2_message(args: argparse.Namespace) -> None:
     receipt = json.loads(
         cast(
             "send", "--rpc-url", rpc, "--private-key", args.key, "--json", args.rollup, CLAIM_L2_MESSAGE_SIGNATURE,
-            f"({m['sender']},{m['to']},{m['value']},{m['fee']},{m['data']},{m['index']})",
+            f"({m['sender']},{m['to']},{m['value']},{m['fee']},{m['gasLimit']},{m['data']},{m['index']})",
             str(p["blockNumber"]),
             "[" + ",".join(p["accountProof"]) + "]",
             "[" + ",".join(p["storageProof"]) + "]",

@@ -48,7 +48,7 @@ from ssz_roots import container4, payload_root, public_input_root, versioned_has
 BLOCK_ADDED = keccak256(b"BlockAdded(uint64,bytes32)")
 # NativeRollup.EMPTY_LIST_ROOT: the SSZ root of no withdrawals.
 EMPTY_LIST_ROOT = bytes.fromhex("f5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b")
-L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,uint256,bytes)")
+L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
 L2_MESSAGE_CLAIMED = keccak256(b"L2MessageClaimed(uint256,address,address,uint256,uint256,address)")
 ADVANCE_SELECTOR = keccak256(
     b"advance((bytes32,bytes32,bytes,uint64,uint64,uint256,bytes32,bytes32,bytes32,uint256,bytes32,uint256,address,bytes32,bytes),uint256)"
@@ -111,7 +111,7 @@ def write_record(path: str, entry: dict) -> None:
 
 def follow(args: argparse.Namespace) -> None:
     chain = genesis(args.genesis)
-    gas_limit = int(cast("call", "--rpc-url", args.l1_rpc, args.rollup, "gasLimit()(uint64)").split()[0])
+    gas_limit = int(cast("call", "--rpc-url", args.l1_rpc, args.rollup, "l2GasLimit()(uint64)").split()[0])
     ex.load_signatures(args.abis)
 
     def flatten(path: str, name: str) -> str | None:

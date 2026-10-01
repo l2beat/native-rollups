@@ -63,14 +63,21 @@ SPAMOOR_L2_KEY = "0x3a91003acaf4c21b3953d94fa4a6db694fa69e5242b2e37be05dd8276105
 L2_MESSENGER = "0x8079000000000000000000000000000000000001"
 SEND_MESSAGE_ABI = json.dumps([{
     "type": "function", "name": "sendMessage", "stateMutability": "payable", "outputs": [],
-    "inputs": [{"name": "to", "type": "address"}, {"name": "fee", "type": "uint256"}, {"name": "data", "type": "bytes"}],
+    "inputs": [
+        {"name": "to", "type": "address"}, {"name": "fee", "type": "uint256"}, {"name": "gasLimit", "type": "uint256"},
+        {"name": "data", "type": "bytes"},
+    ],
 }])
-# keccak256("L2MessageSent(uint256,address,address,uint256,uint256,bytes)")
-L2_MESSAGE_SENT = "0x19ee2582c04ed949b547a806a16f4363a8bd428006acb38e3574aab28acce436"
+# keccak256("L2MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
+L2_MESSAGE_SENT = "0xe854ec33ea124f454be5a868ee40540f56f837bd6eae1cbd8d5add769ccc7ed6"
 # The fee of spamoor's messages to addresses that cannot claim them, which
 # covers a relayer's claim in either direction.
-MESSAGE_FEE = 10**14
-# A bound on the gas of a claim on L1, for the claimer's fee check.
+MESSAGE_FEE = 10**15
+# The gas limit of spamoor's messages to a `MessageReceiver`, whose first
+# call creates a storage slot.
+RECEIVER_GAS_LIMIT = 200_000
+# A bound on the gas of a claim on L1 besides its call, for the claimer's
+# fee check.
 L1_CLAIM_GAS = 400_000
 ETH = 10**18
 # What a user keeps on L2 for fees.
@@ -199,7 +206,7 @@ class Episode:
         self.start_follower()
         # Withdrawals already claimed on L1, when resuming, before the claimer
         # looks for withdrawals to claim.
-        for index, _, _ in self.withdrawals():
+        for index, _, _, _ in self.withdrawals():
             if cast("call", "--rpc-url", self.args.rpc, self.contracts["rollup"], "claimedL2Messages(uint256)(bool)", str(index)) == "true":
                 self.claimed.add(index)
         threading.Thread(target=self.relay_withdrawals, daemon=True).start()
@@ -253,12 +260,12 @@ class Episode:
         a = self.args
         c = self.contracts
 
-        def messages(name: str, target: str, to: str, data: str, gwei: int) -> dict:
+        def messages(name: str, target: str, to: str, data: str, gwei: int, gas_limit: int = 0) -> dict:
             """Messages to `to`, whose recipient cannot claim them, so they
             carry a fee for whoever does. `gwei` includes it."""
             tasks = {"execution": [{"type": "call", "data": {
                 "target": target, "call_abi": SEND_MESSAGE_ABI, "call_fn_name": "sendMessage",
-                "call_args": [to, str(MESSAGE_FEE), data], "amount": gwei, "gas_limit": 400_000,
+                "call_args": [to, str(MESSAGE_FEE), str(gas_limit), data], "amount": gwei, "gas_limit": 400_000,
             }}]}
             return {"scenario": "taskrunner", "name": name, "config": {
                 "seed": name, "throughput": 1, "max_pending": 2, "max_wallets": 2, "tasks_config": json.dumps(tasks),
@@ -270,12 +277,12 @@ class Episode:
             {"scenario": "uniswap-swaps", "name": "Uniswap swaps", "config": {"throughput": 1, "max_wallets": 3}},
             {"scenario": "setcodetx", "name": "EIP-7702 delegations", "config": {"throughput": 1, "max_wallets": 2, "max_authorizations": 3}},
             {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {"throughput": 1, "max_wallets": 3, "envelope": "base"}},
-            messages("withdrawals", L2_MESSENGER, "{randomaddr}", "0x", 1_000_000),
-            messages("messages-to-l1", L2_MESSENGER, c["receiverL1"], "0xc0ffee", MESSAGE_FEE // 10**9),
+            messages("withdrawals", L2_MESSENGER, "{randomaddr}", "0x", 2 * MESSAGE_FEE // 10**9),
+            messages("messages-to-l1", L2_MESSENGER, c["receiverL1"], "0xc0ffee", MESSAGE_FEE // 10**9, RECEIVER_GAS_LIMIT),
         ]
         l1 = [
             messages("deposits", c["rollup"], "{randomaddr}", "0x", 10_000_000),
-            messages("messages-to-l2", c["rollup"], c["receiverL2"], "0xc0ffee", MESSAGE_FEE // 10**9),
+            messages("messages-to-l2", c["rollup"], c["receiverL2"], "0xc0ffee", MESSAGE_FEE // 10**9, RECEIVER_GAS_LIMIT),
         ]
         for name, rpc, key, spammers in (("l1", a.rpc, SPAMOOR_L1_KEY, l1), ("l2", self.l2_rpc, SPAMOOR_L2_KEY, l2)):
             for spammer in spammers:
@@ -302,7 +309,7 @@ class Episode:
         address = cast("wallet", "address", "--private-key", key)
         receipt = json.loads(cast(
             "send", "--rpc-url", self.args.rpc, "--private-key", key, "--json", "--timeout", "120",
-            self.contracts["rollup"], "sendMessage(address,uint256,bytes)", address, "0", "0x", "--value", amount,
+            self.contracts["rollup"], "sendMessage(address,uint256,uint256,bytes)", address, "0", "0", "0x", "--value", amount,
         ))
         self.event(
             "deposit", f"{user[0].upper() + user[1:]} deposits {amount.replace('ether', ' ETH')} from L1",
@@ -325,7 +332,7 @@ class Episode:
         self.event("payment", f"{sender} pays {amount / ETH:g} ETH to {to} on L2", l2Tx=tx)
 
     def withdraw(self, user: str, amount: int) -> None:
-        tx = self.send_l2(user, L2_MESSENGER, "sendMessage(address,uint256,bytes)", self.users[user], "0", "0x", "--value", str(amount))
+        tx = self.send_l2(user, L2_MESSENGER, "sendMessage(address,uint256,uint256,bytes)", self.users[user], "0", "0", "0x", "--value", str(amount))
         self.event("withdrawal", f"{user} withdraws {amount / ETH:g} ETH to L1", l2Tx=tx)
 
     def random_payment(self, exclude: tuple) -> None:
@@ -350,11 +357,14 @@ class Episode:
 
     def withdrawals(self) -> list:
         """The withdrawals in L2 blocks the rollup has, with their index,
-        recipient and fee."""
+        recipient, fee and gas limit."""
         logs = json_rpc(self.l2_rpc, "eth_getLogs", {
             "address": L2_MESSENGER, "fromBlock": "0x0", "toBlock": "latest", "topics": [L2_MESSAGE_SENT],
         })
-        return [(int(log["topics"][1], 16), "0x" + log["topics"][3][-40:], int(log["data"][66:130], 16)) for log in logs]
+        return [
+            (int(log["topics"][1], 16), "0x" + log["topics"][3][-40:], int(log["data"][66:130], 16), int(log["data"][130:194], 16))
+            for log in logs
+        ]
 
     def claim(self, index: int, key: str, claimant: str) -> None:
         a = self.args
@@ -389,7 +399,7 @@ class Episode:
     def claim_withdrawals(self) -> None:
         """Claims on L1 the withdrawals to the story's users, each with the
         recipient's key, though anyone could claim."""
-        for index, to, _ in self.withdrawals():
+        for index, to, _, _ in self.withdrawals():
             user = next((u for u, address in self.users.items() if address.lower() == to), None)
             if user and index not in self.claimed:
                 self.claim(index, USER_KEYS[user], user)
@@ -402,8 +412,8 @@ class Episode:
         while self.node is None or self.node.poll() is None:
             try:
                 price = int(cast("gas-price", "--rpc-url", self.args.rpc))
-                for index, to, fee in self.withdrawals():
-                    if to not in users and index not in self.claimed and fee >= L1_CLAIM_GAS * price:
+                for index, to, fee, gas_limit in self.withdrawals():
+                    if to not in users and index not in self.claimed and fee >= (L1_CLAIM_GAS + 2 * gas_limit) * price:
                         self.claim(index, CLAIMER_KEY, "claimer")
                         self.claimed.add(index)
             except Exception:
@@ -424,9 +434,11 @@ class Episode:
         if i == 0:
             self.deposit("Alice", "1ether")
             self.deposit("Bob", "0.5ether")
-            # Spamoor funds its L2 account, the same address as on L1. The
-            # relayer needs no funds: the fees it claims pay for its claims.
+            # Spamoor funds its L2 account, the same address as on L1, and
+            # the relayer the gas it pays up front for the claims it earns
+            # fees with.
             self.deposit("spamoor", "200ether", SPAMOOR_L2_KEY)
+            self.deposit("relayer", "1ether", RELAYER_KEY)
         elif i == 1:
             pass  # the next block anchors the deposits, and the users claim them
         elif i == 2:

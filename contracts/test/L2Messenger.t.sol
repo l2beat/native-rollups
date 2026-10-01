@@ -50,6 +50,8 @@ contract L2MessengerTest is Test {
 
     // Receives the fees of the claims in these tests.
     address constant CLAIMER = address(0xC1A1);
+    // The gas the recorder needs: three new slots and the data.
+    uint256 constant RECORDER_GAS = 150_000;
 
     string json;
     L2Messenger messenger;
@@ -96,18 +98,22 @@ contract L2MessengerTest is Test {
             _prove(_rootProof(b));
             for (uint256 i = 0; json.keyExists(string.concat(_block(b), ".claims[", vm.toString(i), "]")); i++) {
                 Claim memory c = _claim(b, i);
-                vm.etch(c.m.to, type(Recorder).runtimeCode);
+                // Messages to contracts carry the gas their call needs.
+                bool record = c.m.gasLimit >= RECORDER_GAS;
+                if (record) vm.etch(c.m.to, type(Recorder).runtimeCode);
                 uint256 supply = address(messenger).balance;
                 uint256 balance = c.m.to.balance;
                 uint256 fees = CLAIMER.balance;
 
                 messenger.claimL1Message(c.m, c.path, CLAIMER);
 
-                Recorder r = Recorder(payable(c.m.to));
                 assertTrue(messenger.claimed(c.m.index));
-                assertEq(r.l1Sender(), c.m.sender);
-                assertEq(r.value(), c.m.value);
-                assertEq(r.data(), c.m.data);
+                if (record) {
+                    Recorder r = Recorder(payable(c.m.to));
+                    assertEq(r.l1Sender(), c.m.sender);
+                    assertEq(r.value(), c.m.value);
+                    assertEq(r.data(), c.m.data);
+                }
                 assertEq(c.m.to.balance, balance + c.m.value);
                 assertEq(CLAIMER.balance, fees + c.m.fee);
                 assertEq(address(messenger).balance, supply - c.m.value - c.m.fee);
@@ -137,6 +143,11 @@ contract L2MessengerTest is Test {
 
         c = _claim(1, 0);
         c.m.fee += 1;
+        vm.expectRevert(bytes("message not in root"));
+        messenger.claimL1Message(c.m, c.path, CLAIMER);
+
+        c = _claim(1, 0);
+        c.m.gasLimit += 1;
         vm.expectRevert(bytes("message not in root"));
         messenger.claimL1Message(c.m, c.path, CLAIMER);
 
@@ -200,7 +211,7 @@ contract L2MessengerTest is Test {
         messenger.claimL1Message(c.m, c.path, CLAIMER);
         assertFalse(messenger.claimed(c.m.index));
 
-        vm.etch(c.m.to, type(Recorder).runtimeCode);
+        vm.etch(c.m.to, "");
         messenger.claimL1Message(c.m, c.path, CLAIMER);
         assertTrue(messenger.claimed(c.m.index));
     }
@@ -214,7 +225,11 @@ contract L2MessengerTest is Test {
         console.log(
             "proveL1MessageRoot gas %d (%d proof nodes)", g - gasleft(), p.accountProof.length + p.storageProof.length
         );
-        Claim memory c = _claim(last, 1);
+        // A message to a contract, whose call runs.
+        Claim memory c = _claim(last, 0);
+        for (uint256 i = 1; c.m.gasLimit < RECORDER_GAS; i++) {
+            c = _claim(last, i);
+        }
         vm.etch(c.m.to, type(Recorder).runtimeCode);
         g = gasleft();
         messenger.claimL1Message(c.m, c.path, CLAIMER);

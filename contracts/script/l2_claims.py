@@ -12,13 +12,17 @@ The first frame proves the root of the rollup contract's message tree
 against the L1 anchor of the latest L2 block, which the EIP-4788 contract
 keeps on L2, so a wallet builds the claim between blocks. The claim frame
 pays the message's fee to the claimer, and a message to the claimer also
-its value, before the VERIFY frame approves payment: a claim pays for
-itself, and a claimer needs no funds. If the claim fails, the claimer cannot
-pay, so the transaction is invalid and costs it nothing.
+its value, before the VERIFY frame approves payment: a claim of a message to
+the claimer pays for itself, and the claimer needs no funds. If the claim
+fails, the claimer cannot pay, so the transaction is invalid and costs it
+nothing. The claim frame has room for the message's gas limit, which the
+message's call gets in both gas dimensions.
 
 Each wallet claims the messages to itself. The relayer, if any, claims the
 messages to every other address, such as contracts, whose fee covers the
-claim's cost.
+claim's cost. Their calls may run code that anyone can change, so the L2
+node only takes those claims from a claimer that can pay up front: the
+relayer funds itself with a message to itself, which it claims as a wallet.
 
     uv run --project <execution-specs> python script/l2_claims.py --l1-rpc <url> --rollup <address> \
         --l2-rpc <url> --wallet <key> [--wallet <key> ...] [--relayer <key>]
@@ -39,15 +43,28 @@ from ethereum.crypto.hash import keccak256
 from l2_node import L2_CHAIN_ID, L2_MESSENGER, PRIORITY_FEE, hx, json_rpc
 
 PROVE_ROOT_SIGNATURE = "proveL1MessageRoot(uint256,bytes,bytes[],bytes[])"
-CLAIM_SIGNATURE = "claimL1Message((address,address,uint256,uint256,bytes,uint256),bytes32[],address)"
+CLAIM_SIGNATURE = "claimL1Message((address,address,uint256,uint256,uint256,bytes,uint256),bytes32[],address)"
 CLAIM_GAS_LIMIT = 1_000_000
 # EIP-8141 frame modes and approval scopes.
 DEFAULT_MODE, VERIFY_MODE = 0, 1
 APPROVE_EXECUTION_AND_PAYMENT = 3
-L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,uint256,bytes)")
-# A bound on a claim's gas: the frames' limits, their intrinsic cost, and
-# the signature's, which `TXPARAM(0x06)` charges at the maximum fee.
-CLAIM_GAS = 2 * (CLAIM_GAS_LIMIT + 400_000) + 100_000 + 400_000 + 100_000
+CLAIM_STATE_GAS_LIMIT = 400_000
+# What the message's call costs the messenger before it runs, as
+# `Messages.CALL_OVERHEAD`.
+CALL_OVERHEAD = 40_000
+L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
+
+
+def claim_gas(m: dict) -> tuple:
+    """A claim frame's execution and state gas limits, with room for the
+    message's call to get its gas limit in both (`Messages.deliver`)."""
+    return (CLAIM_GAS_LIMIT + m["gasLimit"] * 64 // 63 + CALL_OVERHEAD, CLAIM_STATE_GAS_LIMIT + m["gasLimit"])
+
+
+def max_claim_gas(m: dict) -> int:
+    """A bound on a claim's gas: the frames' limits, their intrinsic cost,
+    and the signature's, which `TXPARAM(0x06)` charges at the maximum fee."""
+    return CLAIM_GAS_LIMIT + CLAIM_STATE_GAS_LIMIT + sum(claim_gas(m)) + 100_000 + 400_000 + 100_000
 L1_MESSAGE_ROOT_SLOT = 3  # root of NativeRollup.l1Messages
 CLAIMED_SLOT = 1  # L2Messenger.claimedBits, 256 flags per slot
 PROVEN_ROOT_SLOT = 4  # L2Messenger.provenL1MessageRoot
@@ -105,7 +122,7 @@ def l1_messages(l1_rpc: str, rollup: str, anchor: int) -> list:
     messages = []
     for log in logs:
         data = bytes.fromhex(log["data"][2:])
-        offset = int.from_bytes(data[64:96], "big")
+        offset = int.from_bytes(data[96:128], "big")
         length = int.from_bytes(data[offset : offset + 32], "big")
         messages.append({
             "index": int(log["topics"][1], 16),
@@ -113,6 +130,7 @@ def l1_messages(l1_rpc: str, rollup: str, anchor: int) -> list:
             "to": "0x" + log["topics"][3][-40:],
             "value": int.from_bytes(data[0:32], "big"),
             "fee": int.from_bytes(data[32:64], "big"),
+            "gasLimit": int.from_bytes(data[64:96], "big"),
             "data": "0x" + data[offset + 32 : offset + 32 + length].hex(),
         })
     assert [m["index"] for m in messages] == list(range(len(messages))), "missing L1 messages"
@@ -122,7 +140,8 @@ def l1_messages(l1_rpc: str, rollup: str, anchor: int) -> list:
 def leaf(m: dict) -> bytes:
     return keccak256(
         bytes.fromhex(m["sender"][2:]) + bytes.fromhex(m["to"][2:]) + m["value"].to_bytes(32, "big")
-        + m["fee"].to_bytes(32, "big") + keccak256(bytes.fromhex(m["data"][2:])) + m["index"].to_bytes(32, "big")
+        + m["fee"].to_bytes(32, "big") + m["gasLimit"].to_bytes(32, "big") + keccak256(bytes.fromhex(m["data"][2:]))
+        + m["index"].to_bytes(32, "big")
     )
 
 
@@ -156,12 +175,14 @@ def main() -> None:
     max_fee = 2 * int(head["baseFeePerGas"], 16) + PRIORITY_FEE
     wallets = {str(EOA(key=int(k, 16))).lower(): EOA(key=int(k, 16)) for k in args.wallet}
     relayer = EOA(key=int(args.relayer, 16)) if args.relayer else None
+    if relayer is not None:
+        wallets.setdefault(str(relayer).lower(), relayer)
     claims = {}  # claimer -> messages
     for m in messages:
         claimer = wallets.get(m["to"].lower())
         # The relayer only claims what pays: the fee, received before the
         # VERIFY frame, must cover the most the claim can cost.
-        if claimer is None and relayer is not None and m["fee"] >= CLAIM_GAS * max_fee:
+        if claimer is None and relayer is not None and m["fee"] >= max_claim_gas(m) * max_fee:
             claimer = relayer
         if claimer is not None and not claimed(m["index"]):
             claims.setdefault(str(claimer).lower(), (claimer, []))[1].append(m)
@@ -203,15 +224,19 @@ def main() -> None:
             else:
                 size = covered
             calls.append(cast(
-                "calldata", CLAIM_SIGNATURE, f"({m['sender']},{m['to']},{m['value']},{m['fee']},{m['data']},{m['index']})",
+                "calldata", CLAIM_SIGNATURE,
+                f"({m['sender']},{m['to']},{m['value']},{m['fee']},{m['gasLimit']},{m['data']},{m['index']})",
                 path(m, size), str(claimer),
             ))
             tx = Transaction(
                 sender=claimer,
                 nonce=nonce,
                 frames=[
-                    Frame(mode=DEFAULT_MODE, target=TestAddress(L2_MESSENGER), data=bytes.fromhex(c[2:]), gas_limit=CLAIM_GAS_LIMIT)
-                    for c in calls
+                    Frame(
+                        mode=DEFAULT_MODE, target=TestAddress(L2_MESSENGER), data=bytes.fromhex(c[2:]),
+                        gas_limit=gas, state_gas_limit=state_gas,
+                    )
+                    for c, (gas, state_gas) in zip(calls, [(CLAIM_GAS_LIMIT, CLAIM_STATE_GAS_LIMIT)] * (len(calls) - 1) + [claim_gas(m)])
                 ]
                 + [Frame(mode=VERIFY_MODE, flags=APPROVE_EXECUTION_AND_PAYMENT)],
                 chain_id=L2_CHAIN_ID,

@@ -7,8 +7,9 @@ frames network with its L2 node.
   have new L1 messages, the anchor, the call proving the L1 message root
   against it, and the calls claiming the new messages with their paths to
   that root.
-- `test/l2_message_vectors.json`: the L2 to L1 messages, with proofs of
-  their queue entries against the latest L2 block's state root.
+- `test/l2_message_vectors.json`: L2 to L1 messages, two without a gas limit
+  and two with one, with proofs of their queue entries against the latest L2
+  block's state root.
 
     uv run --project <execution-specs> python script/record_message_vectors.py \
         --l1-rpc <url> --rollup <address> --l2-rpc <url>
@@ -34,8 +35,10 @@ def l1_vectors(args: argparse.Namespace) -> dict:
         block = json_rpc(args.l2_rpc, "eth_getBlockByNumber", hex(number), False)
         anchor = int(json_rpc(args.l1_rpc, "eth_getBlockByHash", block["parentBeaconBlockRoot"], False)["number"], 16)
         messages = l1_messages(args.l1_rpc, args.rollup, anchor)
-        # The last block needs two new messages, for the gas measurement.
-        if len(messages) <= claimed or (len(blocks) == 2 and len(messages) - claimed < 2):
+        # The last block needs two new messages, one of them to a contract,
+        # with a gas limit, for the gas measurement.
+        new = messages[claimed:]
+        if not new or (len(blocks) == 2 and (len(new) < 2 or not any(m["gasLimit"] for m in new))):
             continue
         leaves = [leaf(m) for m in messages]
         root, paths = message_tree(leaves)
@@ -52,7 +55,7 @@ def l1_vectors(args: argparse.Namespace) -> dict:
             "claims": [
                 cast(
                     "calldata", CLAIM_SIGNATURE,
-                    f"({m['sender']},{m['to']},{m['value']},{m['fee']},{m['data']},{m['index']})",
+                    f"({m['sender']},{m['to']},{m['value']},{m['fee']},{m['gasLimit']},{m['data']},{m['index']})",
                     "[" + ",".join(hx(p) for p in paths[m["index"]][:height]) + "]", CLAIMER,
                 )
                 for m in messages[claimed:]
@@ -69,10 +72,12 @@ def l2_vectors(args: argparse.Namespace) -> dict:
     logs = json_rpc(args.l2_rpc, "eth_getLogs", {
         "address": L2_MESSENGER, "fromBlock": "0x0", "toBlock": "latest", "topics": [hx(L2_MESSAGE_SENT)],
     })
+    plain = [log for log in logs if not int(log["data"][130:194], 16)][:2]
+    called = [log for log in logs if int(log["data"][130:194], 16)][:2]
     claims = []
-    for log in logs[:4]:
+    for log in sorted(plain + called, key=lambda log: int(log["topics"][1], 16)):
         data = bytes.fromhex(log["data"][2:])
-        offset = int.from_bytes(data[64:96], "big")
+        offset = int.from_bytes(data[96:128], "big")
         index = int(log["topics"][1], 16)
         slot = int.from_bytes(keccak256(SENT_SLOT.to_bytes(32, "big")), "big") + index
         proof = json_rpc(args.l2_rpc, "eth_getProof", L2_MESSENGER, [f"0x{slot:064x}"], "latest")
@@ -80,15 +85,15 @@ def l2_vectors(args: argparse.Namespace) -> dict:
             "message": {
                 "sender": "0x" + log["topics"][2][-40:], "to": "0x" + log["topics"][3][-40:],
                 "value": int.from_bytes(data[0:32], "big"), "fee": int.from_bytes(data[32:64], "big"),
-                "data": hx(data[offset + 32 : offset + 32 + int.from_bytes(data[offset : offset + 32], "big")]), "index": index,
+                "gasLimit": int.from_bytes(data[64:96], "big"), "data": hx(data[offset + 32 : offset + 32 + int.from_bytes(data[offset : offset + 32], "big")]), "index": index,
             },
             "blockNumber": int(head["number"], 16),
             "stateRoot": head["stateRoot"],
             "accountProof": proof["accountProof"],
             "storageProof": proof["storageProof"][0]["proof"],
         })
-    if len(claims) < 2:
-        raise SystemExit("the rollup needs two L2 to L1 messages")
+    if len(plain) < 2 or not called:
+        raise SystemExit("the rollup needs two L2 to L1 messages without a gas limit and one with")
     return {"l2Messenger": L2_MESSENGER, "claims": claims}
 
 

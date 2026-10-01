@@ -39,8 +39,17 @@ contract NativeRollupMessagesTest is Test {
     uint256 constant STATE_ROOTS_SLOT = 2;
 
     event L1MessageSent(
-        uint256 indexed index, address indexed sender, address indexed to, uint256 value, uint256 fee, bytes data
+        uint256 indexed index,
+        address indexed sender,
+        address indexed to,
+        uint256 value,
+        uint256 fee,
+        uint256 gasLimit,
+        bytes data
     );
+
+    // The gas the recorder needs: three new slots and the data.
+    uint256 constant RECORDER_GAS = 150_000;
 
     // Receives the fees of the claims in these tests.
     address constant CLAIMER = address(0xC1A1);
@@ -78,6 +87,7 @@ contract NativeRollupMessagesTest is Test {
         c.m.to = json.readAddress(string.concat(k, ".message.to"));
         c.m.value = json.readUint(string.concat(k, ".message.value"));
         c.m.fee = json.readUint(string.concat(k, ".message.fee"));
+        c.m.gasLimit = json.readUint(string.concat(k, ".message.gasLimit"));
         c.m.data = json.readBytes(string.concat(k, ".message.data"));
         c.m.index = json.readUint(string.concat(k, ".message.index"));
         c.blockNumber = json.readUint(string.concat(k, ".blockNumber"));
@@ -98,13 +108,13 @@ contract NativeRollupMessagesTest is Test {
     function test_sendMessage() public {
         bytes memory data = hex"c0ffee";
         vm.expectEmit(address(rollup));
-        emit L1MessageSent(0, address(this), address(0xB0B), 0.9 ether, 0.1 ether, data);
-        rollup.sendMessage{value: 1 ether}(address(0xB0B), 0.1 ether, data);
+        emit L1MessageSent(0, address(this), address(0xB0B), 0.9 ether, 0.1 ether, 50_000, data);
+        rollup.sendMessage{value: 1 ether}(address(0xB0B), 0.1 ether, 50_000, data);
         assertEq(rollup.l1MessageCount(), 1);
         assertEq(address(rollup).balance, 11 ether);
 
         vm.expectRevert(bytes("fee exceeds value"));
-        rollup.sendMessage{value: 1 ether}(address(0xB0B), 1 ether + 1, data);
+        rollup.sendMessage{value: 1 ether}(address(0xB0B), 1 ether + 1, 0, data);
     }
 
     /// After every message, the root matches a tree built from all leaves at
@@ -113,8 +123,8 @@ contract NativeRollupMessagesTest is Test {
         bytes32[] memory leaves = new bytes32[](33);
         for (uint256 i = 0; i < leaves.length; i++) {
             address to = address(uint160(i + 1));
-            rollup.sendMessage{value: i}(to, i / 2, "");
-            leaves[i] = keccak256(abi.encodePacked(address(this), to, i - i / 2, i / 2, keccak256(""), i));
+            rollup.sendMessage{value: i}(to, i / 2, i, "");
+            leaves[i] = keccak256(abi.encodePacked(address(this), to, i - i / 2, i / 2, i, keccak256(""), i));
             assertEq(rollup.l1MessageRoot(), _root(leaves, i + 1));
         }
     }
@@ -140,17 +150,23 @@ contract NativeRollupMessagesTest is Test {
     function test_claimsL2Messages() public {
         for (uint256 i = 0; json.keyExists(string.concat(".claims[", vm.toString(i), "]")); i++) {
             Claim memory c = _load(i);
-            vm.etch(c.m.to, type(L1Recorder).runtimeCode);
+            // Messages to contracts carry the gas their call needs.
+            bool record = c.m.gasLimit >= RECORDER_GAS;
+            if (record) vm.etch(c.m.to, type(L1Recorder).runtimeCode);
             uint256 escrow = address(rollup).balance;
+            uint256 balance = c.m.to.balance;
             uint256 fees = CLAIMER.balance;
 
             _claim(c);
 
-            L1Recorder r = L1Recorder(payable(c.m.to));
             assertTrue(rollup.claimedL2Messages(c.m.index));
-            assertEq(r.l2Sender(), c.m.sender);
-            assertEq(r.value(), c.m.value);
-            assertEq(r.data(), c.m.data);
+            if (record) {
+                L1Recorder r = L1Recorder(payable(c.m.to));
+                assertEq(r.l2Sender(), c.m.sender);
+                assertEq(r.value(), c.m.value);
+                assertEq(r.data(), c.m.data);
+            }
+            assertEq(c.m.to.balance, balance + c.m.value);
             assertEq(CLAIMER.balance, fees + c.m.fee);
             assertEq(address(rollup).balance, escrow - c.m.value - c.m.fee);
         }
@@ -173,6 +189,11 @@ contract NativeRollupMessagesTest is Test {
 
         c = _load(1);
         c.m.fee += 1;
+        vm.expectRevert(bytes("message not queued"));
+        _claim(c);
+
+        c = _load(1);
+        c.m.gasLimit += 1;
         vm.expectRevert(bytes("message not queued"));
         _claim(c);
 
@@ -223,7 +244,7 @@ contract NativeRollupMessagesTest is Test {
         _claim(c);
         assertFalse(rollup.claimedL2Messages(c.m.index));
 
-        vm.etch(c.m.to, type(L1Recorder).runtimeCode);
+        vm.etch(c.m.to, "");
         _claim(c);
         assertTrue(rollup.claimedL2Messages(c.m.index));
     }

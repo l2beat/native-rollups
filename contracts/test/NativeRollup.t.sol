@@ -15,7 +15,7 @@ contract TestNativeRollup is NativeRollup {
 
     constructor(
         uint64 chainId_,
-        uint64 gasLimit_,
+        uint64 l2GasLimit_,
         bytes32 genesisBlockHash,
         bytes32 genesisStateRoot,
         VkPolicy vkPolicy_,
@@ -25,7 +25,7 @@ contract TestNativeRollup is NativeRollup {
     )
         NativeRollup(
             chainId_,
-            gasLimit_,
+            l2GasLimit_,
             genesisBlockHash,
             genesisStateRoot,
             vkPolicy_,
@@ -43,6 +43,11 @@ contract TestNativeRollup is NativeRollup {
 
     function _readDependency(uint256) internal view override returns (uint8, bytes32, bytes32) {
         return (depScheme, depDataHash, depVkHash);
+    }
+
+    /// Foundry runs no frame transactions, so state gas has no separate bound.
+    function _stateGasLeft() internal pure override returns (uint256) {
+        return type(uint256).max;
     }
 }
 
