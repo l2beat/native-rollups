@@ -174,8 +174,8 @@ class Handler(SimpleHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8088)
-    parser.add_argument("--rpc", default="http://127.0.0.1:65138")
-    parser.add_argument("--beacon", default="http://127.0.0.1:65167")
+    parser.add_argument("--rpc", default="http://127.0.0.1:51764")
+    parser.add_argument("--beacon", default="http://127.0.0.1:51846")
     parser.add_argument("--sys-asm", default=os.path.expanduser("~/work/sys-asm"), help="for the EIP-8357 registry's source")
     parser.add_argument("--l2beat", default=os.path.expanduser("~/work/l2beat"), help="for L2BEAT's flattener")
     args = parser.parse_args()

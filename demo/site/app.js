@@ -109,6 +109,7 @@ function labels() {
     "0x0000000000000000000000000000000000008141": ["Expiry verifier (EIP-8141)", ""],
   };
   const add = (a, name, kind) => a && (l[a.toLowerCase()] = [name, kind]);
+  Object.entries((state.index && state.index.contracts) || {}).forEach(([a, x]) => x.name && !l[a] && add(a, x.name, ""));
   add(c.rollup, "Rollup contract", "real");
   add(c.l2Messenger, "L2 messenger", "real");
   add(c.verifier, "Proof checker", "mock");
@@ -118,6 +119,12 @@ function labels() {
   add(c.framesHelper, "Frames helper", "");
   // Each user has one key, so one address, on both chains.
   Object.entries(c.users || {}).forEach(([name, a]) => add(a, name, ""));
+  add(c.relayer, "Relayer", "shortcut");
+  add(c.claimer, "Claimer", "shortcut");
+  add(c.spamoorL1, "Spamoor", "");
+  add(c.spamoorL2, "Spamoor", "");
+  add(c.receiverL1, "Message receiver", "");
+  add(c.receiverL2, "Message receiver", "");
   return l;
 }
 
@@ -149,8 +156,34 @@ function chainFor(key, ctx = {}) {
 const L2_KINDS = { "deposit claim": "deposit", withdrawal: "withdrawal" };
 const chip = (kind, n) => `<span class="chip ${L2_KINDS[kind] || ""}">${n ? `${n} ` : ""}${kind}${n > 1 ? "s" : ""}</span>`;
 const contents = (kinds) =>
-  ["deposit claim", "withdrawal", "transfer", "call"].filter((k) => kinds[k]).map((k) => chip(k, kinds[k])).join("") || '<span class="muted">empty</span>';
+  ["deposit claim", "withdrawal", "transfer", "call", "deploy", "delegation", "frame transaction"].filter((k) => kinds[k]).map((k) => chip(k, kinds[k])).join("") || '<span class="muted">empty</span>';
+const TX_TYPES = { 0: "legacy", 1: "EIP-2930 access list", 2: "EIP-1559", 4: "EIP-7702 set code", 6: "EIP-8141 frame transaction" };
 const L1_KINDS = { advance: "adds an L2 block", deposit: "deposit", "withdrawal claim": "withdrawal claim" };
+
+// Tabs, as on Etherscan. All panels render with the page, so switching only
+// changes which one shows, at once, and the URL, so each tab stays linkable.
+// Items are [key, label, count, html].
+function tabs(base, items, active) {
+  const list = items.filter(Boolean);
+  const current = list.some(([key]) => key === active) ? active : list[0][0];
+  return `<nav class="tabs">${list.map(([key, label, count]) =>
+    `<a class="${key === current ? "active" : ""}" data-tab="${key}" href="#${base}${key ? "/" + key : ""}">${label}${count !== undefined ? ` <span class="muted">(${num(count)})</span>` : ""}</a>`).join("")}</nav>
+    ${list.map(([key, , , html]) => `<div class="tab-panel" data-panel="${key}"${key === current ? "" : " hidden"}>${html}</div>`).join("")}`;
+}
+
+document.addEventListener("click", (e) => {
+  const a = e.target.closest(".tabs a[data-tab]");
+  if (!a || e.metaKey || e.ctrlKey || e.shiftKey) return;
+  e.preventDefault();
+  const nav = a.parentElement;
+  nav.querySelectorAll("a").forEach((x) => x.classList.toggle("active", x === a));
+  nav.parentElement.querySelectorAll(":scope > .tab-panel").forEach((panel) => (panel.hidden = panel.dataset.panel !== a.dataset.tab));
+  history.pushState(null, "", a.getAttribute("href"));
+  // The next refresh renders this tab, and keeps the scroll as on the same page.
+  shown.key = location.hash;
+});
+
+const more = (rows) => (rows.length ? `<details class="more"><summary>More details</summary>${fields(rows)}</details>` : "");
 
 function fields(rows) {
   return `<table class="fields"><tbody>${rows
@@ -166,27 +199,51 @@ function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (!parts.length) return { page: "home" };
   if (parts[0] === "blocks") return { page: "blocks", n: Number(parts[1] || 1) };
-  if (parts[0] === "l1" && parts[1] === "tx") return { page: "l1tx", hash: parts[2] };
+  if (parts[0] === "l1" && parts[1] === "tx") return { page: "l1tx", hash: parts[2], tab: parts[3] || "" };
   if (parts[0] === "l1") return { page: "l1list", n: Number(parts[1] || 1) };
-  if (parts[0] === "l2" && parts[1] === "block") return { page: "block", n: Number(parts[2]) };
-  if (parts[0] === "l2" && parts[1] === "tx") return { page: "l2tx", hash: parts[2] };
+  if (parts[0] === "l2" && parts[1] === "block") return { page: "block", n: Number(parts[2]), tab: parts[3] || "" };
+  if (parts[0] === "l2" && parts[1] === "tx") return { page: "l2tx", hash: parts[2], tab: parts[3] || "" };
   if (parts[0] === "messages") return { page: "messages" };
   if (parts[0] === "blob") return { page: "blob", n: Number(parts[1]) };
-  if (parts[0] === "address") return { page: "address", chain: parts[1], address: (parts[2] || "").toLowerCase() };
+  if (parts[0] === "address") return { page: "address", chain: parts[1], address: (parts[2] || "").toLowerCase(), tab: parts[3] || "" };
   if (parts[0] === "about") return { page: "about" };
   return { page: "missing" };
 }
 
+let renders = 0;
 async function render() {
   const app = document.getElementById("app");
   const route = parseRoute();
+  const seq = ++renders;
+  // Show that something is happening when a page takes a moment to load.
+  const loading = setTimeout(() => document.body.classList.add("loading"), 120);
   if (!state.index && route.page !== "about") {
     app.innerHTML = `<p class="note">Waiting for the follower's first data. The demo starts by deploying a rollup.</p>`;
     return;
   }
   const pages = { home, blocks: blockList, l1list: l1List, block: blockPage, l2tx: l2TxPage, l1tx: l1TxPage, messages, about, address: addressPage, blob: blobPage };
-  const html = await (pages[route.page] || (() => `<h1>Not found</h1>`))(route);
-  if (parseRoute().page === route.page) app.innerHTML = html;
+  try {
+    const html = await (pages[route.page] || (() => `<h1>Not found</h1>`))(route);
+    if (seq === renders) update(app, html, location.hash);
+  } finally {
+    clearTimeout(loading);
+    if (seq === renders) document.body.classList.remove("loading");
+  }
+}
+
+// Live pages re-render on every refresh. Only touch the page when it changed,
+// and keep the scroll of inner blocks, such as sources, and which sections
+// are open.
+let shown = { key: null, html: null };
+function update(app, html, key) {
+  if (shown.key === key && shown.html === html) return;
+  const same = shown.key === key;
+  const scrolls = same ? [...app.querySelectorAll("pre")].map((e) => [e.scrollTop, e.scrollLeft]) : [];
+  const open = same ? [...app.querySelectorAll("details")].map((d) => d.open) : [];
+  app.innerHTML = html;
+  shown = { key, html };
+  [...app.querySelectorAll("pre")].forEach((e, i) => i < scrolls.length && ([e.scrollTop, e.scrollLeft] = scrolls[i]));
+  [...app.querySelectorAll("details")].forEach((d, i) => i < open.length && (d.open = open[i]));
 }
 
 function renderStatus() {
@@ -243,10 +300,34 @@ function pager(route, total, base) {
   return `<div class="pager">${n > 1 ? `<a href="#/${base}/${n - 1}">← Newer</a>` : ""}<span class="muted">Page ${n} of ${pages}</span>${n < pages ? `<a href="#/${base}/${n + 1}">Older →</a>` : ""}</div>`;
 }
 
-function home() {
+async function home() {
   const ix = state.index;
   const blocks = [...ix.l2Blocks].reverse();
   const l1 = [...ix.l1Txs].sort((a, b) => b.block - a.block);
+  // The latest transactions, from the latest blocks, newest first.
+  const latest = [];
+  for (const b of blocks.slice(0, 4)) {
+    const block = await object(`l2/blocks/${b.number}`);
+    if (block) latest.push(...[...block.transactions].reverse().map((t) => ({ ...t, block: b.number, timestamp: b.timestamp })));
+    if (latest.length >= 8) break;
+  }
+  const txs = await Promise.all(latest.slice(0, 8).map((t) => object(`l2/txs/${t.hash}`).then((x) => ({ ...t, ...(x || {}) }))));
+  // What the status pills do not already say: activity, value, and cost on L1.
+  const escrow = await rpc("eth_getBalance", [ix.rollup, "latest"]);
+  const recent = blocks.slice(0, 20);
+  const sum = (entries, f) => entries.reduce((s, e) => s + BigInt(f(e) || 0), 0n);
+  const deposits = Object.values(ix.deposits), withdrawals = Object.values(ix.withdrawals);
+  const total = blocks.reduce((s, b) => s + b.transactions, 0);
+  const interval = recent.length > 1 ? (recent[0].timestamp - recent[recent.length - 1].timestamp) / (recent.length - 1) : null;
+  const bytes = recent.length ? recent.reduce((s, b) => s + b.payloadBytes, 0) / recent.length : 0;
+  const stats = [
+    ["L2 transactions", num(total), `${blocks.length ? (total / blocks.length).toFixed(1) : 0} per block`],
+    ["ETH on L2", escrow ? eth(BigInt(escrow).toString()) : "", "held in the rollup's escrow on L1"],
+    ["Deposits", num(deposits.length), `${eth(sum(deposits, (d) => d.value).toString())}, ${num(deposits.filter((d) => d.l2Tx).length)} claimed on L2`],
+    ["Withdrawals", num(withdrawals.length), `${eth(sum(withdrawals, (w) => w.value).toString())}, ${num(withdrawals.filter((w) => w.l1Tx).length)} claimed on L1`],
+    ["Block time", interval ? `${Math.round(interval)} s` : "", "average of recent blocks, set by L1 inclusion"],
+    ["Blob use", pct(bytes / BLOB_USABLE_BYTES), `${(bytes / 1024).toFixed(1)} KB per recent block`],
+  ];
   return `
     <h1>A native rollup, explained as it runs</h1>
     <p class="lead">A native rollup is an L2 whose blocks Ethereum checks with its own proof program, the one it will use
@@ -255,15 +336,18 @@ function home() {
       from Ethereum.</p>
     <div class="legend">${badge("real")} runs as specified ${badge("mock")} stands in for an L1 feature that does not exist yet
       ${badge("shortcut")} a simplification of this demo · <a href="#/about">details</a></div>
-    <div class="stats">
-      <div class="stat"><div class="label">L2 blocks on L1</div><div class="value">${num(state.rollupHead ?? blocks.length)}</div></div>
-      <div class="stat"><div class="label">Rebuilt from L1</div><div class="value">${num(blocks.length)}</div></div>
-      <div class="stat"><div class="label">Deposits</div><div class="value">${num(Object.keys(ix.deposits).length)}</div></div>
-      <div class="stat"><div class="label">Withdrawals</div><div class="value">${num(Object.keys(ix.withdrawals).length)}</div></div>
+    <div class="stats">${stats.map(([label, value, sub]) => `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`).join("")}</div>
+    <div class="columns">
+      <div class="panel"><div class="panel-head"><b>Latest L2 blocks</b><a href="#/blocks">View all blocks →</a></div>
+        ${blocks.slice(0, 8).map((b) => `<div class="item"><div><div class="line">${l2BlockLink(b.number)}</div><div class="line muted">${ago(b.timestamp)}</div></div>
+          <div><div class="line">${num(b.transactions)} transactions</div><div class="line"><span class="muted">posted in</span> ${l1TxLink(b.l1Tx)}</div></div>
+          <div class="num"><div class="line muted">${num(b.gasUsed)} gas</div><div class="line" title="Its share of a blob">${fill(b.payloadBytes)}</div></div></div>`).join("")}</div>
+      <div class="panel"><div class="panel-head"><b>Latest L2 transactions</b><a href="#/blocks">View blocks →</a></div>
+        ${txs.map((t) => `<div class="item"><div><div class="line">${l2TxLink(t.hash)}</div><div class="line muted">${ago(t.timestamp)}</div></div>
+          <div><div class="line"><span class="muted">From</span> ${addr(t.from, "l2")}</div>
+            <div class="line">${t.to ? `<span class="muted">To</span> ${addr(t.to, "l2")}` : t.frames ? `<span class="muted">${t.frames.length} frames</span>` : '<span class="muted">contract creation</span>'}</div></div>
+          <div class="num"><div class="line">${chip(t.kind)}</div><div class="line">${t.value ? eth(t.value) : ""}</div></div></div>`).join("")}</div>
     </div>
-    <h2>Latest L2 blocks</h2>
-    <div class="row-links"><a href="#/blocks">All blocks →</a></div>
-    ${blockRows(blocks.slice(0, 8))}
     <h2>Latest rollup transactions on L1</h2>
     <div class="row-links"><a href="#/l1">All L1 transactions →</a></div>
     ${l1Rows(l1.slice(0, 6))}`;
@@ -327,77 +411,81 @@ function about() {
 
 async function blockPage(route) {
   const b = await object(`l2/blocks/${route.n}`);
-  if (!b) return `<h1>L2 block #${route.n}</h1><p class="note">The follower has not rebuilt this block yet.</p>`;
+  if (!b) return `<h1>Block #${route.n}</h1><p class="note">The follower has not rebuilt this block yet.</p>`;
   const rec = state.session && state.session.events.find((e) => e.type === "advance" && e.l2.number === b.number);
-  const txs = await Promise.all(b.transactions.map((t) => object(`l2/txs/${t.hash}`)));
   const kinds = {};
   b.transactions.forEach((t) => (kinds[t.kind] = (kinds[t.kind] || 0) + 1));
   const matches = b.hash === b.recordedHash;
   const last = state.index.l2Blocks.length;
-  return `
-    <div class="row-links">${b.number > 1 ? `<a href="#/l2/block/${b.number - 1}">← Block ${b.number - 1}</a>` : ""}
-      ${b.number < last ? `<a href="#/l2/block/${b.number + 1}">Block ${b.number + 1} →</a>` : ""}</div>
-    <h1>L2 block #${b.number}</h1>
-    <div class="callout"><p>This block holds ${contents(kinds)}. It reached L1 in transaction ${l1TxLink(b.l1.tx)}, in L1 block
-      ${num(b.l1.block)}, whose blob carries its transactions. An independent follower rebuilt it from that L1 data alone and
-      got ${matches ? `the hash the rollup contract recorded <span class="check">✓</span>` : `<span class="bad">a different hash</span>`}.</p></div>
-
-    <h2>How it got to L1</h2>
-    <ol class="journey">
-      <li><b>1. Build</b>${badge("real")} ${badge("shortcut")}<br>The operator executed ${b.transactions.length} transactions with Ethereum's rules.</li>
-      <li><b>2. Check</b>${badge("real")}<br>${rec ? `The operator ran Ethereum's validation program: accepted <span class="check">✓</span>` : "The operator ran Ethereum's validation program."}</li>
-      <li><b>3. Prove</b>${badge("mock")}<br>A trusted key signed the result, in place of a zk proof.</li>
-      <li><b>4. Post</b>${badge("real")}<br>${l1TxLink(b.l1.tx)} carried it, using ${pct(b.payloadBytes / BLOB_USABLE_BYTES)} of a blob.</li>
-      <li><b>5. Verify</b>${badge("real")}<br>The rollup contract checked the proof's input and accepted it.</li>
-      <li><b>6. Follow</b>${badge("real")}<br>Rebuilt from L1 alone, ${matches ? `same hash <span class="check">✓</span>` : `<span class="bad">different hash</span>`}</li>
-    </ol>
-
-    <h2>Transactions</h2>
-    <table><thead><tr><th>#</th><th>Hash</th><th>What it does</th><th>Status</th><th>Linked on L1</th><th>From</th><th class="num">Gas used</th><th class="num">Bytes</th></tr></thead><tbody>
-      ${txs.map((t, i) => `<tr><td>${i}</td><td>${l2TxLink(t.hash)}</td><td>${chip(t.kind)}</td><td>${statusText(t.status)}</td><td>${counterpart(t)}</td><td>${addr(t.from, "l2")}</td>
-        <td class="num">${num(t.gasUsed)}</td><td class="num">${num(t.bytes)}</td></tr>`).join("")}</tbody></table>
-
-    <h2>Header</h2>
-    <p class="section-lead">Ethereum's block header, as the follower rebuilt it. The notes say where each field comes from and what checks it.</p>
-    ${fields([
-      ["Block hash", hash(b.hash, true), "Rebuilt by the follower. The rollup contract recorded " + (matches ? "the same hash." : "a different one.")],
-      ["Number", b.number, "From the rollup contract's storage: one more than the last block it accepted."],
+  const base = `/l2/block/${b.number}`;
+  const tab = route.tab;
+  const txsPanel = `<table><thead><tr><th>#</th><th>Transaction hash</th><th>What it does</th><th>Method</th><th>Status</th><th>Linked on L1</th><th>From</th><th class="num">Gas used</th><th class="num">Fee</th></tr></thead><tbody>
+    ${b.transactions.map((t, i) => `<tr><td>${i}</td><td>${l2TxLink(t.hash)}</td><td>${chip(t.kind)}</td><td>${method(t)}</td><td>${statusText(t.status)}</td><td>${counterpart(t)}</td><td>${addr(t.from, "l2")}</td>
+      <td class="num">${num(t.gasUsed)}</td><td class="num">${t.fee !== undefined && t.fee !== null ? eth(t.fee) : ""}</td></tr>`).join("")}</tbody></table>`;
+  const l1Panel = `
+      <p class="section-lead">How the block reached L1, and what the operator checked before posting it.</p>
+      <ol class="journey">
+        <li><b>1. Build</b>${badge("real")} ${badge("shortcut")}<br>The operator executed ${b.transactions.length} transactions with Ethereum's rules.</li>
+        <li><b>2. Check</b>${badge("real")}<br>${rec ? `The operator ran Ethereum's validation program: accepted <span class="check">✓</span>` : "The operator ran Ethereum's validation program."}</li>
+        <li><b>3. Prove</b>${badge("mock")}<br>A trusted key signed the result, in place of a zk proof.</li>
+        <li><b>4. Post</b>${badge("real")}<br>${l1TxLink(b.l1.tx)} carried it, using ${pct(b.payloadBytes / BLOB_USABLE_BYTES)} of a blob.</li>
+        <li><b>5. Verify</b>${badge("real")}<br>The rollup contract checked the proof's input and accepted it.</li>
+        <li><b>6. Follow</b>${badge("real")}<br>Rebuilt from L1 alone, ${matches ? `same hash <span class="check">✓</span>` : `<span class="bad">different hash</span>`}</li>
+      </ol>
+      <h2>Data on L1</h2>
+      ${fields([
+        ["L1 transaction", `${l1TxLink(b.l1.tx)} <span class="muted">in L1 block ${num(b.l1.block)}</span>`, "One frame transaction per L2 block: it carries the blob, the proof, and the call to the rollup contract."],
+        ["Blob", hash(b.l1.blobVersionedHashes[0], true), "Its versioned hash. The contract reads it with BLOBHASH and binds it into the proof's input."],
+        ["Blob use", `${num(b.payloadBytes)} of ${num(BLOB_USABLE_BYTES)} bytes<div class="fill"><span style="width:${Math.max(0.4, (100 * b.payloadBytes) / BLOB_USABLE_BYTES)}%"></span></div>`, "EIP-8142 gives every block its own blobs, however small the block."],
+      ])}
+      <p><a class="button" href="#/blob/${b.number}">View the blob: decoded and raw →</a></p>
+      ${rec ? `<h2>On the operator's side</h2>
+      <div class="callout"><p>What the operator's node did before posting the block. None of it is on L1, and the follower's
+        rebuild does not rely on it.</p></div>
+      ${fields([
+        ["Validation program", `<code>verify_stateless_new_payload</code> ${badge("real")}`, "Ethereum's stateless validation program from execution-specs, with EIP-8141, run as ordinary code instead of inside a zkVM."],
+        ["Result", `successful_validation = ${rec.l2.validation.successful}`, "The prover only signs blocks the program accepted."],
+        ["Chain ID, schema ID", `${rec.l2.validation.chainId}, 0x${rec.l2.validation.schemaId.toString(16)}`, "Part of what the proof commits to, so a block cannot be proven under another chain's rules."],
+        ["public_input_root", hash(rec.l2.publicInputRoot, true), "What the proof commits to. It is the data hash in the L1 transaction's proof frame."],
+        ["Blob check", `node-side ${badge("mock")}`, "The node checked that the blob encodes the block, which the L1 program does not do yet (EIP-8142)."],
+      ])}` : ""}`;
+  const overview = `${fields([
+      ["Block height", `${b.number} <span class="nowrap">${b.number > 1 ? `<a href="#/l2/block/${b.number - 1}">‹</a>` : ""} ${b.number < last ? `<a href="#/l2/block/${b.number + 1}">›</a>` : ""}</span>`,
+        "From the rollup contract's storage: one more than the last block it accepted."],
+      ["Status", matches ? `<span class="check">on L1, rebuilt from L1 with the same hash ✓</span>` : `<span class="bad">rebuilt with a different hash</span>`,
+        "An independent follower rebuilt the block from L1 data alone and compared its hash with the one the rollup contract recorded."],
+      ["Timestamp", `${ago(b.timestamp)} <span class="muted">(${new Date(b.timestamp * 1000).toLocaleString()})</span>`,
+        "Chosen by the operator. It must increase, and the contract keeps it at or below L1 time: a block at the maximum timestamp would halt the chain."],
+      ["Posted on L1", `${l1TxLink(b.l1.tx)} <span class="muted">in L1 block ${num(b.l1.block)}</span>`, "Its blob carries the block's transactions."],
+      ["Transactions", `<a href="#${base}/txs">${num(b.transactions.length)} transactions</a> ${contents(kinds)}`, ""],
+      ["Fee recipient", addr(b.feeRecipient, "l2"), "A free input of the operator, set by the consensus layer on L1."],
+      ["Size in blob", `${num(b.payloadBytes)} bytes <span class="muted">(${pct(b.payloadBytes / BLOB_USABLE_BYTES)} of a blob)</span>`, "Its transactions and access list, in EIP-8142's encoding."],
+      ["Gas used", `${num(b.gasUsed)} <span class="muted">(${pct(b.gasUsed / b.gasLimit)})</span>`, ""],
+      ["Gas limit", num(b.gasLimit), "Fixed when the rollup contract is deployed."],
+      ["Base fee per gas", perGas(b.baseFeePerGas), "EIP-1559 applies on L2 as on L1."],
+      ["Burnt fees", eth((BigInt(b.baseFeePerGas) * BigInt(b.gasUsed)).toString()), "The base fee times the gas used, burned on L2. Its ETH stays in the L1 escrow."],
+      ["Extra data", `${hash(b.extraData)} <span class="muted">"${esc(hexToText(b.extraData))}"</span>`, "A free input of the operator."],
+    ])}
+    ${more([
+      ["Hash", hash(b.hash, true), "Rebuilt by the follower. The rollup contract recorded " + (matches ? "the same hash." : "a different one.")],
       ["Parent hash", hash(b.parentHash, true), "From the contract's storage, so a block can only extend the chain the contract has."],
-      ["Timestamp", `${b.timestamp} <span class="muted">(${new Date(b.timestamp * 1000).toLocaleTimeString()})</span>`, "Chosen by the operator. It must increase, and the contract keeps it at or below L1 time: a block at the maximum timestamp would halt the chain."],
       ["State root", hash(b.stateRoot, true), "Claimed by the operator, checked by the proof. The contract keeps the last 8,191 state roots, for withdrawals."],
       ["Receipts root", hash(b.receiptsRoot, true), "Claimed by the operator, checked by the proof."],
       ["Transactions root", hash(b.transactionsRoot, true), `The header's trie root. The contract gets the transactions' SSZ root, ${hash(b.sszRoots.transactionsRoot)}, and the transactions are in the blob.`],
-      ["Gas used / limit", `${num(b.gasUsed)} / ${num(b.gasLimit)}`, "The limit is fixed when the rollup contract is deployed."],
-      ["Base fee", `${num(b.baseFeePerGas)} wei`, "EIP-1559 applies on L2 as on L1."],
       ["L1 anchor", `${hash(b.parentBeaconBlockRoot, true)}<br><span class="muted">L1 block ${num(b.anchorBlockNumber)}</span>`, "The parent_beacon_block_root field, repurposed: the hash of an L1 block the operator picked, which the contract checks with BLOCKHASH. L2 contracts read it through the EIP-4788 contract and prove L1 state against it, as deposit claims do."],
-      ["Fee recipient", addr(b.feeRecipient, "l2"), "A free input of the operator, set by the consensus layer on L1."],
       ["prev_randao", hash(b.prevRandao, true), "A free input of the operator, so not randomness on L2. The demo uses the hash of the anchor."],
-      ["Extra data", `${hash(b.extraData)} <span class="muted">"${esc(hexToText(b.extraData))}"</span>`, "A free input of the operator."],
       ["Withdrawals root", hash(b.withdrawalsRoot, true), "Always empty: the L2 has no beacon chain, and fake withdrawals would mint ETH."],
       ["Blob gas used, excess", `${b.blobGasUsed}, ${b.excessBlobGas}`, "Always 0: the L2 has no blob transactions."],
       ["Requests hash", hash(b.requestsHash, true), "EIP-7685 requests. L2 users can create them, but they do nothing on L2, so the contract accepts any."],
       ["Access list hash", hash(b.blockAccessListHash, true), `EIP-7928's block access list. Its ${num(b.balBytes)} bytes travel in the blob, and the contract gets its SSZ root.`],
       ["Slot number", b.slotNumber, "Fixed to 0 for now. The L2 value is not defined yet."],
-    ])}
-
-    <h2>Data on L1</h2>
-    ${fields([
-      ["L1 transaction", `${l1TxLink(b.l1.tx)}`, "One frame transaction per L2 block: it carries the blob, the proof, and the call to the rollup contract."],
-      ["Blob", hash(b.l1.blobVersionedHashes[0], true), "Its versioned hash. The contract reads it with BLOBHASH and binds it into the proof's input."],
-      ["Blob use", `${num(b.payloadBytes)} of ${num(BLOB_USABLE_BYTES)} bytes<div class="fill"><span style="width:${Math.max(0.4, (100 * b.payloadBytes) / BLOB_USABLE_BYTES)}%"></span></div>`, "EIP-8142 gives every block its own blobs, however small the block."],
-    ])}
-    <p><a class="button" href="#/blob/${b.number}">View the blob: decoded and raw →</a></p>
-
-    ${rec ? `<h2>On the operator's side</h2>
-    <div class="callout"><p>What the operator's node did before posting the block. None of it is on L1, and the follower's
-      rebuild does not rely on it.</p></div>
-    ${fields([
-      ["Validation program", `<code>verify_stateless_new_payload</code> ${badge("real")}`, "Ethereum's stateless validation program from execution-specs, with EIP-8141, run as ordinary code instead of inside a zkVM."],
-      ["Result", `successful_validation = ${rec.l2.validation.successful}`, "The prover only signs blocks the program accepted."],
-      ["Chain ID, schema ID", `${rec.l2.validation.chainId}, 0x${rec.l2.validation.schemaId.toString(16)}`, "Part of what the proof commits to, so a block cannot be proven under another chain's rules."],
-      ["public_input_root", hash(rec.l2.publicInputRoot, true), "What the proof commits to. It is the data hash in the L1 transaction's proof frame."],
-      ["Blob check", `node-side ${badge("mock")}`, "The node checked that the blob encodes the block, which the L1 program does not do yet (EIP-8142)."],
-    ])}` : ""}`;
+    ])}`;
+  return `
+    <h1>Block #${b.number} <span class="net l2">L2</span></h1>
+    <div class="callout"><p>This block holds ${contents(kinds)}. It reached L1 in transaction ${l1TxLink(b.l1.tx)}, in L1 block
+      ${num(b.l1.block)}, whose blob carries its transactions. An independent follower rebuilt it from that L1 data alone and
+      got ${matches ? `the hash the rollup contract recorded <span class="check">✓</span>` : `<span class="bad">a different hash</span>`}.</p></div>
+    ${tabs(base, [["", "Overview", undefined, overview], ["txs", "Transactions", b.transactions.length, txsPanel], ["l1", "On L1", undefined, l1Panel]], tab)}`;
 }
 
 function hexToText(hex) {
@@ -419,6 +507,10 @@ const ROLES = {
   "Trusted prover key": ["mock", "The key that signs the blocks Ethereum's validation program accepted, in place of a zk proof. It never sends transactions."],
   "Operator": ["shortcut", "The account that posts L2 blocks to L1. The rollup contract accepts a valid block from anyone, but this demo has one operator."],
   "Frames helper": ["shortcut", "Lets the rollup contract use EIP-8141's FRAMEPARAM and FRAMEDATACOPY instructions, which Solidity cannot emit yet. The rollup contract deploys it and calls it to read the proof frame. Written in assembly with geas."],
+  Relayer: ["shortcut", "Claims deposits to addresses that cannot claim themselves, such as contracts, and pays the claims' fees. Messages carry no fee, so nothing pays it back. It runs in the L2 node and funded itself with a deposit, whose claim paid for itself."],
+  Claimer: ["shortcut", "Claims on L1 the withdrawals to addresses outside the story, which the demo holds no keys for. Anyone can claim a withdrawal, and the ETH goes to its recipient, but nothing pays the claimer back."],
+  Spamoor: ["", "The funding wallet of spamoor, ethPandaOps' transaction generator, which funds child wallets that send ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, ERC-4337 bundles, EIP-8141 frame transactions and messages between the chains."],
+  "Message receiver": ["", "An example app for messages between the chains. It accepts any call from the messenger on its chain, the L2 messenger on L2 or the rollup contract on L1, and records the message with its sender on the other chain."],
   Alice: ["", USER_ROLE],
   Bob: ["", USER_ROLE],
   Charlie: ["", USER_ROLE],
@@ -450,6 +542,7 @@ async function addressPage(route) {
   const rows = [];
   let live = [];
   let history = "";
+  let count;
   let l1Code = null, acc = null;
   if (chain === "l1") {
     const [balance, nonce, code] = await Promise.all([
@@ -484,7 +577,8 @@ async function addressPage(route) {
       live = [["Prover", addr(wordAddress(await call(a, SELECTORS.prover)), "l1"), "The only key whose signatures it accepts."]];
     }
     const txs = state.index.l1Txs.filter((t) => (t.addresses || []).includes(a)).sort((x, y) => y.block - x.block);
-    history = `<h2>Rollup transactions on L1</h2>${txs.length ? l1Rows(txs.slice(0, 50)) : '<p class="note">None.</p>'}`;
+    count = txs.length;
+    history = `<p class="section-lead">The rollup's L1 transactions that involve this address.</p>${txs.length ? l1Rows(txs.slice(0, 50)) : '<p class="note">None.</p>'}`;
   } else {
     acc = await getJSON(`/api/explorer/l2/accounts/${a}.json`);
     if (!acc) {
@@ -503,23 +597,38 @@ async function addressPage(route) {
         ];
       }
       const txs = [...acc.txs].reverse();
-      history = `<h2>L2 transactions</h2>${txs.length ? `<table><thead><tr><th>Transaction</th><th>Block</th><th>What it does</th></tr></thead><tbody>
-        ${txs.slice(0, 50).map((t) => `<tr><td>${l2TxLink(t.hash)}</td><td>${l2BlockLink(t.block)}</td><td>${chip(t.kind)}</td></tr>`).join("")}</tbody></table>` : '<p class="note">None.</p>'}`;
+      count = txs.length;
+      // Etherscan's columns: the method, or what the transaction does when it calls none.
+      history = txs.length ? `<table><thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th class="hide-narrow">Age</th>
+        <th>From</th><th>To</th><th class="num">Value</th><th class="num">Fee</th></tr></thead><tbody>
+        ${txs.slice(0, 50).map((t) => `<tr><td>${l2TxLink(t.hash)}</td><td>${t.method ? `<code>${esc(t.method)}</code>` : chip(t.kind)}</td>
+          <td>${l2BlockLink(t.block)}</td><td class="hide-narrow nowrap">${t.time ? ago(t.time) : ""}</td>
+          <td>${t.from ? (t.from === a ? '<span class="muted">this address</span>' : addr(t.from, "l2")) : ""}</td>
+          <td>${t.to ? (t.to === a ? '<span class="muted">this address</span>' : addr(t.to, "l2")) : ""}</td>
+          <td class="num">${t.value ? eth(t.value) : ""}</td><td class="num">${t.fee !== undefined && t.fee !== null ? eth(t.fee) : ""}</td></tr>`).join("")}</tbody></table>` : '<p class="note">None.</p>';
+      const created = (state.index.contracts || {})[a];
+      if (created) rows.push(["Contract creator", `created in ${l2TxLink(created.tx)}`, created.name ? `Named ${esc(created.name)} from its creation code, which the explorer knows from the ABIs it loaded.` : ""]);
     }
   }
   const other = Object.values(c.users || {}).some((u) => u.toLowerCase() === a)
     ? `<p class="note">The same address on <a href="#/address/${OTHER[chain]}/${a}">${OTHER[chain].toUpperCase()}</a>.</p>` : "";
   const bytecode = chain === "l1" ? l1Code : acc && acc.code;
-  const code = sourceSection(a, name, bytecode, chain);
+  const created = chain === "l2" && (state.index.contracts || {})[a];
+  const verified = created && created.source ? await object(`l2/sources/${a}`) : null;
+  const code = sourceSection(a, name, bytecode, chain, verified);
+  const base = `/address/${chain}/${a}`;
+  const tab = route.tab;
   return `
-    <h1>${esc(name)} <span class="muted">on ${chain.toUpperCase()}</span> ${kind ? badge(kind) : ""}</h1>
+    <h1>${esc(name)} ${net(chain)} ${kind ? badge(kind) : ""}</h1>
     <p class="mono">${a}</p>
     ${role ? `<div class="callout ${role[0] === "mock" ? "mock" : ""}"><p>${role[1]}</p></div>` : ""}
     ${other}
     ${fields(rows)}
-    ${live.length ? `<h2>State</h2><p class="section-lead">${chain === "l1" ? "Read from the contract on L1 now." : "From the follower's rebuilt L2 state."}</p>${fields(live)}` : ""}
-    ${history}
-    ${code}`;
+    ${tabs(base, [
+      ["", "Transactions", count, history],
+      code && ["contract", "Contract", undefined, code],
+      live.length && ["state", "State", undefined, `<p class="section-lead">${chain === "l1" ? "Read from the contract on L1 now." : "From the follower's rebuilt L2 state."}</p>${fields(live)}`],
+    ], tab)}`;
 }
 
 // The source file each contract of the demo is built from.
@@ -562,13 +671,22 @@ function sourceView(title, content, assembly, open) {
   return `<details class="code" ${open ? "open" : ""}><summary><b>${esc(title)}</b> <span class="muted">${lines.length} lines</span></summary><pre class="code src">${body}</pre></details>`;
 }
 
-function sourceSection(a, name, bytecode, chain) {
+// `verified` is the source of a contract a transaction created, which the
+// follower found on disk compiling to the code it was created with.
+function sourceSection(a, name, bytecode, chain, verified) {
   const main = state.sources && mainSource(a);
   const notes = {
     "sys-asm/src/verification_key_registry/main.eas": "The EIP-8357 registry, from ethereum/sys-asm. The deployed runtime is this program with the admin's address in place of the system address, since no fork on this devnet performs the system call.",
     "contracts/frames/frame_introspection.eas": "Built with geas into the runtime the rollup contract deploys.",
   };
   let html = "";
+  if (verified) {
+    html += `<h2>Source</h2>
+      <p class="section-lead">From <code>${esc(verified.file)}</code>, which compiles to exactly the creation code this contract was
+        deployed with${verified.flattened ? `. Flattened with <a href="https://github.com/l2beat/l2beat/tree/main/packages/discovery/src/flatten">L2BEAT's
+        flattener</a>: the contract and everything it inherits and uses, in one file` : ""}.</p>
+      ${sourceView(`${verified.name}.sol${verified.flattened ? ", flattened" : ""}`, verified.flat, false, true)}`;
+  }
   // Solidity contracts, flattened by L2BEAT's flattener.
   const flatName = main && main.endsWith(".sol") && main.split("/").pop().replace(".sol", "");
   if (flatName && state.flat && state.flat[flatName]) {
@@ -606,7 +724,13 @@ const KEYWORDS = "function|returns|return|require|revert|if|else|for|while|emit|
 const TOKENS = new RegExp(`("[^"]*")|\\b(0x[0-9a-fA-F]+|\\d[\\d_]*)\\b|\\b(${KEYWORDS})\\b|\\b(uint\\d*|int\\d*|bytes\\d*|address|bool|string)\\b`, "g");
 
 // A small Solidity highlighter: comments, strings, numbers, keywords, types.
+const highlighted = new Map();
 function highlight(code) {
+  if (!highlighted.has(code)) highlighted.set(code, highlightLines(code));
+  return highlighted.get(code);
+}
+
+function highlightLines(code) {
   return code.split("\n").map((line) => {
     const i = line.indexOf("//");
     const src = i >= 0 ? line.slice(0, i) : line;
@@ -661,11 +785,13 @@ function defaultCodeBlock() {
     <pre class="code">${escCode(DEFAULT_CODE)}</pre></details>`;
 }
 
+// The source a call runs, when the explorer has it: it only has the sources
+// of the rollup's contracts. Contract pages show the bytecode of the others.
 function codeFor(target, call) {
   const key = call && snippetKey(target, call.function);
   if (key) return codeBlock(key);
-  if (!contractsAt(target).length) return `<p class="note">No contract code runs: the target is an account without code.</p>`;
-  return "";
+  if (contractsAt(target).length) return "";
+  return `<p class="note">The explorer has no source for ${addr(target, "l2")}, only for the rollup's contracts. Its page shows its bytecode.</p>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -674,7 +800,11 @@ function codeFor(target, call) {
 
 function value(v, key, ctx = {}) {
   if (v === null || v === undefined) return "";
-  if (Array.isArray(v)) return v.length ? `${v.length} items: ${v.map((x) => hash(x)).join(" ")}` : "empty";
+  if (Array.isArray(v)) {
+    if (!v.length) return "empty";
+    if (v.every((x) => x && typeof x === "object")) return v.map((x, i) => `<div class="muted">[${i}]</div>${argTable(x, {}, ctx)}`).join("");
+    return v.map((x) => value(x, key, ctx)).join("<br>");
+  }
   if (typeof v === "object") return argTable(v, {}, ctx);
   const s = String(v);
   if (/^0x[0-9a-f]{40}$/i.test(s)) return addr(s, chainFor(key, ctx));
@@ -685,7 +815,7 @@ function value(v, key, ctx = {}) {
 
 function argTable(args, notes = {}, ctx = {}) {
   // A struct takes the value and note columns, so its own table has room.
-  const nested = (v) => v && typeof v === "object" && !Array.isArray(v);
+  const nested = (v) => v && typeof v === "object" && (!Array.isArray(v) || v.some((x) => x && typeof x === "object"));
   return `<table class="fields"><tbody>${Object.entries(args)
     .map(([k, v]) => nested(v)
       ? `<tr><td>${esc(k)}</td><td class="value nested" colspan="2">${value(v, k, ctx)}</td></tr>`
@@ -708,10 +838,17 @@ function events(logs, chain) {
   return `<table><thead><tr><th>Event</th><th>From</th><th>Arguments</th></tr></thead><tbody>
     ${logs.map((l) => {
       const e = l.event;
-      return `<tr><td>${e ? `<b>${e.name}</b><br><span class="note">${EVENT_NOTES[e.name] || ""}</span>` : hash(l.topics[0])}</td><td>${addr(l.address, chain)}</td>
-        <td>${e ? Object.entries(e.args).map(([k, v]) => `${esc(k)}: ${value(v, k, { chain, event: e.name })}`).join("<br>") : hash(l.data)}</td></tr>`;
+      // EIP-7708 logs ETH transfers with ERC-20's Transfer signature.
+      const note = e && (e.name !== "Transfer" || l.address === ETH_TRANSFER_LOG) ? EVENT_NOTES[e.name] || "" : "";
+      const raw = [...l.topics.slice(1).map((t, i) => `topic ${i + 1}: ${hash(t)}`),
+        ...(l.data.length > 2 ? l.data.slice(2).match(/.{1,64}/g).map((w, i) => `data ${i}: <span class="mono">${w}</span>`) : [])];
+      return `<tr><td>${e ? `<b title="${esc(e.signature || "")}">${e.name}</b><br><span class="note">${note}</span>`
+        : `<span class="muted">unknown</span><br>${hash(l.topics[0])}`}</td><td>${addr(l.address, chain)}</td>
+        <td>${e ? Object.entries(e.args).map(([k, v]) => `${esc(k)}: ${value(v, k, { chain, event: e.name })}`).join("<br>") : raw.join("<br>")}</td></tr>`;
     }).join("")}</tbody></table>`;
 }
+
+const ETH_TRANSFER_LOG = "0xfffffffffffffffffffffffffffffffffffffffe";
 
 const ADVANCE_NOTES = {
   stateRoot: "Claimed by the operator, checked by the proof.",
@@ -731,13 +868,19 @@ const ADVANCE_NOTES = {
   extraData: "A free input of the operator.",
 };
 
-function frameExplain(f, i, layer) {
+// Whether a frame before frame `i` claims a deposit.
+const claimsBefore = (tx, i) => tx.frames.slice(0, i).some((f) => f.call && f.call.function === "claimL1Message");
+
+function frameExplain(tx, f, i, layer) {
   const fn = f.call && f.call.function;
-  if (f.mode === "VERIFY") {
+  const noCode = f.targetHasCode === undefined || f.targetHasCode === null ? !contractsAt(f.target).length : !f.targetHasCode;
+  if (f.mode === "VERIFY" && !f.call && noCode) {
     const pays = f.flags.includes("APPROVE_PAYMENT");
+    const approves = f.flags.filter((x) => x.startsWith("APPROVE"));
     return {
-      text: `The sender's account ${pays ? "approves the transaction and pays for it" : "approves the transaction"}. It has no code, so EIP-8141's default code checks the transaction's signature. ${
-        layer === "L2" && pays && i > 0 ? "The fee is taken now, from the ETH the claim above just delivered: that is how a deposit pays for its own claim." : ""}`,
+      text: `${approves.length ? `The sender's account ${pays ? "approves the transaction and pays for it" : "approves the transaction"}.` : "A read-only check that must not revert."}
+        Without code at the target, EIP-8141's default code checks the transaction's signature. ${
+        pays && claimsBefore(tx, i) ? "The fee is taken now, from the ETH the claim above just delivered: that is how a deposit pays for its own claim." : ""}`,
       badges: [badge("real")],
     };
   }
@@ -760,12 +903,21 @@ function frameExplain(f, i, layer) {
     claimL2Message: "Proves the withdrawal against a recent L2 state root and pays it from the escrow.",
   };
   const ctx = { chain: layer.toLowerCase(), fn };
-  return { text: texts[fn] || "", badges: [badge("real")], extra: f.call ? argTable(f.call.args.params || f.call.args, fn === "advance" ? ADVANCE_NOTES : {}, ctx) : "" };
+  const known = f.call && texts[fn];
+  return {
+    text: texts[fn] || {
+      VERIFY: "A VERIFY frame: read-only, it must not revert, and it approves what its flags allow.",
+      SENDER: "Calls the target as the sender, which is the caller the target sees.",
+      DEFAULT: "Calls the target from EIP-8141's entry point address, not as the sender.",
+    }[f.mode] + (noCode && (!f.data || f.data === "0x") ? " The target has no code, so the frame only moves its value." : ""),
+    badges: known ? [badge("real")] : [],
+    extra: known ? argTable(f.call.args.params || f.call.args, fn === "advance" ? ADVANCE_NOTES : {}, ctx) + rawInput(f.data) : inputData(f.data, f.call, ctx),
+  };
 }
 
 function frameCards(tx, layer) {
   return `<div class="frames">${tx.frames.map((f, i) => {
-    const e = frameExplain(f, i, layer);
+    const e = frameExplain(tx, f, i, layer);
     const status = f.status === undefined ? "" : f.status === 1 ? `<span class="check">succeeded</span>` : `<span class="bad">failed</span>`;
     return `<div class="frame"><div class="frame-head"><span class="idx">Frame ${i}</span><span class="mode">${f.mode}</span>
         ${f.call ? `<code>${f.call.function}</code>` : ""} → ${addr(f.target, layer.toLowerCase(), false)} ${e.badges.join(" ")}<span class="status">${status}</span></div>
@@ -775,17 +927,97 @@ function frameCards(tx, layer) {
           <span>State gas: ${f.stateGasUsed !== undefined ? num(f.stateGasUsed) + " of " : ""}${num(f.stateGasLimit)}</span>
           ${f.value ? `<span>Value: ${eth(f.value)}</span>` : ""}</div>
         ${e.extra || ""}
-        ${f.mode === "VERIFY" && !contractsAt(f.target).length ? defaultCodeBlock() : f.dependency ? codeBlock(snippetKey(f.target, "fallback")) : codeFor(f.target, f.call)}
+        ${f.mode === "VERIFY" && !f.call && (f.targetHasCode === undefined || f.targetHasCode === null ? !contractsAt(f.target).length : !f.targetHasCode) ? defaultCodeBlock() : f.dependency ? codeBlock(snippetKey(f.target, "fallback"))
+          : f.data && f.data !== "0x" ? codeFor(f.target, f.call) : ""}
         ${f.logs && f.logs.length ? `<h3>Events</h3>${events(f.logs, layer.toLowerCase())}` : ""}</div></div>`;
   }).join("")}</div>`;
 }
 
 const statusText = (s) => (s === 0 ? `<span class="bad">failed</span>` : `<span class="check">succeeded</span>`);
 
+// Calldata as the selector and 32-byte words, or init code in 32-byte lines.
+function rawInput(data, create = false) {
+  if (!data || data === "0x") return "";
+  const truncated = data.endsWith("…");
+  const h = data.replace("…", "").slice(2);
+  const lines = [];
+  const body = create ? h : h.slice(8);
+  if (!create) lines.push(`<span class="ln">selector</span>${h.slice(0, 8)}`);
+  for (let i = 0; i * 64 < body.length; i++) lines.push(`<span class="ln">${String(i).padStart(3, " ")}</span>${body.slice(64 * i, 64 * i + 64)}`);
+  if (truncated) lines.push(`<span class="muted">…</span>`);
+  return `<details class="code"><summary>Raw ${create ? "init code" : "input"}, ${num(h.length / 2)} bytes${truncated ? ", shortened" : ""}</summary><pre class="code src">${lines.join("\n")}</pre></details>`;
+}
+
+// A call's input: the function and its arguments when the explorer knows the
+// signature, from the ABIs it loaded, and the raw bytes.
+function inputData(data, call, ctx) {
+  if (!data || data === "0x") return "";
+  if (!call) return `<p class="note">Function selector <code>${data.slice(0, 10)}</code>: none of the ABIs the explorer loaded has it.</p>${rawInput(data)}`;
+  return `<p><code>${esc(call.signature)}</code></p>${argTable(call.args, {}, ctx)}${rawInput(data)}`;
+}
+
+// The function a transaction calls, for tables: its name, its selector, or nothing.
+function method(tx) {
+  if (tx.kind === "deploy") return '<span class="muted">create</span>';
+  if ("method" in tx) return tx.method ? `<code>${esc(tx.method)}</code>` : "";
+  const calls = tx.frames ? tx.frames.filter((f) => f.data && f.data !== "0x") : tx.to && tx.data !== "0x" ? [tx] : [];
+  return calls.map((c) => (c.call ? `<code>${c.call.function}</code>` : `<code class="muted">${c.data.slice(0, 10)}</code>`)).join(", ");
+}
+
+// A price per gas, in wei, with gwei when large enough to read.
+const perGas = (wei) => {
+  const w = Number(wei);
+  return `${num(w)} wei${w >= 1e6 ? ` <span class="muted">(${(w / 1e9).toLocaleString("en-US", { maximumFractionDigits: 9 })} gwei)</span>` : ""}`;
+};
+
+// What a transaction paid, for the overview, and how, for the details.
+function feeRows(tx, chain) {
+  if (tx.effectiveGasPrice === undefined || tx.fee === undefined) return { overview: [], details: [] };
+  const offered = tx.maxFeePerGas !== undefined
+    ? [["Max fee per gas", perGas(tx.maxFeePerGas), "The most the sender pays per gas, base fee included."],
+      ["Max priority fee per gas", perGas(tx.maxPriorityFeePerGas), "The most the sender tips per gas, on top of the base fee."]]
+    : [];
+  return {
+    overview: [
+      ["Transaction fee", `${eth(tx.fee)} <span class="muted">= ${num(tx.gasUsed)} gas × ${num(tx.effectiveGasPrice)} wei</span>`,
+        tx.payer && tx.payer !== tx.from ? `Paid by ${addr(tx.payer, chain)}, whose VERIFY frame approved the payment.` : ""],
+      ["Gas price", perGas(tx.effectiveGasPrice), "The base fee plus the tip that the sender's limits allow."],
+    ],
+    details: [
+      ["Base fee per gas", perGas(tx.baseFeePerGas), `The ${chain.toUpperCase()} block's EIP-1559 base fee.`],
+      ...offered,
+      ["Burned", eth(tx.burned), chain === "l2" ? "The base fee is burned on L2 as on L1. The ETH that backs it stays in the L1 escrow, which no L2 account can withdraw." : "The base fee, burned."],
+      ["Tip", eth(tx.tip), chain === "l2" ? "Goes to the L2 block's fee recipient." : "Goes to the L1 block's proposer."],
+      ...(tx.blobFee ? [["Blob fee", `${eth(tx.blobFee)} <span class="muted">= ${num(tx.blobGasUsed)} blob gas × ${num(tx.blobGasPrice)} wei</span>`, "Burned, as all blob gas is."]] : []),
+    ],
+  };
+}
+
+// The logs of a transaction, in all its frames.
+const logsOf = (tx) => tx.logs || (tx.frames || []).flatMap((f) => f.logs || []);
+
+// ERC-20 and ERC-721 transfers, from their Transfer events.
+function tokenTransfers(tx, chain) {
+  const transfers = logsOf(tx).filter((l) => l.event && l.event.name === "Transfer" && l.address !== ETH_TRANSFER_LOG);
+  if (!transfers.length) return [];
+  return [["Token transfers", transfers.map((l) => {
+    const a = l.event.args;
+    const amount = a.tokenId !== undefined ? `token ID ${esc(a.tokenId)}` : `${typeof a.value === "number" ? num(a.value) : esc(a.value)} units`;
+    return `${addr(a.from, chain)} → ${addr(a.to, chain)}: ${amount} of ${addr(l.address, chain)}`;
+  }).join("<br>"), "From the Transfer events of ERC-20 and ERC-721 tokens. Amounts are in the token's smallest unit."]];
+}
+
+function authorizationRows(tx) {
+  return `<table><thead><tr><th>#</th><th>Authority</th><th>Delegates to</th><th>Chain ID</th><th class="num">Nonce</th></tr></thead><tbody>
+    ${tx.authorizations.map((a, i) => `<tr><td>${i}</td><td>${a.authority ? addr(a.authority, "l2") : '<span class="bad">invalid signature</span>'}</td>
+      <td>${addr(a.address, "l2")}</td><td>${a.chainId === 0 ? "0, any chain" : a.chainId}</td><td class="num">${a.nonce}</td></tr>`).join("")}</tbody></table>`;
+}
+
 // The deposit an L2 claim delivers, or the withdrawal an L2 transaction sends.
 function depositOf(tx) {
+  if (tx.deposit !== undefined && tx.deposit !== null) return state.index.deposits[String(tx.deposit)];
   const frame = (tx.frames || []).find((f) => f.call && f.call.function === "claimL1Message");
-  return frame ? state.index.deposits[String(frame.call.args.message.index)] : null;
+  return frame ? state.index.deposits[String(frame.call.args.m.index)] : null;
 }
 const withdrawalOf = (tx) => Object.values(state.index.withdrawals).find((w) => w.l2Tx === tx.hash);
 
@@ -810,7 +1042,7 @@ function frameTargets(tx, chain) {
 
 const L2_SUMMARIES = {
   "deposit claim": (tx) => {
-    const claim = tx.frames.find((f) => f.call && f.call.function === "claimL1Message").call.args.message;
+    const claim = tx.frames.find((f) => f.call && f.call.function === "claimL1Message").call.args.m;
     const proves = tx.frames.some((f) => f.call && f.call.function === "proveL1MessageRoot");
     return `${addr(claim.to, "l2")} claims a deposit of ${eth(claim.value)} and pays the fee from it. It is an EIP-8141 frame
       transaction: the claim frames run first, then the VERIFY frame approves the payment from the balance the claim
@@ -821,15 +1053,30 @@ const L2_SUMMARIES = {
   transfer: (tx) => tx.status
     ? `${addr(tx.from, "l2")} pays ${eth(tx.value)} to ${addr(tx.to, "l2")}, in a plain ETH transfer.`
     : `A plain ETH transfer of ${eth(tx.value)} that <b>failed</b>, so no ETH moved. The transaction is still in the block and paid its fee.`,
+  call: (tx) => `${addr(tx.from, "l2")} calls ${addr(tx.to, "l2")}${tx.call ? `'s <code>${tx.call.function}</code>` : ""}.`,
+  deploy: (tx) => (tx.created || []).length
+    ? `${addr(tx.from, "l2")} deploys ${tx.created.map((c) => `${c.name ? `a <b>${esc(c.name)}</b> contract` : "a contract"} at ${addr(c.address, "l2")}`).join(", ")}${
+      tx.to ? `, through the CREATE2 factory of EIP-7997, at an address that only depends on the factory, a salt and the code` : ""}.`
+    : `${addr(tx.from, "l2")} tries to deploy a contract, which <b>failed</b>.`,
+  delegation: (tx) => `${addr(tx.from, "l2")} sends an EIP-7702 transaction with ${tx.authorizations.length}
+    authorization${tx.authorizations.length > 1 ? "s" : ""}: each sets the code of the account that signed it to delegate to a contract,
+    here ${[...new Set(tx.authorizations.map((a) => a.address))].map((a) => addr(a, "l2")).join(", ")}.`,
+  "frame transaction": (tx) => `An EIP-8141 frame transaction from ${addr(tx.from, "l2")} with ${tx.frames.length} frames:
+    ${tx.frames.map((f) => f.mode).join(", ")}. Its VERIFY frames validate it and approve execution and payment.`,
 };
 
 async function l2TxPage(route) {
   const tx = await object(`l2/txs/${route.hash}`);
-  if (!tx) return `<h1>L2 transaction</h1><p class="note">Not found. The follower may not have rebuilt its block yet.</p>`;
+  if (!tx) return `<h1>Transaction details</h1><p class="note">Not found. The follower may not have rebuilt its block yet.</p>`;
   const block = await object(`l2/blocks/${tx.block}`);
   const w = tx.kind === "withdrawal" && withdrawalOf(tx);
   const d = tx.kind === "deposit claim" && depositOf(tx);
   const frame = tx.type === 6;
+  const logs = logsOf(tx);
+  const fees = feeRows(tx, "l2");
+  const position = block ? block.transactions.findIndex((t) => t.hash === tx.hash) : -1;
+  const key = !frame && tx.to && tx.call && snippetKey(tx.to, tx.call.function);
+  const code = key ? codeBlock(key) : "";
   const linked = [];
   if (d) {
     linked.push(["Deposit on L1", d.l1Tx ? `${l1TxLink(d.l1Tx)} <span class="muted">in L1 block ${num(d.l1Block)}</span>` : "",
@@ -839,27 +1086,45 @@ async function l2TxPage(route) {
     linked.push(["Claim on L1", w.l1Tx ? `${l1TxLink(w.l1Tx)} <span class="muted">in L1 block ${num(w.l1Block)}</span>` : '<span class="muted">not claimed yet</span>',
       "The L1 transaction that paid this withdrawal from the escrow, against an L2 state root that includes it."]);
   }
-  return `
-    <h1>L2 transaction ${chip(tx.kind)}</h1>
-    <div class="callout"><p>${(L2_SUMMARIES[tx.kind] || (() => ""))(tx)}${d && d.l1Tx ? ` The deposit was sent on L1 in ${l1TxLink(d.l1Tx)}.` : ""}${w && w.l1Tx ? ` It was claimed on L1 in ${l1TxLink(w.l1Tx)}.` : ""}</p></div>
-    ${fields([
-      ["Hash", hash(tx.hash, true), "Rebuilt by the follower from the L1 blob that carried its block."],
-      ["Block", l2BlockLink(tx.block), ""],
-      ["Posted on L1", block ? `${l1TxLink(block.l1.tx)} <span class="muted">in L1 block ${num(block.l1.block)}</span>` : "",
-        "The L1 transaction that added this transaction's block. Its blob carries this transaction's bytes, which is where the follower read them from."],
-      ...linked,
-      ["Type", frame ? "0x06, frame transaction" : `0x0${tx.type}, EIP-1559`, frame ? "EIP-8141: a list of frames, each a call with its own mode and gas." : ""],
+  const base = `/l2/tx/${tx.hash}`;
+  const tab = route.tab;
+  const overview = `${fields([
+      ["Transaction hash", hash(tx.hash, true), "Rebuilt by the follower from the L1 blob that carried its block."],
+      ["Status", statusText(tx.status), frame ? "A frame transaction is included once a frame approves payment. Each frame then has its own status." : ""],
+      ["Block", `${l2BlockLink(tx.block)}${block ? ` <span class="muted">posted on L1 in</span> ${l1TxLink(block.l1.tx)} <span class="muted">in L1 block ${num(block.l1.block)}</span>` : ""}`,
+        "The L1 transaction's blob carries this transaction's bytes, which is where the follower read them from."],
+      ["Timestamp", block ? `${ago(block.timestamp)} <span class="muted">(${new Date(block.timestamp * 1000).toLocaleString()})</span>` : "", ""],
+      ["Transaction action", `<span class="prose">${(L2_SUMMARIES[tx.kind] || (() => ""))(tx)}</span>`, ""],
       [frame ? "Sender" : "From", addr(tx.from, "l2"), frame ? "The account the transaction acts for." : ""],
-      ...(frame ? [["To", frameTargets(tx, "l2"), "A frame transaction has no single recipient: each frame calls its own target."],
-        ["Payer", addr(tx.payer, "l2"), "The account whose VERIFY frame approved the payment."]] : [["To", addr(tx.to, "l2"), ""], ["Value", eth(tx.value), ""]]),
-      ["Status", statusText(tx.status), frame ? "A frame transaction is included once a frame approves payment. Each frame then has its own status, below." : ""],
+      frame ? ["To", frameTargets(tx, "l2"), "A frame transaction has no single recipient: each frame calls its own target."]
+        : ["To", tx.to ? addr(tx.to, "l2") : "contract creation", ""],
+      ...((tx.created || []).length ? [["Created", tx.created.map((c) => addr(c.address, "l2")).join("<br>"), "Named when the explorer knows the creation code, from the ABIs it loaded."]] : []),
+      ...linked,
+      ...tokenTransfers(tx, "l2"),
+      ...(frame ? [] : [["Value", eth(tx.value), ""]]),
+      ...fees.overview,
+    ])}
+    ${more([
+      ["Gas limit & usage", frame ? num(tx.gasUsed) : `${num(tx.gasUsed)} of ${num(tx.gasLimit)} <span class="muted">(${pct(tx.gasUsed / tx.gasLimit)})</span>`,
+        "Gas includes EIP-8037 state gas for new accounts and storage."],
+      ...fees.details,
+      ["Transaction type", `0x0${tx.type}, ${TX_TYPES[tx.type] || "unknown"}`, frame ? "EIP-8141: a list of frames, each a call with its own mode and gas." : ""],
       ["Nonce", tx.nonce, ""],
-      ["Gas used", frame ? num(tx.gasUsed) : `${num(tx.gasUsed)} of ${num(tx.gasLimit)}`, ""],
+      ["Position in block", position >= 0 ? position : "", ""],
       ["Size", `${num(tx.bytes)} bytes`, "Its share of the block's blob."],
     ])}
-    ${frame ? `<h2>Frames</h2>${frameCards(tx, "L2")}` : tx.call
-      ? `<h2>Call: <code>${tx.call.function}</code></h2>${argTable(tx.call.args, {}, { chain: "l2", fn: tx.call.function })}${codeFor(tx.to, tx.call)}<h2>Events</h2>${events(tx.logs, "l2")}`
-      : `<h2>Code</h2>${codeFor(tx.to, null)}<h2>Events</h2>${events(tx.logs, "l2")}`}`;
+    ${frame ? "" : tx.to ? (tx.data !== "0x" ? `<h2>Input data</h2>${inputData(tx.data, tx.call, { chain: "l2", fn: tx.call && tx.call.function })}` : "")
+      : `<h2>Init code</h2>${rawInput(tx.data, true)}`}`;
+  return `
+    <h1>Transaction details ${chip(tx.kind)} <span class="net l2">L2</span></h1>
+    ${tabs(base, [
+      ["", "Overview", undefined, overview],
+      ["logs", "Logs", logs.length, events(logs, "l2")],
+      frame && ["frames", "Frames", tx.frames.length, frameCards(tx, "L2")],
+      tx.authorizations && ["authorizations", "Authorizations", tx.authorizations.length,
+        `<p class="section-lead">EIP-7702: each authority signed that its account runs the code of the address it delegates to.</p>${authorizationRows(tx)}`],
+      code && ["code", "Code", undefined, code],
+    ], tab)}`;
 }
 
 async function l1TxPage(route) {
@@ -875,7 +1140,7 @@ async function l1TxPage(route) {
     summary = `${addr(tx.from, "l1")} deposits ${eth(tx.value)} to ${addr(tx.call.args.to, "l2")} on L2. The rollup contract adds the message
       to its Merkle tree and keeps the ETH in escrow.${d && d.l2Tx ? ` It was claimed on L2 in ${l2TxLink(d.l2Tx)}, in block ${l2BlockLink(d.l2Block)}.` : ""}`;
   } else if (tx.kind === "withdrawal claim") {
-    const m = tx.call.args.message;
+    const m = tx.call.args.m;
     const w = state.index.withdrawals[String(m.index)];
     summary = `${addr(tx.from, "l1")} claims a withdrawal of ${eth(m.value)}. The rollup contract checks the message against the
       state root of L2 block ${l2BlockLink(tx.call.args.l2BlockNumber)} with a storage proof, and pays it from the escrow.${w && w.l2Tx ? ` It was sent on L2 in ${l2TxLink(w.l2Tx)}.` : ""}`;
@@ -888,26 +1153,41 @@ async function l1TxPage(route) {
       `The L2 transaction that delivered deposit #${d.index}.`]);
   }
   if (tx.kind === "withdrawal claim") {
-    const w = state.index.withdrawals[String(tx.call.args.message.index)];
+    const w = state.index.withdrawals[String(tx.call.args.m.index)];
     if (w && w.l2Tx) linked.push(["Withdrawal on L2", `${l2TxLink(w.l2Tx)} <span class="muted">in L2 block</span> ${l2BlockLink(w.l2Block)}`, `The L2 transaction that sent withdrawal #${w.index}.`]);
   }
   if (tx.kind === "advance") linked.push(["L2 block", l2BlockLink(tx.l2Block), "The L2 block this transaction adds."]);
-  return `
-    <h1>L1 transaction <span class="chip">${esc(L1_KINDS[tx.kind] || tx.kind)}</span></h1>
-    <div class="callout"><p>${summary}</p></div>
-    ${fields([
-      ["Hash", hash(tx.hash, true), "Read from the L1 node."],
-      ...linked,
-      ["L1 block", `${num(tx.block)} <span class="muted">built by ${esc(tx.builder)}</span>`, frame && tx.blobVersionedHashes.length ? "Only Nethermind and Reth accept blob-carrying frame transactions on this devnet." : ""],
-      ["Type", frame ? "0x06, frame transaction" : `0x0${tx.type}`, frame ? "EIP-8141." : ""],
-      [frame ? "Sender" : "From", addr(tx.from, "l1"), ""],
-      ...(frame ? [["To", frameTargets(tx, "l1"), "A frame transaction has no single recipient: each frame calls its own target."]] : [["To", addr(tx.to, "l1"), ""], ["Value", eth(tx.value), ""]]),
+  const logs = tx.logs || [];
+  const fees = feeRows(tx, "l1");
+  const base = `/l1/tx/${tx.hash}`;
+  const tab = route.tab;
+  const overview = `${fields([
+      ["Transaction hash", hash(tx.hash, true), "Read from the L1 node."],
       ["Status", tx.status ? `<span class="check">succeeded</span>` : `<span class="bad">failed</span>`, ""],
-      ["Gas used", `${num(tx.gasUsed)} at ${num(tx.effectiveGasPrice)} wei`, "Includes EIP-8037 state gas for new storage."],
-      ...(tx.blobVersionedHashes.length ? [["Blob", `${hash(tx.blobVersionedHashes[0], true)}<br><span class="muted">${num(tx.blobGasUsed)} blob gas at ${num(tx.blobGasPrice)} wei</span>${tx.l2Block ? `<br><a href="#/blob/${tx.l2Block}">view it decoded and raw →</a>` : ""}`, "The L2 block's data, in EIP-8142's encoding."]] : []),
+      ["Block", `${num(tx.block)} <span class="muted">built by ${esc(tx.builder)}</span>`, frame && tx.blobVersionedHashes.length ? "Only Nethermind and Reth accept blob-carrying frame transactions on this devnet." : ""],
+      ["Timestamp", `${ago(tx.timestamp)} <span class="muted">(${new Date(tx.timestamp * 1000).toLocaleString()})</span>`, ""],
+      ["Transaction action", `<span class="prose">${summary}</span>`, ""],
+      [frame ? "Sender" : "From", addr(tx.from, "l1"), ""],
+      frame ? ["To", frameTargets(tx, "l1"), "A frame transaction has no single recipient: each frame calls its own target."] : ["To", addr(tx.to, "l1"), ""],
+      ...linked,
+      ...(frame ? [] : [["Value", eth(tx.value), ""]]),
+      ...fees.overview,
     ])}
-    ${frame ? `<h2>Frames</h2>${frameCards(tx, "L1")}` : tx.call ? `<h2>Call: <code>${tx.call.function}</code></h2>${argTable(tx.call.args, {}, { chain: "l1", fn: tx.call.function })}${codeFor(tx.to, tx.call)}` : ""}
-    <h2>Events</h2>${events(tx.logs, "l1")}`;
+    ${more([
+      ["Gas usage", num(tx.gasUsed), "Includes EIP-8037 state gas for new storage."],
+      ...fees.details,
+      ...(tx.blobVersionedHashes.length ? [["Blob", `${hash(tx.blobVersionedHashes[0], true)}${tx.l2Block ? `<br><a href="#/blob/${tx.l2Block}">view it decoded and raw →</a>` : ""}`, "The L2 block's data, in EIP-8142's encoding."]] : []),
+      ["Transaction type", frame ? "0x06, EIP-8141 frame transaction" : `0x0${tx.type}, ${TX_TYPES[tx.type] || "unknown"}`, ""],
+      ["Nonce", tx.nonce, ""],
+    ])}
+    ${!frame && tx.data && tx.data !== "0x" ? `<h2>Input data</h2>${inputData(tx.data, tx.call, { chain: "l1", fn: tx.call && tx.call.function })}${codeFor(tx.to, tx.call)}` : ""}`;
+  return `
+    <h1>Transaction details <span class="chip">${esc(L1_KINDS[tx.kind] || tx.kind)}</span> <span class="net l1">L1</span></h1>
+    ${tabs(base, [
+      ["", "Overview", undefined, overview],
+      ["logs", "Logs", logs.length, events(logs, "l1")],
+      frame && ["frames", "Frames", tx.frames.length, frameCards(tx, "L1")],
+    ], tab)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,6 +1390,6 @@ document.getElementById("search").addEventListener("submit", async (e) => {
   e.target.q.value = "";
 });
 
-window.addEventListener("hashchange", () => { window.scrollTo(0, 0); render(); });
+window.addEventListener("hashchange", () => render().then(() => window.scrollTo(0, 0)));
 refresh().then(render);
 setInterval(refresh, 4000);

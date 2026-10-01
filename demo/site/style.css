@@ -75,10 +75,11 @@ h3 { font-size: 16px; margin: 20px 0 8px; }
 .callout p { margin: 4px 0; }
 
 /* Stats */
-.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin: 16px 0; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 16px 0; }
 .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
 .stat .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .stat .value { font-size: 22px; font-weight: 700; }
+.stat .sub { font-size: 12.5px; color: var(--muted); }
 
 /* Tables */
 table { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
@@ -95,14 +96,24 @@ table.fields td.value { font-family: var(--mono); font-size: 13px; overflow-wrap
 table.fields td.note { color: var(--muted); font-size: 13.5px; }
 a.addr { white-space: nowrap; }
 .nowrap { white-space: nowrap; }
+.prose { font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
 .empty-hash { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--shortcut); background: var(--shortcut-bg); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
 .net { display: inline-block; font: 700 9.5px/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: 0.03em; padding: 2px 4px; border-radius: 4px; margin-right: 4px; vertical-align: 1.5px; }
 .net.l1 { background: #e3e8f4; color: #34487a; }
 .net.l2 { background: #f1e4f7; color: #7b2fb5; }
 table.fields td.value.nested { width: auto; padding: 2px 0; }
 table.fields table.fields { border: none; background: transparent; }
-table.fields table.fields td:first-child { width: 150px; font-weight: 500; }
+table.fields table.fields td:first-child { width: 190px; font-weight: 500; white-space: nowrap; }
 table.fields table.fields td.value { width: auto; }
+
+/* Tabs and details, as on Etherscan */
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin: 16px 0 14px; }
+.tabs a { padding: 7px 14px; border: 1px solid transparent; border-radius: 8px 8px 0 0; color: #3a3a3e; font-size: 14px; margin-bottom: -1px; }
+.tabs a:hover { text-decoration: none; background: var(--soft); }
+.tabs a.active { background: var(--panel); border-color: var(--line); border-bottom-color: var(--panel); color: var(--ink); font-weight: 600; }
+details.more { margin: 10px 0 18px; }
+details.more > summary { cursor: pointer; color: var(--accent); font-size: 14px; padding: 6px 2px; }
+details.more > table { margin-top: 6px; }
 
 /* Frames */
 .frames { display: grid; gap: 12px; }
@@ -178,3 +189,19 @@ footer { text-align: center; color: var(--muted); font-size: 14px; padding: 30px
   table.fields td:first-child { width: auto; }
   .hide-narrow { display: none; }
 }
+
+/* Home: latest blocks and transactions side by side, as on Etherscan */
+.columns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--soft); font-size: 14px; }
+/* minmax(0, …) keeps each row's columns the same width whatever their content. */
+.item { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr) minmax(0, 0.9fr); gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--line); font-size: 13.5px; line-height: 1.7; }
+.item .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item:last-child { border-bottom: none; }
+@media (max-width: 860px) { .columns { grid-template-columns: 1fr; } }
+
+/* Feedback while a page loads */
+body.loading #app { opacity: 0.55; transition: opacity 0.15s; }
+body.loading::before { content: ""; position: fixed; top: 0; left: 0; z-index: 20; height: 3px; width: 40%;
+  background: var(--accent); animation: loading 0.9s ease-in-out infinite; }
+@keyframes loading { from { transform: translateX(-100%); } to { transform: translateX(250%); } }

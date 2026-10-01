@@ -30,7 +30,7 @@ from ethereum_types.numeric import U64, U256, Uint
 
 from ethereum.crypto.hash import keccak256
 from ethereum.merkle_patricia_trie import root
-from ethereum.state import Address
+from ethereum.state import EMPTY_CODE_HASH, Address
 from ethereum.forks.amsterdam import fork, vm
 from ethereum.forks.amsterdam.block_access_lists import BlockAccessListBuilder
 from ethereum.forks.amsterdam.blocks import Block
@@ -108,7 +108,16 @@ def write_record(path: str, entry: dict) -> None:
 def follow(args: argparse.Namespace) -> None:
     chain = genesis(args.genesis)
     gas_limit = int(cast("call", "--rpc-url", args.l1_rpc, args.rollup, "gasLimit()(uint64)").split()[0])
-    explorer = ex.Explorer(args.explorer, args.rollup, str(l2_node.L2_MESSENGER)) if args.explorer else None
+    ex.load_signatures(args.abis)
+
+    def flatten(path: str, name: str) -> str | None:
+        """One contract's flat source, from L2BEAT's flattener."""
+        out = subprocess.run(
+            ["node", args.flatten, args.l2beat, "--file", path, "--name", name], capture_output=True, text=True, timeout=120
+        )
+        return out.stdout if out.returncode == 0 and out.stdout.strip() else None
+
+    explorer = ex.Explorer(args.explorer, args.rollup, str(l2_node.L2_MESSENGER), flatten) if args.explorer else None
     verified, from_block, seen = [], 0, set()
     while True:
         logs = rpc(args.l1_rpc, "eth_getLogs", json.dumps({
@@ -143,6 +152,11 @@ def l1_tx(args: argparse.Namespace, tx_hash: str) -> dict:
     return ex.l1_transaction(tx, receipt, block)
 
 
+def has_code(state, address: str) -> bool:
+    account = state.get_account_optional(Address(bytes.fromhex(address[2:])))
+    return account is not None and account.code_hash != EMPTY_CODE_HASH
+
+
 def index_block(args: argparse.Namespace, explorer: ex.Explorer, d: dict) -> None:
     """Writes a rebuilt L2 block, its transactions and the L1 transaction that carried it."""
     h, output = d["header"], d["output"]
@@ -150,7 +164,9 @@ def index_block(args: argparse.Namespace, explorer: ex.Explorer, d: dict) -> Non
     for raw, receipt in zip(d["transactions"], ex.receipts(output)):
         gas = int(receipt.cumulative_gas_used) - previous
         previous = int(receipt.cumulative_gas_used)
-        transactions.append(ex.l2_transaction(raw, receipt, gas, str(l2_node.L2_MESSENGER).lower()))
+        transactions.append(ex.l2_transaction(
+            raw, receipt, gas, str(l2_node.L2_MESSENGER).lower(), int(h.base_fee_per_gas), lambda a: has_code(d["state"], a)
+        ))
     advance = l1_tx(args, d["log"]["transactionHash"])
     params = next(f["call"]["args"]["params"] for f in advance["frames"] if (f.get("call") or {}).get("function") == "advance")
     block = {
@@ -263,6 +279,15 @@ def main() -> None:
     parser.add_argument("--interval", type=float, default=4, help="seconds between polls with --watch")
     parser.add_argument("--record", help="keep the verified blocks in this JSON file")
     parser.add_argument("--explorer", help="write the decoded blocks and transactions to this directory")
+    parser.add_argument(
+        "--abis", nargs="*", default=[os.path.join(os.path.dirname(__file__), "..", "out")],
+        help="directories with ABIs, from JSON artifacts or Go bindings, to decode calls and events with",
+    )
+    parser.add_argument("--l2beat", default=os.path.expanduser("~/work/l2beat"), help="for L2BEAT's flattener")
+    parser.add_argument(
+        "--flatten", default=os.path.join(os.path.dirname(__file__), "..", "..", "demo", "flatten.mjs"),
+        help="the script that runs L2BEAT's flattener",
+    )
     follow(parser.parse_args())
 
 

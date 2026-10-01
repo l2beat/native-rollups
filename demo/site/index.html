@@ -39,6 +39,8 @@
         <tr><td>Verification key registry (EIP-8357)</td><td><span class="badge mock">Mock</span></td><td>An admin registers the key instead of a fork</td><td>EIP-8357</td></tr>
         <tr><td>Blob check in the program (EIP-8142)</td><td><span class="badge mock">Mock</span></td><td>The node checks that the blobs encode the block</td><td>EIP-8142 in the L1 program</td></tr>
         <tr><td>Operator</td><td><span class="badge shortcut">Shortcut</span></td><td>One operator with a scripted story, whose L2 node signs deposit claims for the users, and no public L2 RPC</td><td></td></tr>
+        <tr><td>Claims for others</td><td><span class="badge shortcut">Shortcut</span></td><td>A relayer on L2 and a claimer on L1 claim the messages that their recipients cannot, for free, since messages carry no fee</td><td></td></tr>
+        <tr><td>Activity</td><td><span class="badge real">Real</span></td><td>Besides the story, spamoor sends ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, ERC-4337 bundles, EIP-8141 frame transactions and messages in both directions</td><td></td></tr>
       </tbody>
     </table>
     <p class="note">The prover key is the only trusted part. The follower checks it: it re-executes every block from L1

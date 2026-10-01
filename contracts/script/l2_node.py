@@ -29,8 +29,9 @@ its fee with the claimed ETH:
 
 The first claim of a block proves the tree's root against the block's anchor,
 and the others only carry their message's path to it. A message to an
-address whose key the node does not hold is claimed by one of its accounts
-with funds.
+address whose key the node does not hold, such as a contract, is claimed by
+the node's first account, a relayer. Messages carry no fee, so the relayer
+pays for these claims without compensation.
 
 Each block goes to L1 in EIP-8142 payload blobs, which encode its BAL and
 transactions. The L1 program does not implement EIP-8142 yet, so the node
@@ -57,6 +58,7 @@ import traceback
 import typing
 import urllib.request
 from dataclasses import dataclass
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import rlp as pyrlp
@@ -97,6 +99,7 @@ from ethereum.forks.amsterdam.stateless_host import (
 from ethereum.forks.amsterdam.stateless_host_exec_witness import build_execution_witness
 from ethereum.forks.amsterdam.transactions import (
     AccessListTransaction,
+    BlobTransaction,
     FeeMarketTransaction,
     LegacyTransaction,
     SetCodeTransaction,
@@ -117,7 +120,8 @@ L2_CHAIN_ID = 8079
 L2_GAS_LIMIT = 60_000_000
 LEANSTARK_SCHEME = 0x11
 # The keys of the node's L2 accounts. L2_USER_KEYS, comma-separated, lets
-# them be users' own keys, the accounts the users have on L1.
+# them be users' own keys, the accounts the users have on L1. The first is
+# the relayer, which claims messages to other addresses.
 USER_KEYS = [int(k, 16) for k in os.environ.get("L2_USER_KEYS", hex(0x6E61746976652D726F6C6C75702D75736572)).split(",")]  # "native-rollup-user"
 FEE_RECIPIENT = Address((0xFEE).to_bytes(20, "big"))
 EXTRA_DATA = b"native-rollup"
@@ -132,7 +136,7 @@ CLAIM_GAS_LIMIT = 1_000_000
 # EIP-8141 frame modes and approval scopes.
 DEFAULT_MODE, VERIFY_MODE = 0, 1
 APPROVE_EXECUTION_AND_PAYMENT = 3
-# Balance an account needs to pay for claiming a message to another address.
+# Balance the relayer needs to pay for claiming a message to another address.
 FEE_RESERVE = 10**16
 L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,bytes)")
 L1_MESSAGE_CLAIMED = keccak256(b"L1MessageClaimed(uint256,address,address,uint256)")
@@ -373,8 +377,8 @@ class Pending:
 
 
 class Node:
-    def __init__(self, state_file: str, l1_rpc: str, rollup: str):
-        self.state_file, self.l1_rpc, self.rollup = state_file, l1_rpc, rollup
+    def __init__(self, state_file: str, l1_rpc: str, rollup: str, beacon: str | None = None):
+        self.state_file, self.l1_rpc, self.rollup, self.beacon = state_file, l1_rpc, rollup, beacon
         self.config = json.load(open(state_file))
         self.chain = genesis_chain(self.config)
         self.lock = threading.RLock()
@@ -387,19 +391,36 @@ class Node:
         self.users = {str(eoa).lower(): eoa for eoa in (EOA(key=key) for key in USER_KEYS)}
         self.index(self.chain.blocks[0], None)
         for stored in self.config["blocks"]:
-            block = Block(
-                header=rlp.decode_to(Header, bytes.fromhex(stored["header"][2:])),
-                transactions=tuple(block_transaction(bytes.fromhex(t[2:])) for t in stored["transactions"]),
-                ommers=(),
-                withdrawals=(),
-            )
-            h = block.header
-            block_state = BlockState(pre_state=self.chain.state)
-            env = self.environment(block_state, h.timestamp, h.parent_beacon_block_root, h.prev_randao, h.base_fee_per_gas)
-            output, included, _ = self.execute(env, list(block.transactions), [])
-            assert len(included) == len(block.transactions), "a stored block no longer executes"
-            self.commit(Pending(block, keccak256(rlp.encode(h)), block_state, output, []), store=False)
+            self.commit(self.replay(stored), store=False)
+        # A block built before the node stopped, which L1 may have since.
+        if self.config.get("pending"):
+            self.pending = self.replay(self.config["pending"])
         print(f"L2 node at block {int(self.head.number)}", flush=True)
+
+    def replay(self, stored: dict) -> Pending:
+        """Re-executes a stored block on the head."""
+        block = Block(
+            header=rlp.decode_to(Header, bytes.fromhex(stored["header"][2:])),
+            transactions=tuple(block_transaction(bytes.fromhex(t[2:])) for t in stored["transactions"]),
+            ommers=(),
+            withdrawals=(),
+        )
+        h = block.header
+        block_state = BlockState(pre_state=self.chain.state)
+        env = self.environment(block_state, h.timestamp, h.parent_beacon_block_root, h.prev_randao, h.base_fee_per_gas)
+        output, included, _ = self.execute(env, list(block.transactions), [])
+        assert len(included) == len(block.transactions), "a stored block no longer executes"
+        return Pending(block, keccak256(rlp.encode(h)), block_state, output, [])
+
+    def save(self, pending: Block | None) -> None:
+        """Stores the blocks the rollup has and the one built for it, which
+        the node replays when it starts."""
+        self.config["pending"] = pending and {
+            "header": hx(rlp.encode(pending.header)), "transactions": [hx(raw_transaction(tx)) for tx in pending.transactions],
+        }
+        with open(self.state_file + ".tmp", "w") as f:
+            json.dump(self.config, f, indent=1)
+        os.replace(self.state_file + ".tmp", self.state_file)
 
     @property
     def head(self) -> Header:
@@ -472,23 +493,23 @@ class Node:
         """Frame transactions claiming the L1 messages sent up to the anchor,
         and the messages they claim."""
         pending, prove_root, tree_root = l1_messages(self.l1_rpc, self.rollup, anchor_number, self.claimed, timestamp)
-        # A message to one of the node's accounts pays for its own claim. A
-        # message to another address needs an account with funds to claim
-        # it, so claims stop at the first one no account can pay for.
+        # A message to one of the node's accounts pays for its own claim. The
+        # relayer claims messages to other addresses once it has funds, so
+        # claims stop at the first one it cannot pay for.
         state = TransactionState(parent=block_state)
         funds = {a: int(get_account(state, address(a)).balance) for a in self.users}
         nonces = {a: int(get_account(state, address(a)).nonce) for a in self.users}
+        relayer = next(iter(self.users))
         claims = []
         for claim in pending:
             to = claim["to"].lower()
             if to in funds:
                 claim["from"] = to
                 funds[to] += claim["value"]
+            elif funds[relayer] >= FEE_RESERVE:
+                claim["from"] = relayer
             else:
-                payer = next((a for a, f in funds.items() if f >= FEE_RESERVE), None)
-                if payer is None:
-                    break
-                claim["from"] = payer
+                break
             claims.append(claim)
         # The first claim proves the root, unless the messenger already has it.
         if claims and self.storage(MESSENGER, PROVEN_ROOT_SLOT) != int.from_bytes(tree_root, "big"):
@@ -518,6 +539,8 @@ class Node:
             if self.pending.hash == head_hash:
                 self.commit(self.pending)
             self.pending = None
+        if keccak256(rlp.encode(self.head)) != head_hash:
+            self.catch_up()
         if keccak256(rlp.encode(self.head)) != head_hash:
             raise RpcError(-32000, f"L2 node at {hx(keccak256(rlp.encode(self.head)))}, rollup at {hx(head_hash)}")
 
@@ -632,6 +655,7 @@ class Node:
         block_hash = keccak256(rlp.encode(h))
         assert block_hash == fields["blockHash"]
         self.pending = Pending(block, block_hash, block_state, output, [keccak256(t) for t in by_raw if block_transaction(t) in included])
+        self.save(block)
         l2_messages = [self.l2_message(log) for log in output.block_logs if log.address == MESSENGER and log.topics[0] == L2_MESSAGE_SENT]
         print(
             f"built L2 block {fields['blockNumber']}: {len(claims)} claims, {len(included) - len(claims)} transactions, "
@@ -694,21 +718,41 @@ class Node:
         apply_changes_to_state(self.chain.state, extract_block_diff(pending.block_state))
         self.chain.blocks.append(pending.block)
         self.chain.blocks = self.chain.blocks[-255:]
-        self.index(pending.block, pending.output)
-        for h in pending.pool_hashes:
+        self.added(pending.block, pending.output, pending.pool_hashes, store)
+
+    def added(self, block: Block, output: vm.BlockOutput, pool_hashes: list, store: bool) -> None:
+        """Indexes a block the chain added, and stores it."""
+        self.index(block, output)
+        for h in pool_hashes:
             self.pool.pop(h, None)
         for h, t in list(self.pool.items()):
             if t.nonce < self.nonce(t.sender):
                 del self.pool[h]
         if store:
             self.config["blocks"].append({
-                "header": hx(rlp.encode(pending.block.header)),
-                "transactions": [hx(raw_transaction(tx)) for tx in pending.block.transactions],
+                "header": hx(rlp.encode(block.header)),
+                "transactions": [hx(raw_transaction(tx)) for tx in block.transactions],
             })
-            with open(self.state_file + ".tmp", "w") as f:
-                json.dump(self.config, f, indent=1)
-            os.replace(self.state_file + ".tmp", self.state_file)
-            print(f"L2 block {int(pending.block.header.number)} is on L1", flush=True)
+            self.save(None)
+            print(f"L2 block {int(block.header.number)} is on L1", flush=True)
+
+    def catch_up(self) -> None:
+        """Derives from L1 the blocks the rollup contract has and the node
+        does not, such as a block it built and dropped before L1 included it,
+        as the follower does: from the advance calldata and the blobs,
+        re-executed."""
+        if not self.beacon:
+            return
+        import l2_follower  # it imports this module
+
+        source = SimpleNamespace(l1_rpc=self.l1_rpc, beacon=self.beacon, rollup=self.rollup)
+        logs = json_rpc(self.l1_rpc, "eth_getLogs", {
+            "address": self.rollup, "fromBlock": "0x0", "toBlock": "latest", "topics": [hx(l2_follower.BLOCK_ADDED)],
+        })
+        for log in sorted(logs, key=lambda log: int(log["topics"][1], 16)):
+            if int(log["topics"][1], 16) == int(self.head.number) + 1:
+                _, details = l2_follower.rebuild(source, self.chain, L2_GAS_LIMIT, log)
+                self.added(self.chain.blocks[-1], details["output"], [], True)
 
     def follow(self) -> None:
         """Adds the pending block as soon as the rollup contract has it."""
@@ -719,6 +763,8 @@ class Node:
                     if self.pending is not None and self.pending.hash == head:
                         self.commit(self.pending)
                         self.pending = None
+                    elif keccak256(rlp.encode(self.head)) != head:
+                        self.catch_up()
             except Exception:
                 traceback.print_exc()
             time.sleep(2)
@@ -833,14 +879,17 @@ class Node:
             "type": hex(entry["raw"][0] if entry["raw"][0] < 0xC0 else 0),
         }
         if isinstance(receipt, FrameTransactionReceipt):
+            # The receipt's logs are its frames' logs in order.
+            frames, first = [], 0
+            for fr in receipt.frame_receipts:
+                frames.append({
+                    "status": hex(int(fr.status)), "executionGasUsed": hex(int(fr.gas_used.execution)),
+                    "stateGasUsed": hex(int(fr.gas_used.state)), "logs": entry["logs"][first : first + len(fr.logs)],
+                })
+                first += len(fr.logs)
             out.update({
                 "status": "0x1", "logsBloom": hx(fork.logs_bloom([log for fr in receipt.frame_receipts for log in fr.logs])),
-                "payer": hx(receipt.payer),
-                "frameReceipts": [
-                    {"status": hex(int(fr.status)), "executionGasUsed": hex(int(fr.gas_used.execution)),
-                     "stateGasUsed": hex(int(fr.gas_used.state)), "logs": len(fr.logs)}
-                    for fr in receipt.frame_receipts
-                ],
+                "payer": hx(receipt.payer), "frameReceipts": frames,
             })
         else:
             out.update({"status": hex(int(receipt.succeeded)), "logsBloom": hx(receipt.bloom)})
@@ -954,6 +1003,8 @@ class Node:
             raise RpcError(-32000, f"invalid transaction: {e!r}")
         if not isinstance(tx, LegacyTransaction) and int(tx.chain_id) != L2_CHAIN_ID:
             raise RpcError(-32000, "wrong chain ID")
+        if isinstance(tx, (BlobTransaction, FrameTransaction)) and tx.blob_versioned_hashes:
+            raise RpcError(-32000, "L2 blocks carry no blob transactions")
         if int(tx.nonce) < self.nonce(sender):
             raise RpcError(-32000, "nonce too low")
         # A transaction replaces the sender's one with the same nonce.
@@ -992,6 +1043,8 @@ class Node:
         return self.rpc_receipt(self.blocks[number], index)
 
     def block_receipts(self, tag) -> list | None:
+        if isinstance(tag, dict):  # {"blockHash": ...} or {"blockNumber": ...}
+            tag = tag.get("blockHash") or tag.get("blockNumber")
         if isinstance(tag, str) and len(tag) == 66:
             block = next((b for b in self.blocks if hx(b["hash"]) == tag), None)
         else:
@@ -1124,7 +1177,7 @@ class Node:
 
 
 def serve(args: argparse.Namespace) -> None:
-    node = Node(args.state, args.l1_rpc, args.rollup)
+    node = Node(args.state, args.l1_rpc, args.rollup, args.beacon)
     threading.Thread(target=node.follow, daemon=True).start()
 
     class Handler(BaseHTTPRequestHandler):
@@ -1141,8 +1194,13 @@ def serve(args: argparse.Namespace) -> None:
         def log_message(self, *_) -> None:
             pass
 
+    class Server(ThreadingHTTPServer):
+        # Load generators open many connections at once, more than the
+        # default backlog of 5.
+        request_queue_size = 256
+
     print(f"L2 RPC on http://127.0.0.1:{args.port}", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
+    Server(("127.0.0.1", args.port), Handler).serve_forever()
 
 
 def main() -> None:
@@ -1156,6 +1214,7 @@ def main() -> None:
     s.add_argument("--l1-rpc", required=True)
     s.add_argument("--rollup", required=True)
     s.add_argument("--port", type=int, default=8547)
+    s.add_argument("--beacon", help="a consensus-layer API serving blobs, to derive blocks the node is missing from L1")
     args = parser.parse_args()
     {"genesis": genesis, "serve": serve}[args.command](args)
 
