@@ -17,21 +17,9 @@ blocks the program accepts, as a stand-in for a zkVM proof of that program.
 It follows the rollup contract on L1 and adds the block to its chain once
 the contract has it, so the RPC serves the chain the contract has.
 
-Each block first claims the L1 messages sent up to its anchor, which the
-node reads from the rollup contract's `L1MessageSent` events, then takes the
-mempool's transactions. The node holds the keys of its users' L2 accounts,
-and a claim is a frame transaction from the recipient's account that pays
-its fee with the claimed ETH:
-
-    frame 0  DEFAULT  L2Messenger.proveL1MessageRoot(...)  first claim only
-    frame 1  DEFAULT  L2Messenger.claimL1Message(message, path)
-    frame 2  VERIFY   the account approves execution and payment
-
-The first claim of a block proves the tree's root against the block's anchor,
-and the others only carry their message's path to it. A message to an
-address whose key the node does not hold, such as a contract, is claimed by
-the node's first account, a relayer. Messages carry no fee, so the relayer
-pays for these claims without compensation.
+Blocks take the mempool's transactions, and the node holds no keys. Users
+claim their deposits like any transaction, with frame transactions they sign
+themselves, which `l2_claims.py` builds from L1 data and this RPC.
 
 Each block goes to L1 in EIP-8142 payload blobs, which encode its BAL and
 transactions. The L1 program does not implement EIP-8142 yet, so the node
@@ -65,10 +53,9 @@ import rlp as pyrlp
 from eth_abi import decode as abi_decode
 from trie import HexaryTrie
 
-from execution_testing import EOA, Alloc, Environment, Frame
+from execution_testing import Alloc, Environment
 from execution_testing import Account as TestAccount
 from execution_testing import Address as TestAddress
-from execution_testing import Transaction as TestTransaction
 from execution_testing.client_clis import ExecutionSpecsTransitionTool
 from execution_testing.fixtures.blockchain import BlockchainFixture
 from execution_testing.forks import Bogota
@@ -119,10 +106,6 @@ from ssz_roots import container4, payload_root, public_input_root, versioned_has
 L2_CHAIN_ID = 8079
 L2_GAS_LIMIT = 60_000_000
 LEANSTARK_SCHEME = 0x11
-# The keys of the node's L2 accounts. L2_USER_KEYS, comma-separated, lets
-# them be users' own keys, the accounts the users have on L1. The first is
-# the relayer, which claims messages to other addresses.
-USER_KEYS = [int(k, 16) for k in os.environ.get("L2_USER_KEYS", hex(0x6E61746976652D726F6C6C75702D75736572)).split(",")]  # "native-rollup-user"
 FEE_RECIPIENT = Address((0xFEE).to_bytes(20, "big"))
 EXTRA_DATA = b"native-rollup"
 
@@ -130,24 +113,8 @@ L2_MESSENGER = "0x8079000000000000000000000000000000000001"
 MESSENGER = Address(bytes.fromhex(L2_MESSENGER[2:]))
 PREMINT = 10**27
 MESSENGER_ARTIFACT = os.path.join(os.path.dirname(__file__), "..", "out", "L2Messenger.sol", "L2Messenger.json")
-PROVE_ROOT_SIGNATURE = "proveL1MessageRoot(uint256,bytes,bytes[],bytes[])"
-CLAIM_SIGNATURE = "claimL1Message((address,address,uint256,bytes,uint256),bytes32[])"
-CLAIM_GAS_LIMIT = 1_000_000
-# EIP-8141 frame modes and approval scopes.
-DEFAULT_MODE, VERIFY_MODE = 0, 1
-APPROVE_EXECUTION_AND_PAYMENT = 3
-# Balance the relayer needs to pay for claiming a message to another address.
-FEE_RESERVE = 10**16
-L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,bytes)")
-L1_MESSAGE_CLAIMED = keccak256(b"L1MessageClaimed(uint256,address,address,uint256)")
 L2_MESSAGE_SENT = keccak256(b"L2MessageSent(uint256,address,address,uint256,bytes)")
 BLOCK_HASH_SELECTOR = keccak256(b"blockHash()")[:4]
-L1_MESSAGE_ROOT_SLOT = 3  # root of NativeRollup.l1Messages
-PROVEN_ROOT_SLOT = 4  # L2Messenger.provenL1MessageRoot
-TREE_DEPTH = 32
-ZERO_HASHES = [bytes(32)]
-for _ in range(TREE_DEPTH):
-    ZERO_HASHES.append(keccak256(ZERO_HASHES[-1] * 2))
 # The priority fee the RPC suggests. Blocks include any transaction that
 # pays the base fee.
 PRIORITY_FEE = 10**6
@@ -269,82 +236,6 @@ def genesis(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# L1 to L2 messages
-# ---------------------------------------------------------------------------
-
-
-def message_tree(leaves: list) -> tuple:
-    """Root of the message tree holding `leaves`, and each leaf's path, as
-    `MessageTree` computes them."""
-    level, positions = list(leaves), list(range(len(leaves)))
-    paths = [[] for _ in leaves]
-    for height in range(TREE_DEPTH):
-        for path, position in zip(paths, positions):
-            sibling = position ^ 1
-            path.append(level[sibling] if sibling < len(level) else ZERO_HASHES[height])
-        level = [
-            keccak256(level[i] + (level[i + 1] if i + 1 < len(level) else ZERO_HASHES[height]))
-            for i in range(0, len(level), 2)
-        ]
-        positions = [position >> 1 for position in positions]
-    return (level[0] if level else ZERO_HASHES[TREE_DEPTH]), paths
-
-
-def l1_messages(l1_rpc: str, rollup: str, anchor_number: int, first_index: int, timestamp: int) -> tuple:
-    """The L1 messages from `first_index` sent up to the anchor, each with
-    the call claiming it, and the call proving their tree's root against the
-    anchor, which the block stores at `timestamp`."""
-    logs = json_rpc(l1_rpc, "eth_getLogs", {
-        "address": rollup, "fromBlock": "0x0", "toBlock": hex(anchor_number), "topics": [hx(L1_MESSAGE_SENT)],
-    })
-    messages = []
-    for log in logs:
-        data = bytes.fromhex(log["data"][2:])
-        offset = int.from_bytes(data[32:64], "big")
-        length = int.from_bytes(data[offset : offset + 32], "big")
-        messages.append({
-            "index": int(log["topics"][1], 16),
-            "sender": "0x" + log["topics"][2][-40:],
-            "to": "0x" + log["topics"][3][-40:],
-            "value": int.from_bytes(data[0:32], "big"),
-            "data": "0x" + data[offset + 32 : offset + 32 + length].hex(),
-        })
-    assert [m["index"] for m in messages] == list(range(len(messages))), "missing L1 messages"
-    leaves = [
-        keccak256(
-            bytes.fromhex(m["sender"][2:]) + bytes.fromhex(m["to"][2:]) + m["value"].to_bytes(32, "big")
-            + keccak256(bytes.fromhex(m["data"][2:])) + m["index"].to_bytes(32, "big")
-        )
-        for m in messages
-    ]
-    tree_root, paths = message_tree(leaves)
-    # Claims only carry siblings up to the tree's height.
-    height = (len(leaves) - 1).bit_length() if leaves else 0
-
-    proof = json_rpc(l1_rpc, "eth_getProof", rollup, [f"0x{L1_MESSAGE_ROOT_SLOT:064x}"], hex(anchor_number))
-    if messages:
-        assert int(proof["storageProof"][0]["value"], 16) == int.from_bytes(tree_root, "big"), "L1 message root"
-    prove_root = cast(
-        "calldata", PROVE_ROOT_SIGNATURE,
-        str(timestamp),
-        json_rpc(l1_rpc, "debug_getRawHeader", hex(anchor_number)),
-        "[" + ",".join(proof["accountProof"]) + "]",
-        "[" + ",".join(proof["storageProof"][0]["proof"]) + "]",
-    )
-    claims = []
-    for m, path in zip(messages[first_index:], paths[first_index:]):
-        m["calls"] = [
-            cast(
-                "calldata", CLAIM_SIGNATURE,
-                f"({m['sender']},{m['to']},{m['value']},{m['data']},{m['index']})",
-                "[" + ",".join("0x" + p.hex() for p in path[:height]) + "]",
-            )
-        ]
-        claims.append(m)
-    return claims, prove_root, tree_root
-
-
-# ---------------------------------------------------------------------------
 # The node
 # ---------------------------------------------------------------------------
 
@@ -387,8 +278,6 @@ class Node:
         self.pending: Pending | None = None
         self.blocks: list[dict] = []  # every block, for the RPC
         self.transactions: dict[bytes, tuple] = {}  # hash -> (block number, index)
-        self.claimed = 0  # L1 messages claimed on L2
-        self.users = {str(eoa).lower(): eoa for eoa in (EOA(key=key) for key in USER_KEYS)}
         self.index(self.chain.blocks[0], None)
         for stored in self.config["blocks"]:
             self.commit(self.replay(stored), store=False)
@@ -489,49 +378,6 @@ class Node:
 
     # Blocks
 
-    def claim_transactions(self, block_state: BlockState, anchor_number: int, timestamp: int) -> tuple:
-        """Frame transactions claiming the L1 messages sent up to the anchor,
-        and the messages they claim."""
-        pending, prove_root, tree_root = l1_messages(self.l1_rpc, self.rollup, anchor_number, self.claimed, timestamp)
-        # A message to one of the node's accounts pays for its own claim. The
-        # relayer claims messages to other addresses once it has funds, so
-        # claims stop at the first one it cannot pay for.
-        state = TransactionState(parent=block_state)
-        funds = {a: int(get_account(state, address(a)).balance) for a in self.users}
-        nonces = {a: int(get_account(state, address(a)).nonce) for a in self.users}
-        relayer = next(iter(self.users))
-        claims = []
-        for claim in pending:
-            to = claim["to"].lower()
-            if to in funds:
-                claim["from"] = to
-                funds[to] += claim["value"]
-            elif funds[relayer] >= FEE_RESERVE:
-                claim["from"] = relayer
-            else:
-                break
-            claims.append(claim)
-        # The first claim proves the root, unless the messenger already has it.
-        if claims and self.storage(MESSENGER, PROVEN_ROOT_SLOT) != int.from_bytes(tree_root, "big"):
-            claims[0]["calls"].insert(0, prove_root)
-        transactions = []
-        for claim in claims:
-            tx = TestTransaction(
-                sender=self.users[claim["from"]],
-                nonce=nonces[claim["from"]],
-                frames=[
-                    Frame(mode=DEFAULT_MODE, target=TestAddress(L2_MESSENGER), data=bytes.fromhex(call[2:]), gas_limit=CLAIM_GAS_LIMIT)
-                    for call in claim["calls"]
-                ]
-                + [Frame(mode=VERIFY_MODE, flags=APPROVE_EXECUTION_AND_PAYMENT)],
-                chain_id=L2_CHAIN_ID,
-                max_fee_per_gas=10**9,
-                max_priority_fee_per_gas=1,
-            )
-            nonces[claim["from"]] += 1
-            transactions.append(Bytes(bytes(tx.rlp())))
-        return transactions, claims
-
     def sync(self, head_hash: bytes) -> None:
         """Adds the pending block if the rollup has it, and checks that the
         chain is at the rollup's head."""
@@ -558,11 +404,10 @@ class Node:
         block_state = BlockState(pre_state=self.chain.state)
         env = self.environment(block_state, timestamp, anchor, prev_randao, base_fee)
 
-        claims, claimed = self.claim_transactions(block_state, p["anchorNumber"], timestamp)
         # Senders' transactions in nonce order.
         candidates = sorted(self.pool.values(), key=lambda t: (t.nonce, t.arrival))[:MAX_BLOCK_TXS]
         by_raw = {t.raw: t for t in candidates}
-        output, included, rejected = self.execute(env, claims, [block_transaction(t.raw) for t in candidates])
+        output, included, rejected = self.execute(env, [], [block_transaction(t.raw) for t in candidates])
         self.drop_rejected(block_state, rejected)
 
         diff = extract_block_diff(block_state)
@@ -658,7 +503,7 @@ class Node:
         self.save(block)
         l2_messages = [self.l2_message(log) for log in output.block_logs if log.address == MESSENGER and log.topics[0] == L2_MESSAGE_SENT]
         print(
-            f"built L2 block {fields['blockNumber']}: {len(claims)} claims, {len(included) - len(claims)} transactions, "
+            f"built L2 block {fields['blockNumber']}: {len(included)} transactions, "
             f"in {time.time() - started:.1f} s",
             flush=True,
         )
@@ -674,7 +519,6 @@ class Node:
             "newPayloadRequestRoot": hx(np_root),
             "publicInputRoot": hx(data_hash),
             "balBytes": len(bal),
-            "claims": [{k: c[k] for k in ("index", "sender", "to", "value")} for c in claimed],
             "l2Messages": l2_messages,
             "params": {
                 "stateRoot": hx(fields["stateRoot"]),
@@ -801,8 +645,6 @@ class Node:
                     "transactionIndex": hex(i), "logIndex": hex(log_index), "removed": False,
                 })
                 log_index += 1
-                if log.address == MESSENGER and log.topics[0] == L1_MESSAGE_CLAIMED:
-                    self.claimed += 1
             entries.append({
                 "raw": raw, "tx": tx, "hash": tx_hash, "from": sender, "receipt": receipt, "frame": frame,
                 "gasUsed": int(receipt.cumulative_gas_used) - previous, "logs": rpc_logs, "contractAddress": created,

@@ -36,9 +36,9 @@
         <tr><td>This explorer's L2 data</td><td><span class="badge real">Real</span></td><td>Rebuilt from L1 alone by an independent follower, which re-executes every block</td><td></td></tr>
         <tr><td>Proof</td><td><span class="badge mock">Mock</span></td><td>A trusted key signs blocks that the real program accepted</td><td>A zkVM proof of the same program</td></tr>
         <tr><td>Proof check on L1 (EIP-8288)</td><td><span class="badge mock">Mock</span></td><td>A frame that calls a contract checking the signature</td><td>EIP-8288, which lets L1's own proof cover it</td></tr>
-        <tr><td>Verification key registry (EIP-8357)</td><td><span class="badge mock">Mock</span></td><td>An admin registers the key instead of a fork</td><td>EIP-8357</td></tr>
+        <tr><td>Verification key registry (EIP-8357)</td><td><span class="badge mock">Mock</span></td><td>An admin registers a placeholder key hash instead of a fork, since the proofs are signatures</td><td>EIP-8357</td></tr>
         <tr><td>Blob check in the program (EIP-8142)</td><td><span class="badge mock">Mock</span></td><td>The node checks that the blobs encode the block</td><td>EIP-8142 in the L1 program</td></tr>
-        <tr><td>Operator</td><td><span class="badge shortcut">Shortcut</span></td><td>One operator with a scripted story, whose L2 node signs deposit claims for the users, and no public L2 RPC</td><td></td></tr>
+        <tr><td>Operator and users</td><td><span class="badge real">Real</span></td><td>One operator runs the L2 node and posts its blocks, which the rollup contract would accept from anyone. Users sign their own transactions, deposit claims included, and send them to the node's RPC, which this demo keeps local</td><td></td></tr>
         <tr><td>Claims for others</td><td><span class="badge shortcut">Shortcut</span></td><td>A relayer on L2 and a claimer on L1 claim the messages that their recipients cannot, for free, since messages carry no fee</td><td></td></tr>
         <tr><td>Activity</td><td><span class="badge real">Real</span></td><td>Besides the story, spamoor sends ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, EIP-8141 frame transactions and messages in both directions</td><td></td></tr>
       </tbody>

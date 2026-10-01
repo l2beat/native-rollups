@@ -3,8 +3,9 @@ Runs the native rollup demo on the local frames devnet (`contracts/frames/`).
 
 It deploys a fresh rollup, starts the L2 node with its RPC and a follower
 that rebuilds the L2 chain from L1 on its own, then plays a scripted story,
-adding one L2 block per step: Alice and Bob deposit from L1, and each
-deposit pays for its own claim on L2. The users pay each other through the
+adding one L2 block per step: Alice and Bob deposit from L1, and once an
+L2 block anchors their deposits, each claims theirs with a frame transaction
+they sign, which pays for itself. The users pay each other through the
 L2 RPC, and Charlie, who never deposits, withdraws ETH received on L2 to L1
 and claims it there. Every step is recorded in `demo/data/session.json`,
 which `demo/server.py` serves to the site. When it starts, or if the L2 node
@@ -189,7 +190,7 @@ class Episode:
         for index, _ in self.withdrawals():
             if cast("call", "--rpc-url", self.args.rpc, rollup, "claimedL2Messages(uint256)(bool)", str(index)) == "true":
                 self.claimed.add(index)
-        if steps > 2 and self.args.spamoor:
+        if steps > 3 and self.args.spamoor:
             self.start_spamoor()
         return steps
 
@@ -211,8 +212,6 @@ class Episode:
              "--state", self.state, "--l1-rpc", a.rpc, "--rollup", self.contracts["rollup"], "--port", str(a.l2_port),
              "--beacon", a.beacon],
             cwd=CONTRACTS, stdout=log, stderr=subprocess.STDOUT,
-            # The first key is the relayer's.
-            env={**os.environ, "L2_USER_KEYS": ",".join([RELAYER_KEY, *USER_KEYS.values()])},
         )
         for _ in range(120):
             try:
@@ -363,6 +362,23 @@ class Episode:
         self.event("claimL2Message", f"{who} claims a {value:g} ETH withdrawal on L1",
                    **{k: v for k, v in record.items() if k != "type"})
 
+    def claim_deposits(self) -> None:
+        """Each user claims their deposits with their own key once an L2
+        block anchors them, as a wallet would, and the relayer claims the
+        messages to other addresses."""
+        a = self.args
+        out = run([
+            "uv", "run", "--project", a.zkevm_specs, "python", "script/l2_claims.py",
+            "--l1-rpc", a.rpc, "--rollup", self.contracts["rollup"], "--l2-rpc", self.l2_rpc, "--relayer", RELAYER_KEY,
+            *[x for key in [*USER_KEYS.values(), SPAMOOR_L2_KEY] for x in ("--wallet", key)],
+        ])
+        names = {address.lower(): name for name, address in self.users.items()}
+        for line in out.splitlines():
+            if line.startswith("{"):
+                c = json.loads(line)
+                if c["to"] in names:
+                    self.event("claim", f"{names[c['to']]} claims a {c['value'] / ETH:g} ETH deposit on L2", l2Tx=c["tx"])
+
     def claim_withdrawals(self) -> None:
         """Claims on L1 the withdrawals to the story's users, each with the
         recipient's key, though anyone could claim."""
@@ -392,38 +408,35 @@ class Episode:
         if self.node.poll() is not None:
             raise RuntimeError("the L2 node stopped")
         self.claim_withdrawals()
+        self.claim_deposits()
         if i == 0:
             self.deposit("Alice", "1ether")
             self.deposit("Bob", "0.5ether")
             # The relayer and spamoor fund their L2 accounts, the same
-            # addresses as on L1. The relayer's deposit pays for its own
-            # claim, and the relayer claims spamoor's.
+            # addresses as on L1. Each deposit pays for its own claim.
             self.deposit("relayer", "10ether", RELAYER_KEY)
             self.deposit("spamoor", "200ether", SPAMOOR_L2_KEY)
         elif i == 1:
+            pass  # the next block anchors the deposits, and the users claim them
+        elif i == 2:
             self.pay("Alice", "Charlie", 3 * ETH // 10)
             nonce = int(json_rpc(self.l2_rpc, "eth_getTransactionCount", self.users["Alice"], "pending"), 16)
             self.contracts["receiverL2"] = cast("compute-address", "--nonce", str(nonce), self.users["Alice"]).split()[-1]
             self.send_l2("Alice", "--create", self.receiver_code(L2_MESSENGER, True))
             self.event("receiver", "Alice deploys the L2 receiver of messages from L1", address=self.contracts["receiverL2"])
-        elif i == 2:
+        elif i == 3:
             self.withdraw("Charlie", 2 * ETH // 10)
             if self.args.spamoor:
                 self.start_spamoor()
         else:
-            # The node signs a deposit's claim with the recipient's key, at
-            # the recipient's nonce, so the recipient does not send in the
-            # same block.
-            busy = ()
             if i % 6 == 0:
-                depositor = random.choice(["Alice", "Bob"])
-                self.deposit(depositor, "0.5ether")
-                busy = (depositor,)
+                self.deposit(random.choice(["Alice", "Bob"]), "0.5ether")
+            busy = ()
             if i % 9 == 0:
                 rich = max(USER_KEYS, key=self.spendable)
-                if rich not in busy and self.spendable(rich) > ETH // 10:
+                if self.spendable(rich) > ETH // 10:
                     self.withdraw(rich, self.spendable(rich) // 4 // 10**15 * 10**15)
-                    busy += (rich,)
+                    busy = (rich,)
             for _ in range(random.randint(1, 2)):
                 self.random_payment(busy)
         self.advance()

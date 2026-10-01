@@ -10,7 +10,7 @@ The L2 blocks are real. `script/l2_node.py` is an L2 node that runs the chain wi
 
 A native rollup runs its L1's rules, and this L1 has EIP-8141, so the program is execution-specs `projects/zkevm` merged with `eips/bogota/eip-8141`, which EEST labels as the `Bogota` pseudo-fork (Amsterdam with EIP-8141). The merge conflicts only where both sides add lines. The node uses EEST for the genesis and to sign claims.
 
-L1 to L2 messages follow the book's [messaging](../../src/messaging.md#l1-to-l2-messaging) and [gas token](../../src/gas_token_deposits.md) designs. The genesis holds the `L2Messenger` predeploy with a pre-minted supply of the gas token, and no other ETH. The node rebuilds the rollup contract's message tree from its `L1MessageSent` events, and each block claims the messages sent up to its anchor. The node holds the keys of its users' L2 accounts, which `L2_USER_KEYS` sets, comma-separated. Claims are frame transactions from the recipient's account: `DEFAULT` frames claim the message, then the account's `VERIFY` frame approves payment, so a deposit pays for its own claim. One of the node's accounts with funds pays for claims to other addresses. The first claim of a block also proves the tree's root, with the anchor's header and `eth_getProof` proofs, in an earlier `DEFAULT` frame, and the others only carry their message's path.
+L1 to L2 messages follow the book's [messaging](../../src/messaging.md#l1-to-l2-messaging) and [gas token](../../src/gas_token_deposits.md) designs. The genesis holds the `L2Messenger` predeploy with a pre-minted supply of the gas token, and no other ETH. Users claim messages themselves, with transactions they sign and send to the node's RPC like any other. `script/l2_claims.py` builds them as a wallet would, from L1 data and the L2 RPC alone: it rebuilds the rollup contract's message tree from its `L1MessageSent` events, up to the anchor of the latest L2 block. A claim is a frame transaction from the claimer: `DEFAULT` frames claim the message, then the claimer's `VERIFY` frame approves payment, so a deposit to the claimer pays for its own claim. Unless the messenger already has a root with the message, an earlier `DEFAULT` frame proves the tree's root against the anchor, with the anchor's header and `eth_getProof` proofs, which the EIP-4788 contract lets L2 check. A relayer can claim messages to addresses that cannot claim themselves, such as contracts, and pays for them.
 
 L2 to L1 messages go the other way: the messenger's `sendMessage` locks the value back into its supply and appends the message hash to `sentMessages`, and the rollup contract's `claimL2Message` proves that entry against a state root in `stateRootHistory` and pays the value out of its escrow. Any L2 account sends one through the RPC, and `claim-l2-message` proves it with the node's `eth_getProof` against the rollup's latest block.
 
@@ -34,10 +34,13 @@ uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_node
 PRIVATE_KEY=<key> PROVER=<address> GENESIS_HASH=<hash> GENESIS_STATE_ROOT=<root> ROLLUP=$ROLLUP \
     forge script script/DeployFrames.s.sol --rpc-url <rpc> --broadcast --slow --skip-simulation
 
-L2_USER_KEYS=<key>,<key> uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_node.py serve \
-    --state <l2-state> --l1-rpc <rpc> --rollup $ROLLUP --port 8547
+uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_node.py serve \
+    --state <l2-state> --l1-rpc <rpc> --rollup $ROLLUP --port 8547 --beacon <cl-url>
 
 cast send $ROLLUP "sendMessage(address,bytes)" <l2-recipient> 0x --value 1ether --rpc-url <rpc> --private-key <key>
+
+uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_claims.py \
+    --l1-rpc <rpc> --rollup $ROLLUP --l2-rpc http://127.0.0.1:8547 --wallet <recipient key> [--relayer <key>]
 
 uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py advance \
     --rpc <rpc> --rollup <rollup> --verifier <verifier> \
@@ -57,7 +60,7 @@ uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_foll
     --l1-rpc <rpc> --beacon <cl-url> --rollup <rollup> --genesis <l2-state>
 ```
 
-`advance` anchors the block to the latest L1 block, so it claims every message sent so far, and includes the transactions in the node's mempool. An L2 account withdraws with the messenger's `sendMessage`, which `claim-l2-message` claims on L1 once the rollup has the block:
+`advance` anchors the block to the latest L1 block, and the block includes the transactions in the node's mempool. Messages sent by the anchor can be claimed in the next block. An L2 account withdraws with the messenger's `sendMessage`, which `claim-l2-message` claims on L1 once the rollup has the block:
 
 ```shell
 cast send 0x8079000000000000000000000000000000000001 "sendMessage(address,bytes)" <l1-recipient> 0x \

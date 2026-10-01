@@ -3,10 +3,9 @@ Operator for a native rollup on an EIP-8141 chain without EIP-8288, such as
 frames-devnet-0 (see FramesNativeRollup).
 
 `advance` anchors the next L2 block to the latest L1 block, has the L2 node
-(`l2_node.py`, through its RPC) build it on the rollup's head, claiming the
-L1 messages sent up to the anchor, validate it with the L1 stateless
-validation program, and sign the dependency, then sends one frame
-transaction:
+(`l2_node.py`, through its RPC) build it on the rollup's head from its
+mempool, validate it with the L1 stateless validation program, and sign the
+dependency, then sends one frame transaction:
 
     frame 0  VERIFY   the operator's account approves execution and payment
     frame 1  DEFAULT  MockDependencyVerifier(scheme || data_hash || vk_hash || proof)
@@ -240,8 +239,6 @@ def advance(args: argparse.Namespace) -> None:
         f"anchor L1 block {anchor_number}, data_hash 0x{triple[32:64].hex()}, "
         f"{bundle['payloadBytes']} payload bytes in {len(blobs)} blob(s)"
     )
-    for c in bundle["claims"]:
-        print(f"claims L1 message {c['index']}: {c['value']} wei from {c['sender']} to {c['to']}")
     for m in bundle["l2Messages"]:
         print(f"sends L2 message {m['index']}: {m['value']} wei from {m['sender']} to {m['to']} on L1")
     tx_hash = json.loads(cast("rpc", "--rpc-url", args.submit_rpc or rpc, "eth_sendRawTransaction", hx(wrapped)))

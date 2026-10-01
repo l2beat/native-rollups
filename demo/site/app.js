@@ -394,7 +394,7 @@ function about() {
       ${[
         ["Rollup contract", "l1", c.rollup, "real"], ["L2 messenger", "l2", c.l2Messenger, "real"],
         ["Proof checker", "l1", c.verifier, "mock"], ["Key registry", "l1", c.registry, "mock"],
-        ["Trusted prover key", "l1", c.prover, "mock"], ["Operator", "l1", c.operator, "shortcut"],
+        ["Trusted prover key", "l1", c.prover, "mock"], ["Operator", "l1", c.operator, ""],
         ...Object.entries(c.users || {}).flatMap(([name, a]) => [[name, "l1", a, ""], [name, "l2", a, ""]]),
       ].map(([name, chain, a, kind]) => `<tr><td>${name}</td><td>${chain.toUpperCase()}</td>
         <td><a class="mono" href="#/address/${chain}/${a.toLowerCase()}">${a}</a></td><td>${kind ? badge(kind) : ""}</td></tr>`).join("")}
@@ -505,9 +505,9 @@ const ROLES = {
   "Proof checker": ["mock", "Stands in for EIP-8288. A frame of each L1 transaction that adds a block calls it, and it checks that the trusted prover signed the dependency. With EIP-8288, Ethereum's own proof would cover the dependency instead."],
   "Key registry": ["mock", "Stands in for the EIP-8357 registry of EVM verification keys. An admin registered the key, where a fork would."],
   "Trusted prover key": ["mock", "The key that signs the blocks Ethereum's validation program accepted, in place of a zk proof. It never sends transactions."],
-  "Operator": ["shortcut", "The account that posts L2 blocks to L1. The rollup contract accepts a valid block from anyone, but this demo has one operator."],
+  "Operator": ["", "The account that posts L2 blocks to L1. Its L2 node builds them from the transactions users send, and holds no user keys. The rollup contract accepts a valid block from anyone; this demo runs one operator."],
   "Frames helper": ["shortcut", "Lets the rollup contract use EIP-8141's FRAMEPARAM and FRAMEDATACOPY instructions, which Solidity cannot emit yet. The rollup contract deploys it and calls it to read the proof frame. Written in assembly with geas."],
-  Relayer: ["shortcut", "Claims deposits to addresses that cannot claim themselves, such as contracts, and pays the claims' fees. Messages carry no fee, so nothing pays it back. It runs in the L2 node and funded itself with a deposit, whose claim paid for itself."],
+  Relayer: ["shortcut", "Claims deposits to addresses that cannot claim themselves, such as contracts, and pays the claims' fees. Messages carry no fee, so nothing pays it back. It builds and signs its claims as any wallet would, and funded itself with a deposit, whose claim paid for itself."],
   Claimer: ["shortcut", "Claims on L1 the withdrawals to addresses outside the story, which the demo holds no keys for. Anyone can claim a withdrawal, and the ETH goes to its recipient, but nothing pays the claimer back."],
   Spamoor: ["", "The funding wallet of spamoor, ethPandaOps' transaction generator, which funds child wallets that send ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, EIP-8141 frame transactions and messages between the chains."],
   "Message receiver": ["", "An example app for messages between the chains. It accepts any call from the messenger on its chain, the L2 messenger on L2 or the rollup contract on L1, and records the message with its sender on the other chain."],
@@ -570,7 +570,7 @@ async function addressPage(route) {
     } else if (a === (c.registry || "").toLowerCase()) {
       const entry = await call(a, "0x" + "0".repeat(64));
       live = [
-        ["Current key hash", hash(word(entry), true), "The EVM verification key for the current fork. Proofs must be under it."],
+        ["Current key hash", hash(word(entry), true), "The EVM verification key hash for the current fork, which proofs must be under. Here a placeholder, the hash of \"frames-devnet mock EVM verification key\", since the proofs are mock signatures: with EIP-8357, a fork registers the hash of the zkVM key of Ethereum's validation program."],
         ["Schema ID", `0x${wordNumber(word(entry, 1)).toString(16)}`, "The input schema the key's program expects: Amsterdam, revision 1."],
       ];
     } else if (a === (c.verifier || "").toLowerCase()) {
@@ -868,8 +868,8 @@ const ADVANCE_NOTES = {
   extraData: "A free input of the operator.",
 };
 
-// Whether a frame before frame `i` claims a deposit.
-const claimsBefore = (tx, i) => tx.frames.slice(0, i).some((f) => f.call && f.call.function === "claimL1Message");
+// Whether a frame before frame `i` claims a deposit to `to`.
+const claimsBefore = (tx, i, to) => tx.frames.slice(0, i).some((f) => f.call && f.call.function === "claimL1Message" && f.call.args.m.to === to);
 
 function frameExplain(tx, f, i, layer) {
   const fn = f.call && f.call.function;
@@ -880,7 +880,7 @@ function frameExplain(tx, f, i, layer) {
     return {
       text: `${approves.length ? `The sender's account ${pays ? "approves the transaction and pays for it" : "approves the transaction"}.` : "A read-only check that must not revert."}
         Without code at the target, EIP-8141's default code checks the transaction's signature. ${
-        pays && claimsBefore(tx, i) ? "The fee is taken now, from the ETH the claim above just delivered: that is how a deposit pays for its own claim." : ""}`,
+        pays && claimsBefore(tx, i, tx.from) ? "The fee is taken now, from the ETH the claim above just delivered: that is how a deposit pays for its own claim." : ""}`,
       badges: [badge("real")],
     };
   }
@@ -891,7 +891,7 @@ function frameExplain(tx, f, i, layer) {
       badges: [badge("mock")],
       extra: argTable(
         { scheme: `0x${f.dependency.scheme.toString(16)} (LeanSTARK)`, dataHash: f.dependency.dataHash, verificationKeyHash: f.dependency.verificationKeyHash, signature: f.dependency.signature },
-        { dataHash: "The public_input_root: what the proof commits to, which the rollup contract rebuilds.", verificationKeyHash: "The key the registry holds for the current fork.", signature: "The trusted prover's signature, in place of a proof." },
+        { dataHash: "The public_input_root: what the proof commits to, which the rollup contract rebuilds.", verificationKeyHash: "The key hash the registry holds for the current fork. Here a placeholder, the hash of \"frames-devnet mock EVM verification key\", which the admin registered at deployment: with EIP-8357, a fork registers the hash of the zkVM key of Ethereum's validation program.", signature: "The trusted prover's signature, in place of a proof." },
       ),
     };
   }
@@ -1044,9 +1044,11 @@ const L2_SUMMARIES = {
   "deposit claim": (tx) => {
     const claim = tx.frames.find((f) => f.call && f.call.function === "claimL1Message").call.args.m;
     const proves = tx.frames.some((f) => f.call && f.call.function === "proveL1MessageRoot");
-    return `${addr(claim.to, "l2")} claims a deposit of ${eth(claim.value)} and pays the fee from it. It is an EIP-8141 frame
+    const own = claim.to === tx.from;
+    return `${own ? `${addr(claim.to, "l2")} claims a deposit of ${eth(claim.value)} and pays the fee from it. It is an EIP-8141 frame
       transaction: the claim frames run first, then the VERIFY frame approves the payment from the balance the claim
-      just delivered.${proves ? " As the first claim of its block, it also proves the root of L1's message tree." : ""}`;
+      just delivered.` : `${addr(tx.from, "l2")} claims a deposit of ${eth(claim.value)} for ${addr(claim.to, "l2")}, which cannot claim it
+      itself, and pays the fee. The message carries no fee to pay it back.`}${proves ? " It also proves the root of L1's message tree, against the anchor of a recent L2 block." : ""}`;
   },
   withdrawal: (tx) => `${addr(tx.from, "l2")} withdraws ${eth(tx.value)} to ${addr(tx.call.args.to, "l1")} on L1. The L2 messenger records the
     message, which can be claimed on L1 once this block is on L1.`,
