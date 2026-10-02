@@ -38,7 +38,7 @@ Divergence includes a preconfirmed block that was not posted before its deadline
 
 The rollup contract only stores the hash of its latest block, but the L2's own EIP-2935 history contract keeps the hashes of the last 8,191 L2 blocks in L2 state. A slasher proves the hash of block `N` with a storage proof against a recent state root, as [L2 to L1 messages](./messaging.md#l2-to-l1-messaging) are proven, which makes the history contract a requirement of the [genesis](./specification.md#genesis).
 
-The reference implementation's [`SequencedNativeRollup`](https://github.com/l2beat/native-rollups/tree/main/contracts) implements this customization, and the demo runs it: its sequencer preconfirms each block when it builds it and posts it a few blocks later.
+The reference implementation's [`SequencedNativeRollup`](https://github.com/l2beat/native-rollups/tree/main/contracts) implements this customization, and the demo runs it: its sequencer builds and preconfirms a block every 12 seconds, empty if no transaction waits, and posts each once a stand-in proving time has passed.
 
 The OP stack could only enforce such a bond through its output roots, which include the latest L2 block hash but are [proposed](https://specs.optimism.io/protocol/proposals.html) for some blocks only and final after the dispute window. A native rollup posts and proves every block hash as it goes. The bond is only as credible as the contract that holds it: a native rollup follows L1 forks without upgrades, so its contract can be immutable.
 
