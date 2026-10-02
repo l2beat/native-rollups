@@ -2,10 +2,12 @@
 Runs the native rollup demo on the local frames devnet (`contracts/frames/`).
 
 It deploys a fresh rollup with the preconfirmations customization, starts
-the L2 node with its RPC and a follower that rebuilds the L2 chain from L1 on
-its own, then plays a scripted story, adding one L2 block per step: the
-sequencer preconfirms it at once and posts it a few blocks later, the time a
-real proof would take. Alice and Bob deposit from L1, and once an
+the L2 node with its RPC, the operator's sequencer, and a follower that
+rebuilds the L2 chain from L1 on its own. The sequencer preconfirms a block
+every 12 seconds, empty if no transaction waits, and posts each once a
+stand-in proving time has passed. Each block's preconfirmation and post go
+to `demo/data/blocks/<number>.json`. The runner meanwhile plays a scripted
+story, one step every few seconds: Alice and Bob deposit from L1, and once an
 L2 block anchors their deposits, each claims theirs with a frame transaction
 they sign, which pays for itself. The users pay each other through the
 L2 RPC, and Charlie, who never deposits, withdraws ETH received on L2 to L1
@@ -32,6 +34,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -84,8 +87,6 @@ L1_CLAIM_GAS = 400_000
 ETH = 10**18
 # What a user keeps on L2 for fees.
 RESERVE = ETH // 20
-# How many preconfirmed blocks wait for L1, standing in for proving time.
-POST_LAG = 2
 # The sequencer's bond, which the rollup contract slashes if a block it
 # preconfirmed is not the one the rollup has at that height.
 BOND = 10 * ETH
@@ -100,6 +101,18 @@ def run(cmd: list, cwd: str = CONTRACTS) -> str:
 
 def cast(*args: str) -> str:
     return run(["cast", *args]).strip()
+
+
+def devnet_url(container: str, port: int) -> str | None:
+    """The local URL of `port` of the devnet container whose name starts
+    with `container`, as kurtosis names them. Docker assigns new host ports
+    whenever it restarts."""
+    names = subprocess.run(["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True).stdout.split()
+    name = next((n for n in names if n.startswith(container)), None)
+    if name is None:
+        return None
+    mapping = subprocess.run(["docker", "port", name, str(port)], capture_output=True, text=True).stdout.splitlines()
+    return f"http://127.0.0.1:{mapping[0].rsplit(':', 1)[1]}" if mapping else None
 
 
 def json_rpc(url: str, method: str, *params):
@@ -132,6 +145,7 @@ class Episode:
         self.lock = threading.Lock()
         self.node = None
         self.follower = None
+        self.operator = None
         self.spamoor = []
 
     # Recording
@@ -183,6 +197,8 @@ class Episode:
         self.contracts["receiverL1"] = json.loads(receiver)["contractAddress"]
         self.session["contracts"] = self.contracts
         write_json(PROVER, {"rollup": found["rollup"], "key": self.prover_key})
+        # The previous rollup's blocks.
+        shutil.rmtree(os.path.join(DATA, "blocks"), ignore_errors=True)
         self.event("deployed", "Deployed a new rollup on L1", contracts=self.contracts)
         self.start()
 
@@ -202,7 +218,7 @@ class Episode:
             return None
         self.session, self.contracts, self.users, self.prover_key = session, contracts, contracts["users"], prover["key"]
         self.number = session["episode"]
-        steps = sum(1 for e in session["events"] if e["type"] == "preconfirm")
+        steps = session.get("step", -1) + 1
         self.event("resumed", "Resumed the rollup")
         self.start()
         if steps > 3 and self.args.spamoor:
@@ -212,6 +228,7 @@ class Episode:
     def start(self) -> None:
         self.start_node()
         self.start_follower()
+        self.start_operator()
         # Withdrawals already claimed on L1, when resuming, before the claimer
         # looks for withdrawals to claim.
         for index, _, _, _ in self.withdrawals():
@@ -304,8 +321,61 @@ class Episode:
             ))
         self.event("spamoor", "Spamoor starts generating activity on both chains")
 
+    def start_operator(self) -> None:
+        """Starts the sequencer, and files what it reports by block."""
+        a = self.args
+        log = os.path.join(DATA, "operator.jsonl")
+        open(log, "a").close()
+        threading.Thread(target=self.file_blocks, args=(log, os.path.getsize(log)), daemon=True).start()
+        self.operator = subprocess.Popen(
+            ["uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "sequence",
+             "--rpc", a.rpc, *[x for url in a.submit_rpc for x in ("--submit-rpc", url)], "--rollup", self.contracts["rollup"],
+             "--verifier", self.contracts["verifier"], "--sequencer-key", OPERATOR_KEY, "--prover-key", self.prover_key,
+             "--l2-rpc", self.l2_rpc, "--block-time", str(a.block_time), "--proving-time", str(a.proving_time), "--log", log],
+            cwd=CONTRACTS, stdout=open(os.path.join(DATA, "operator.log"), "a"), stderr=subprocess.STDOUT,
+        )
+
+    def file_blocks(self, log: str, offset: int) -> None:
+        """Merges each preconfirmation and post the sequencer reports into
+        its block's file, and keeps the session's summary of them: the
+        latest preconfirmed and posted blocks, the preconfirmed blocks L1
+        does not have yet, and the recent times from preconfirmation to L1."""
+        blocks = os.path.join(DATA, "blocks")
+        os.makedirs(blocks, exist_ok=True)
+        with open(log, "rb") as f:
+            f.seek(offset)
+            while True:
+                line = f.readline()
+                if not line.endswith(b"\n"):
+                    time.sleep(0.5)
+                    f.seek(f.tell() - len(line))
+                    continue
+                entry = json.loads(line)
+                n = entry["l2"]["number"]
+                path = os.path.join(blocks, f"{n}.json")
+                stored = json.load(open(path)) if os.path.exists(path) else {}
+                write_json(path, {**stored, **{k: v for k, v in entry.items() if k != "type"}})
+                p = entry["preconfirmation"]
+                with self.lock:
+                    head = self.session.setdefault("head", {"preconfirmed": 0, "posted": 0})
+                    waiting = self.session.setdefault("waiting", [])
+                    if entry["type"] == "preconfirm":
+                        head["preconfirmed"] = max(head["preconfirmed"], n)
+                        waiting.append({
+                            **p, "transactions": entry["l2"]["transactions"], "gasUsed": entry["l2"]["gasUsed"],
+                            "txs": entry["l2"].get("txs", []),
+                        })
+                    else:
+                        head["posted"] = max(head["posted"], n)
+                        self.session["waiting"] = [w for w in waiting if w["number"] > head["posted"]]
+                        timings = self.session.setdefault("timings", [])
+                        timings.append({"number": n, "preconfirmed": p["time"], "posted": entry["l1"]["timestamp"]})
+                        del timings[:-30]
+                    write_json(os.path.join(DATA, "session.json"), self.session)
+                print(f"[episode {self.number}] L2 block {n} is {'preconfirmed' if entry['type'] == 'preconfirm' else 'on L1'}", flush=True)
+
     def stop(self) -> None:
-        for process in (*self.spamoor, self.follower, self.node):
+        for process in (*self.spamoor, self.operator, self.follower, self.node):
             if process and process.poll() is None:
                 process.terminate()
                 process.wait(timeout=30)
@@ -350,35 +420,6 @@ class Episode:
             sender = random.choice(senders)
             to = random.choice([u for u in USER_KEYS if u != sender])
             self.pay(sender, to, self.spendable(sender) * random.randint(2, 12) // 100 // 10**14 * 10**14)
-
-    def preconfirm(self) -> None:
-        a = self.args
-        run([
-            "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "preconfirm",
-            "--rpc", a.rpc, "--rollup", self.contracts["rollup"], "--verifier", self.contracts["verifier"],
-            "--sequencer-key", OPERATOR_KEY, "--prover-key", self.prover_key, "--l2-rpc", self.l2_rpc,
-            "--record", self.record,
-        ])
-        record = json.load(open(self.record))
-        n = record["l2"]["number"]
-        self.event("preconfirm", f"L2 block {n} is preconfirmed", **{k: v for k, v in record.items() if k != "type"})
-
-    def advance(self) -> None:
-        """Posts the oldest preconfirmed block once POST_LAG others follow it."""
-        latest = int(json_rpc(self.l2_rpc, "eth_blockNumber"), 16)
-        posted = int(json_rpc(self.l2_rpc, "eth_getBlockByNumber", "safe", False)["number"], 16)
-        if latest - posted <= POST_LAG:
-            return
-        a = self.args
-        run([
-            "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "advance",
-            "--rpc", a.rpc, "--submit-rpc", a.submit_rpc, "--rollup", self.contracts["rollup"],
-            "--verifier", self.contracts["verifier"], "--operator-key", OPERATOR_KEY,
-            "--l2-rpc", self.l2_rpc, "--record", self.record,
-        ])
-        record = json.load(open(self.record))
-        n = record["l2"]["number"]
-        self.event("advance", f"L2 block {n} is on L1", **{k: v for k, v in record.items() if k != "type"})
 
     def withdrawals(self) -> list:
         """The withdrawals in L2 blocks the rollup has, with their index,
@@ -446,10 +487,11 @@ class Episode:
             time.sleep(10)
 
     def step(self, i: int) -> None:
-        """The story: the first steps show each flow once, then they recur.
-        Each step ends with an L2 block."""
+        """The story: the first steps show each flow once, then they recur."""
         if self.node.poll() is not None:
             raise RuntimeError("the L2 node stopped")
+        if self.operator.poll() is not None:
+            raise RuntimeError("the sequencer stopped")
         # Claiming can fail, as can any transaction, but the block must go on.
         for claims in (self.claim_withdrawals, self.claim_deposits):
             try:
@@ -487,24 +529,31 @@ class Episode:
                     busy = (rich,)
             for _ in range(random.randint(1, 2)):
                 self.random_payment(busy)
-        self.preconfirm()
-        self.advance()
+        with self.lock:
+            self.session["step"] = i
+            write_json(os.path.join(DATA, "session.json"), self.session)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rpc", default="http://127.0.0.1:51764", help="an L1 RPC for reads and ordinary transactions")
-    parser.add_argument("--submit-rpc", default="http://127.0.0.1:51746",
-                        help="a Nethermind or Reth RPC, which accept blob-carrying frame transactions")
-    parser.add_argument("--beacon", default="http://127.0.0.1:51846")
+    parser.add_argument("--rpc", help="an L1 RPC for reads and ordinary transactions, by default the devnet's geth")
+    parser.add_argument("--submit-rpc", nargs="+",
+                        help="RPCs that accept blob-carrying frame transactions, by default the devnet's Nethermind and Reth")
+    parser.add_argument("--beacon", help="a beacon API that serves blobs, by default the devnet's first Lighthouse")
     parser.add_argument("--zkevm-specs", default=os.path.expanduser("~/work/execution-specs-zkevm-frames"))
     parser.add_argument("--frames-specs", default=os.path.expanduser("~/work/execution-specs-frames"))
-    parser.add_argument("--interval", type=float, default=12, help="seconds between steps")
+    parser.add_argument("--interval", type=float, default=12, help="seconds between steps of the story")
+    parser.add_argument("--block-time", type=int, default=12, help="seconds between L2 blocks")
+    parser.add_argument("--proving-time", type=int, default=20,
+                        help="seconds the sequencer waits before posting a block, standing in for proving")
     parser.add_argument("--l2-port", type=int, default=8547, help="the port of the L2 node's RPC")
     parser.add_argument("--spamoor", default=os.path.expanduser("~/work/spamoor/bin/spamoor"),
                         help="the spamoor binary, or empty for the story alone")
     parser.add_argument("--new", action="store_true", help="deploy a new rollup instead of resuming the last one")
     args = parser.parse_args()
+    args.rpc = args.rpc or devnet_url("el-1-geth", 8545)
+    args.submit_rpc = args.submit_rpc or [devnet_url("el-2-nethermind", 8545), devnet_url("el-3-reth", 8545)]
+    args.beacon = args.beacon or devnet_url("cl-1-lighthouse", 4000)
     os.makedirs(DATA, exist_ok=True)
 
     number = 1
@@ -521,7 +570,7 @@ def main() -> None:
                 try:
                     episode.step(i)
                 except Exception as e:  # keep the story going, and show what failed
-                    if episode.node.poll() is not None:
+                    if episode.node.poll() is not None or episode.operator.poll() is not None:
                         raise
                     episode.event("error", "A step failed", message=str(e)[-400:])
                     traceback.print_exc()

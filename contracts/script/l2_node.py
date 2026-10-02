@@ -20,7 +20,7 @@ The node sequences a rollup with the book's preconfirmations customization
 program accepts, as a stand-in for a zkVM proof of that program. It adds the
 block to its chain at once, with the sequencer's preconfirmation, a
 signature over the block's number, hash and anchor, and keeps what posting
-it takes until the operator asks for it with `nr_nextPost`. It follows the
+it takes until the operator asks for it with `nr_waitingPosts`. It follows the
 rollup contract on L1 and marks blocks posted once the contract has them:
 the RPC's `latest` block is preconfirmed, and its `safe` block posted, the
 one L2 to L1 messages are proven against.
@@ -436,7 +436,10 @@ class Node:
         proof."""
         started = time.time()
         parent = self.head
-        timestamp = max(int(time.time()), int(parent.timestamp) + 1)
+        # The sequencer's slot, or now.
+        timestamp = p.get("timestamp") or max(int(time.time()), int(parent.timestamp) + 1)
+        if timestamp <= int(parent.timestamp):
+            raise RpcError(-32000, f"timestamp {timestamp} is not after the latest block's")
         anchor = bytes.fromhex(p["anchorHash"][2:])
         prev_randao = keccak256(anchor)
         base_fee = self.next_base_fee()
@@ -568,6 +571,7 @@ class Node:
             "timestamp": fields["timestamp"],
             "gasUsed": fields["gasUsed"],
             "transactions": len(payload.transactions),
+            "txs": [self.summary(btx) for btx in included],
             "anchor": {"number": p["anchorNumber"], "hash": p["anchorHash"]},
             "validation": {"successful": bool(result.successful_validation), "chainId": L2_CHAIN_ID, "schemaId": p["schemaId"]},
             "newPayloadRequestRoot": hx(np_root),
@@ -605,15 +609,25 @@ class Node:
         self.save()
         return {k: v for k, v in post.items() if k not in ("blobs", "versionedHashes")}
 
-    def next_post(self, head_hash: str) -> dict | None:
-        """What posting the block after the rollup's head takes, if the node
-        preconfirmed it."""
+    def waiting_posts(self, head_hash: str, limit: int) -> list:
+        """What posting the preconfirmed blocks after the rollup's head takes,
+        in order, at most `limit` of them."""
         number = self.number_of(bytes.fromhex(head_hash[2:]))
         if number is None:
             raise RpcError(-32000, f"the rollup's head {head_hash} is not in the node's chain")
         self.mark_posted(number)
-        preconfirmed = self.config["preconfirmed"]
-        return preconfirmed[0]["post"] if preconfirmed else None
+        return [stored["post"] for stored in self.config["preconfirmed"][:limit]]
+
+    def summary(self, btx) -> dict:
+        """A transaction's hash, sender, recipient and value, as a
+        preconfirmation lists it."""
+        tx = decode_transaction(btx)
+        frames = isinstance(tx, FrameTransaction)
+        return {
+            "hash": hx(keccak256(raw_transaction(btx))), "from": hx(sender_of(tx)),
+            "to": None if frames or not len(tx.to) else hx(tx.to), "value": 0 if frames else int(tx.value),
+            **({"frames": len(tx.frames)} if frames else {}),
+        }
 
     def number_of(self, block_hash: bytes) -> int | None:
         return next((int(b["header"].number) for b in reversed(self.blocks) if b["hash"] == block_hash), None)
@@ -1167,7 +1181,7 @@ class Node:
             "debug_getRawHeader": lambda tag: (b := self.block_at(tag)) and hx(rlp.encode(b["header"])),
             "eth_getLogs": self.logs,
             "nr_preconfirm": self.preconfirm,
-            "nr_nextPost": self.next_post,
+            "nr_waitingPosts": self.waiting_posts,
             "nr_getPreconfirmation": lambda number: self.config["preconfirmations"].get(str(int(number, 16))),
         }
         reply = {"jsonrpc": "2.0", "id": request.get("id")}

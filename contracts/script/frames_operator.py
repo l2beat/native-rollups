@@ -17,7 +17,7 @@ in one frame transaction:
 
 The transaction carries the block's EIP-8142 payload blobs, so it is sent in
 the EIP-7594 network form with the blobs, their commitments and their cell
-proofs. `--submit-rpc` selects a client that accepts blob-carrying frame
+proofs. `--submit-rpc`, which can repeat, selects clients that accept blob-carrying frame
 transactions: on frames-devnet-0, Nethermind and Reth do, while geth and
 ethrex do not.
 
@@ -41,8 +41,11 @@ the frame transaction types, and Foundry's `cast` on the PATH:
 import argparse
 from dataclasses import replace
 import json
+import random
 import subprocess
+import threading
 import time
+import traceback
 import urllib.request
 
 from ethereum_types.bytes import Bytes0, Bytes20
@@ -75,6 +78,12 @@ CLAIM_L2_MESSAGE_SIGNATURE = "claimL2Message((address,address,uint256,uint256,ui
 DEPENDENCY_FRAME_INDEX = 1
 # How many L1 blocks behind the head the operator anchors L2 blocks.
 ANCHOR_DEPTH = 2
+# How many preconfirmed blocks `sequence` posts at once, each in its own L1
+# transaction with one blob. On the local devnet only Nethermind includes
+# blob-carrying frame transactions, in about one L1 block out of four, so
+# each of its blocks must take many, and it and Reth refuse more than 16
+# pending ones from one sender.
+MAX_POSTS = 16
 L2_MESSENGER = "0x8079000000000000000000000000000000000001"
 L2_MESSAGE_SENT = keccak256(b"L2MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
 SENT_SLOT = 2  # L2Messenger.sentMessages
@@ -135,7 +144,10 @@ def wait_for_receipt(rpc: str, tx_hash: str, blocks: int = 40) -> dict:
     raise SystemExit(f"{tx_hash} not included within {blocks} blocks")
 
 
-def preconfirm(args: argparse.Namespace) -> None:
+def preconfirm_block(args: argparse.Namespace, timestamp: int | None = None) -> dict:
+    """Has the L2 node build the next block, at `timestamp` if given,
+    validate it, sign the dependency and preconfirm it, and returns what
+    happened."""
     rpc = args.rpc
     # The registry's current entry, under which the block must be posted.
     registry = call(rpc, args.rollup, "evmVkRegistry()(address)")
@@ -152,6 +164,7 @@ def preconfirm(args: argparse.Namespace) -> None:
     # The L2 node builds the next block on its latest one, validates it with
     # the stateless program, signs the dependency, and preconfirms it.
     preconfirmed = l2_rpc(args.l2_rpc, "nr_preconfirm", {
+        "timestamp": timestamp,
         "anchorNumber": anchor_number,
         "anchorHash": anchor_hash,
         "schemaId": schema_id,
@@ -164,34 +177,35 @@ def preconfirm(args: argparse.Namespace) -> None:
     })
     print(
         f"preconfirmed L2 block {preconfirmed['number']} ({preconfirmed['transactions']} transactions), "
-        f"hash {preconfirmed['blockHash']}, anchor L1 block {anchor_number}"
+        f"hash {preconfirmed['blockHash']}, anchor L1 block {anchor_number}",
+        flush=True,
     )
+    return {
+        "type": "preconfirm",
+        "l2": {k: v for k, v in preconfirmed.items() if k not in ("proof", "triple", "preconfirmation")},
+        "preconfirmation": preconfirmed["preconfirmation"],
+        "l1Block": l1_block,
+    }
+
+
+def preconfirm(args: argparse.Namespace) -> None:
+    entry = preconfirm_block(args)
     if args.record:
-        record(args.record, {
-            "type": "preconfirm",
-            "l2": {k: v for k, v in preconfirmed.items() if k not in ("proof", "triple", "preconfirmation")},
-            "preconfirmation": preconfirmed["preconfirmation"],
-            "l1Block": l1_block,
-        })
+        record(args.record, entry)
 
 
-def advance(args: argparse.Namespace) -> None:
+def send_post(args: argparse.Namespace, bundle: dict, nonce: int) -> str:
+    """Sends the frame transaction that posts a preconfirmed block, with
+    `nonce`, and returns its hash."""
     rpc = args.rpc
     operator = cast("wallet", "address", "--private-key", args.operator_key)
-
-    # The oldest preconfirmed block after the rollup's head, if any.
-    bundle = l2_rpc(args.l2_rpc, "nr_nextPost", call(rpc, args.rollup, "blockHash()(bytes32)"))
-    if bundle is None:
-        print("no preconfirmed block to post")
-        return
-    anchor_number = bundle["anchor"]["number"]
     p = bundle["params"]
     triple = bytes.fromhex(bundle["triple"][2:])
     proof = bytes.fromhex(bundle["proof"][2:])
     blobs = [bytes.fromhex(blob[2:]) for blob in bundle["blobs"]]
     versioned_hashes = tuple(bytes.fromhex(h[2:]) for h in bundle["versionedHashes"])
     blob_base_fee = int(cast("rpc", "--rpc-url", rpc, "eth_blobBaseFee").strip('"'), 16)
-    if args.corrupt_proof:
+    if getattr(args, "corrupt_proof", False):
         proof = bytes([proof[0] ^ 1]) + proof[1:]
 
     params = (
@@ -203,10 +217,13 @@ def advance(args: argparse.Namespace) -> None:
     calldata = bytes.fromhex(cast("calldata", ADVANCE_SIGNATURE, params, str(DEPENDENCY_FRAME_INDEX))[2:])
 
     base_fee = int(cast("base-fee", "--rpc-url", rpc))
-    tip = 10**9
+    # A slightly different tip each time, so that sending a block again makes
+    # a new transaction: a client that dropped the old one may still refuse
+    # it as already known.
+    tip = 10**9 + random.randrange(10**6)
     tx = FrameTransaction(
         chain_id=U64(int(cast("chain-id", "--rpc-url", rpc))),
-        nonce=U256(int(cast("nonce", "--rpc-url", rpc, operator))),
+        nonce=U256(nonce),
         sender=Bytes20(bytes.fromhex(operator[2:])),
         frames=(
             Frame(
@@ -266,46 +283,150 @@ def advance(args: argparse.Namespace) -> None:
     )
 
     print(
-        f"L2 block {bundle['number']} ({bundle['transactions']} transactions, state root {bundle['stateRoot']}), "
-        f"anchor L1 block {anchor_number}, data_hash 0x{triple[32:64].hex()}, "
-        f"{bundle['payloadBytes']} payload bytes in {len(blobs)} blob(s)"
+        f"posting L2 block {bundle['number']} ({bundle['transactions']} transactions, state root {bundle['stateRoot']}), "
+        f"anchor L1 block {bundle['anchor']['number']}, data_hash 0x{triple[32:64].hex()}, "
+        f"{bundle['payloadBytes']} payload bytes in {len(blobs)} blob(s), nonce {nonce}",
+        flush=True,
     )
     for m in bundle["l2Messages"]:
-        print(f"sends L2 message {m['index']}: {m['value']} wei from {m['sender']} to {m['to']} on L1")
-    tx_hash = json.loads(cast("rpc", "--rpc-url", args.submit_rpc or rpc, "eth_sendRawTransaction", hx(wrapped)))
-    receipt = wait_for_receipt(rpc, tx_hash)
-    builder = bytes.fromhex(
-        json.loads(cast("rpc", "--rpc-url", rpc, "eth_getBlockByNumber", receipt["blockNumber"], "false"))["extraData"][2:]
-    )
+        print(f"sends L2 message {m['index']}: {m['value']} wei from {m['sender']} to {m['to']} on L1", flush=True)
+    # To every client given, any of which may include it.
+    sent = []
+    for url in args.submit_rpc or [rpc]:
+        try:
+            sent.append(json.loads(cast("rpc", "--rpc-url", url, "eth_sendRawTransaction", hx(wrapped))))
+        except SystemExit as e:
+            print(f"{url} refused it: {e}", flush=True)
+    if not sent:
+        raise SystemExit("no client took the transaction")
+    return sent[0]
+
+
+def post_record(args: argparse.Namespace, bundle: dict, tx_hash: str, receipt: dict) -> dict | None:
+    """What posting a block did, once L1 included the transaction, or None
+    if `advance` failed in it."""
+    rpc = args.rpc
+    block = json.loads(cast("rpc", "--rpc-url", rpc, "eth_getBlockByNumber", receipt["blockNumber"], "false"))
+    builder = bytes.fromhex(block["extraData"][2:])
+    frames = [
+        {"status": int(f["status"], 16), "executionGas": int(f["executionGasUsed"], 16), "stateGas": int(f["stateGasUsed"], 16)}
+        for f in receipt.get("frameReceipts", [])
+    ]
     print(
         f"included {tx_hash} in L1 block {int(receipt['blockNumber'], 16)} (built by {builder.decode(errors='replace')}), "
         f"gas {int(receipt['gasUsed'], 16)}, blob gas {int(receipt.get('blobGasUsed', '0x0'), 16)} "
-        f"at {int(receipt.get('blobGasPrice', '0x0'), 16)} wei"
+        f"at {int(receipt.get('blobGasPrice', '0x0'), 16)} wei, frame statuses {[f['status'] for f in frames]}",
+        flush=True,
     )
-    frames = []
-    for i, frame in enumerate(receipt.get("frameReceipts", [])):
-        execution, state = int(frame["executionGasUsed"], 16), int(frame["stateGasUsed"], 16)
-        print(f"frame {i}: status {int(frame['status'], 16)}, {execution} execution, {state} state gas")
-        frames.append({"status": int(frame["status"], 16), "executionGas": execution, "stateGas": state})
-    head = int(call(rpc, args.rollup, "blockNumber()(uint256)").split()[0])
-    print(f"rollup at L2 block {head}")
+    if not frames or frames[-1]["status"] != 1:
+        return None
+    return {
+        "type": "advance",
+        "l2": {k: v for k, v in bundle.items() if k not in ("blobs", "proof", "triple", "preconfirmation")},
+        "preconfirmation": bundle["preconfirmation"],
+        "proof": {"kind": "mock", "triple": bundle["triple"], "signature": bundle["proof"]},
+        "l1": {
+            "txHash": tx_hash,
+            "block": int(receipt["blockNumber"], 16),
+            "timestamp": int(block["timestamp"], 16),
+            "builder": builder.decode(errors="replace"),
+            "gasUsed": int(receipt["gasUsed"], 16),
+            "blobGasUsed": int(receipt.get("blobGasUsed", "0x0"), 16),
+            "blobGasPrice": int(receipt.get("blobGasPrice", "0x0"), 16),
+            "frames": frames,
+            "rollupHead": int(call(rpc, args.rollup, "blockNumber()(uint256)").split()[0]),
+        },
+    }
+
+
+def advance(args: argparse.Namespace) -> None:
+    """Posts the oldest preconfirmed block the rollup does not have yet."""
+    bundles = l2_rpc(args.l2_rpc, "nr_waitingPosts", call(args.rpc, args.rollup, "blockHash()(bytes32)"), 1)
+    if not bundles:
+        print("no preconfirmed block to post")
+        return
+    operator = cast("wallet", "address", "--private-key", args.operator_key)
+    tx_hash = send_post(args, bundles[0], int(cast("nonce", "--rpc-url", args.rpc, operator)))
+    entry = post_record(args, bundles[0], tx_hash, wait_for_receipt(args.rpc, tx_hash))
+    if entry is None:
+        raise SystemExit("advance failed")
     if args.record:
-        record(args.record, {
-            "type": "advance",
-            "l2": {k: v for k, v in bundle.items() if k not in ("blobs", "proof", "triple", "preconfirmation")},
-            "preconfirmation": bundle["preconfirmation"],
-            "proof": {"kind": "mock", "triple": bundle["triple"], "signature": bundle["proof"]},
-            "l1": {
-                "txHash": tx_hash,
-                "block": int(receipt["blockNumber"], 16),
-                "builder": builder.decode(errors="replace"),
-                "gasUsed": int(receipt["gasUsed"], 16),
-                "blobGasUsed": int(receipt.get("blobGasUsed", "0x0"), 16),
-                "blobGasPrice": int(receipt.get("blobGasPrice", "0x0"), 16),
-                "frames": frames,
-                "rollupHead": head,
-            },
-        })
+        record(args.record, entry)
+
+
+def sequence(args: argparse.Namespace) -> None:
+    """Runs the sequencer: preconfirms a block every --block-time seconds,
+    empty if the mempool is, and posts each once --proving-time has passed
+    since its preconfirmation, standing in for proving, several per L1
+    block. Appends what happened to --log, one JSON line per block
+    preconfirmed or posted."""
+    args.operator_key = args.sequencer_key
+    log = open(args.log, "a")
+    lock = threading.Lock()
+
+    def emit(entry: dict) -> None:
+        with lock:
+            log.write(json.dumps(entry) + "\n")
+            log.flush()
+
+    def produce() -> None:
+        while True:
+            try:
+                latest = l2_rpc(args.l2_rpc, "eth_getBlockByNumber", "latest", False)
+                # The next slot, unless the sequencer fell more than a slot
+                # behind, as after a restart: then now, skipping the slots it
+                # missed instead of filling them.
+                timestamp = int(latest["timestamp"], 16) + args.block_time
+                if timestamp < time.time() - args.block_time:
+                    timestamp = int(time.time())
+                time.sleep(max(0.0, timestamp - time.time()))
+                emit(preconfirm_block(args, timestamp))
+            except BaseException:
+                traceback.print_exc()
+                time.sleep(args.block_time)
+
+    def post() -> None:
+        operator = cast("wallet", "address", "--private-key", args.operator_key)
+        in_flight = {}  # L2 block number -> (bundle, transaction hash)
+        while True:
+            try:
+                for number, (bundle, tx_hash) in sorted(in_flight.items()):
+                    receipt = json.loads(cast("rpc", "--rpc-url", args.rpc, "eth_getTransactionReceipt", tx_hash))
+                    if receipt:
+                        entry = post_record(args, bundle, tx_hash, receipt)
+                        if entry:
+                            emit(entry)
+                        del in_flight[number]
+                # Posts not yet included, this process's or not, as the
+                # nonces the submitting client has pending. With none, any
+                # earlier post landed or was dropped, so the waiting blocks
+                # are exactly those to post. Otherwise only those after this
+                # process's posts, and none if it does not know which are in
+                # flight, as after a restart.
+                confirmed = int(cast("nonce", "--rpc-url", args.rpc, operator))
+                pending = max(
+                    int(cast("nonce", "--block", "pending", "--rpc-url", url, operator)) for url in args.submit_rpc or [args.rpc]
+                )
+                if pending == confirmed:
+                    in_flight.clear()
+                elif not in_flight:
+                    time.sleep(2)
+                    continue
+                head = call(args.rpc, args.rollup, "blockHash()(bytes32)")
+                after = max(in_flight, default=0)
+                ready = [
+                    b for b in l2_rpc(args.l2_rpc, "nr_waitingPosts", head, MAX_POSTS)
+                    if b["number"] > after and time.time() - b["preconfirmation"]["time"] >= args.proving_time
+                ][: MAX_POSTS - len(in_flight)]
+                for b in ready:
+                    in_flight[b["number"]] = (b, send_post(args, b, pending))
+                    pending += 1
+            except BaseException:
+                traceback.print_exc()
+            time.sleep(2)
+
+    threading.Thread(target=post, daemon=True).start()
+    produce()
 
 
 def record(path: str, entry: dict) -> None:
@@ -388,9 +509,20 @@ def main() -> None:
     pre.add_argument("--prover-key", required=True)
     pre.add_argument("--l2-rpc", required=True, help="the L2 node's RPC")
     pre.add_argument("--record", help="write what happened to this JSON file")
+    seq = sub.add_parser("sequence")
+    seq.add_argument("--rpc", required=True)
+    seq.add_argument("--submit-rpc", action="append", help="a client to send the blob-carrying transactions to, by default --rpc")
+    seq.add_argument("--rollup", required=True)
+    seq.add_argument("--verifier", required=True)
+    seq.add_argument("--sequencer-key", required=True, help="signs the preconfirmations and posts the blocks")
+    seq.add_argument("--prover-key", required=True)
+    seq.add_argument("--l2-rpc", required=True, help="the L2 node's RPC")
+    seq.add_argument("--block-time", type=int, default=12, help="seconds between L2 blocks")
+    seq.add_argument("--proving-time", type=int, default=20, help="seconds a block waits before it is posted")
+    seq.add_argument("--log", required=True, help="append what happened to this file, one JSON line per event")
     adv = sub.add_parser("advance")
     adv.add_argument("--rpc", required=True)
-    adv.add_argument("--submit-rpc", help="the client to send the blob-carrying transaction to, by default --rpc")
+    adv.add_argument("--submit-rpc", action="append", help="a client to send the blob-carrying transaction to, by default --rpc")
     adv.add_argument("--rollup", required=True)
     adv.add_argument("--verifier", required=True)
     adv.add_argument("--operator-key", required=True)
@@ -409,6 +541,8 @@ def main() -> None:
         check_vectors(args.vectors)
     elif args.command == "preconfirm":
         preconfirm(args)
+    elif args.command == "sequence":
+        sequence(args)
     elif args.command == "advance":
         advance(args)
     else:

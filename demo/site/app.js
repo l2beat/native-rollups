@@ -15,7 +15,7 @@ const SELECTORS = {
   l2Messenger: "0xf5730a72", evmVkRegistry: "0x369e4ac9", prover: "0x32a8f30f", sequencer: "0x5c1bba38", bond: "0x64c9ec6f",
 };
 
-const state = { index: null, session: null, l1Head: null, rollupHead: null, cache: {}, blobs: {}, beacon: null, snippets: null, sources: null, flat: null };
+const state = { index: null, session: null, l1Head: null, rollupHead: null, cache: {}, records: {}, blobs: {}, beacon: null, snippets: null, sources: null, flat: null };
 
 // ---------------------------------------------------------------------------
 // Data
@@ -46,7 +46,7 @@ async function refresh() {
   if (!state.flat) state.flat = await getJSON("/api/flat");
   if (state.ethUsd === undefined) state.ethUsd = ((await getJSON("/api/eth-price")) || {}).usd ?? null;
   const [index, session, head] = await Promise.all([getJSON("/api/explorer/index.json"), getJSON("/api/session"), rpc("eth_blockNumber")]);
-  if (index && state.index && index.rollup !== state.index.rollup) state.cache = {}; // a new episode
+  if (index && state.index && index.rollup !== state.index.rollup) [state.cache, state.records] = [{}, {}]; // a new episode
   state.index = index;
   state.session = session;
   state.l1Head = head ? parseInt(head, 16) : null;
@@ -82,6 +82,8 @@ const ago = (t) => {
   const s = Math.max(0, Math.round(Date.now() / 1000 - t));
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
 };
+// The median, which a restart's gap does not skew.
+const median = (xs) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] : null);
 const secs = (s) => (s < 120 ? `${Math.round(s)} s` : `${Math.round(s / 60)} min`);
 // Hashes of nothing, which could pass for arbitrary values.
 const EMPTY_HASHES = {
@@ -272,8 +274,8 @@ function update(app, html, key) {
 function renderStatus() {
   const pills = [];
   if (state.l1Head != null) pills.push(`<span class="pill"><span class="dot"></span>L1 block ${num(state.l1Head)}</span>`);
-  const preconfirmed = ((state.session && state.session.events) || []).filter((e) => e.type === "preconfirm").map((e) => e.preconfirmation.number);
-  if (preconfirmed.length) pills.push(`<span class="pill">L2 block ${num(Math.max(...preconfirmed))} preconfirmed</span>`);
+  const preconfirmed = state.session && state.session.head && state.session.head.preconfirmed;
+  if (preconfirmed) pills.push(`<span class="pill">L2 block ${num(preconfirmed)} preconfirmed</span>`);
   if (state.rollupHead != null) pills.push(`<span class="pill">L2 block ${num(state.rollupHead)} on L1</span>`);
   if (state.index && state.rollupHead != null) {
     const n = state.index.l2Blocks.length;
@@ -345,34 +347,35 @@ function pager(route, total, base) {
 async function home() {
   const ix = state.index;
   const blocks = [...ix.l2Blocks].reverse();
-  // The latest transactions, from the latest blocks, newest first.
-  const latest = [];
-  for (const b of blocks.slice(0, 4)) {
+  // The latest transactions, newest first: the preconfirmed ones, then
+  // those in blocks rebuilt from L1. Most blocks may be empty, so only those
+  // with transactions.
+  const latest = waitingTxs().map((t) => ({ ...t, timestamp: t.time }));
+  for (const b of blocks.slice(0, 100).filter((b) => b.transactions)) {
+    if (latest.length >= 8) break;
     const block = await object(`l2/blocks/${b.number}`);
     if (block) latest.push(...[...block.transactions].reverse().map((t) => ({ ...t, block: b.number, timestamp: b.timestamp })));
-    if (latest.length >= 8) break;
   }
-  const txs = await Promise.all(latest.slice(0, 8).map((t) => object(`l2/txs/${t.hash}`).then((x) => ({ ...t, ...(x || {}) }))));
+  const txs = await Promise.all(latest.slice(0, 8).map((t) => t.preconfirmed ? t : object(`l2/txs/${t.hash}`).then((x) => ({ ...t, ...(x || {}) }))));
   const head = blocks.length ? await object(`l2/blocks/${blocks[0].number}`) : null;
-  const rec = head && state.session && state.session.events.find((e) => e.type === "advance" && e.l2.number === head.number);
+  const rec = head && (await blockRecord(head.number));
   // What the status pills do not already say: activity, value, and cost on L1.
   const escrow = await rpc("eth_getBalance", [ix.rollup, "latest"]);
   const recent = blocks.slice(0, 20);
   const sum = (entries, f) => entries.reduce((s, e) => s + BigInt(f(e) || 0), 0n);
   const deposits = Object.values(ix.deposits), withdrawals = Object.values(ix.withdrawals);
   const total = blocks.reduce((s, b) => s + b.transactions, 0);
-  const interval = recent.length > 1 ? (recent[0].timestamp - recent[recent.length - 1].timestamp) / (recent.length - 1) : null;
+  const interval = median(recent.slice(1).map((b, i) => recent[i].timestamp - b.timestamp));
   const bytes = recent.length ? recent.reduce((s, b) => s + b.payloadBytes, 0) / recent.length : 0;
   // From preconfirmation to L1, over the recent blocks.
-  const lags = recent.map((b) => [preconfirmationOf(b.number), l1Time(b.l1Tx)]).filter(([p, t]) => p && t).map(([p, t]) => t - p.time);
-  const lag = lags.length ? lags.reduce((s, x) => s + x, 0) / lags.length : null;
+  const lag = median(((state.session && state.session.timings) || []).map((t) => t.posted - t.preconfirmed));
   const stats = [
     ["L2 transactions", num(total), `${blocks.length ? (total / blocks.length).toFixed(1) : 0} per block`],
     ["ETH on L2", escrow ? `${(Number(BigInt(escrow)) / 1e18).toLocaleString("en-US", { maximumFractionDigits: 2 })} <span class="unit">ETH</span>` : "",
       "held in the rollup's escrow on L1"],
     ["Deposits", num(deposits.length), `${eth(sum(deposits, (d) => d.value).toString())}, ${num(deposits.filter((d) => d.l2Tx).length)} claimed on L2`],
     ["Withdrawals", num(withdrawals.length), `${eth(sum(withdrawals, (w) => w.value).toString())}, ${num(withdrawals.filter((w) => w.l1Tx).length)} claimed on L1`],
-    ["Block time", interval ? `${Math.round(interval)} s` : "", lag ? `preconfirmed at once, on L1 ${secs(lag)} later` : "average of recent blocks"],
+    ["Block time", interval ? `${Math.round(interval)} s` : "", lag ? `preconfirmed at once, on L1 ${secs(lag)} later` : "the sequencer's fixed interval"],
     ["Blob use", pct(bytes / BLOB_USABLE_BYTES), `${(bytes / 1024).toFixed(1)} KB per recent block`],
   ];
   return `
@@ -396,8 +399,8 @@ async function home() {
       <div class="panel"><div class="panel-head"><b>Latest L2 transactions</b><a href="#/txs">View all transactions →</a></div>
         ${txs.map((t) => `<div class="item"><div><div class="line">${l2TxLink(t.hash)}</div><div class="line muted">${ago(t.timestamp)}</div></div>
           <div><div class="line"><span class="muted">From</span> ${addr(t.from, "l2")}</div>
-            <div class="line">${t.to ? `<span class="muted">To</span> ${addr(t.to, "l2")}` : t.frames ? `<span class="muted">${t.frames.length} frames</span>` : '<span class="muted">contract creation</span>'}</div></div>
-          <div class="num"><div class="line">${chip(t.kind)}</div><div class="line">${t.value ? eth(t.value) : ""}</div></div></div>`).join("")}</div>
+            <div class="line">${t.to ? `<span class="muted">To</span> ${addr(t.to, "l2")}` : t.frames ? `<span class="muted">${t.frames.length ?? t.frames} frames</span>` : '<span class="muted">contract creation</span>'}</div></div>
+          <div class="num"><div class="line">${t.preconfirmed ? '<span class="muted">preconfirmed</span>' : chip(t.kind)}</div><div class="line">${t.value ? eth(t.value) : ""}</div></div></div>`).join("")}</div>
     </div>
     ${story()}`;
 }
@@ -451,7 +454,11 @@ async function txList(route) {
   const loaded = await Promise.all(needed.map((b) => object(`l2/blocks/${b.number}`)));
   const txs = loaded.flatMap((block, i) =>
     block ? [...block.transactions].reverse().map((t) => ({ ...t, block: needed[i].number, time: needed[i].timestamp })) : []);
+  const waiting = route.n > 1 ? [] : waitingTxs().map((t) => ({ ...t, kind: "preconfirmed" }));
   return `<h1>L2 transactions</h1>
+    ${waiting.length ? `<h2>Waiting for L1</h2>
+      <p class="section-lead">In blocks the sequencer preconfirmed, which L1 does not have yet.</p>${l2TxRows(waiting)}
+      <h2>On L1</h2>` : ""}
     <p class="section-lead">Every transaction in the L2 blocks, newest first.</p>
     ${pager(route, total, "txs")}${l2TxRows(txs.slice(skip, skip + PAGE))}${pager(route, total, "txs")}`;
 }
@@ -516,30 +523,35 @@ const TERMS = {
 };
 const term = (word, key = word) => `<span class="term" title="${esc(TERMS[key])}">${word}</span>`;
 
-// The sequencer's preconfirmation of block `n`, from the runner's record.
-function preconfirmationOf(n) {
-  const e = state.session && state.session.events.find((e) => e.type === "preconfirm" && e.preconfirmation.number === n);
-  return e && { ...e.preconfirmation, transactions: e.l2.transactions, gasUsed: e.l2.gasUsed, timestamp: e.l2.timestamp };
+// What the sequencer reported about block `n`: its preconfirmation, and its
+// post once on L1, which no longer changes.
+async function blockRecord(n) {
+  if (state.records[n]) return state.records[n];
+  const r = await getJSON(`/api/blocks/${n}`);
+  if (r && r.l1) state.records[n] = r;
+  return r;
 }
+// A record's preconfirmation, with what the block held.
+const preconfirmationIn = (r) => r && r.preconfirmation && { ...r.preconfirmation, transactions: r.l2.transactions, gasUsed: r.l2.gasUsed };
 // When an L1 transaction was included.
 const l1Time = (h) => ((state.index && state.index.l1Txs.find((t) => t.hash === h)) || {}).timestamp;
 // The L1 block a block anchored to L1 block `anchor` must be posted by: the
 // anchor must still be in the BLOCKHASH window.
 const deadline = (anchor) => anchor + 256;
+// The transactions of those blocks, newest first.
+const waitingTxs = () => waitingBlocks().flatMap((p) => [...(p.txs || [])].reverse().map((t) => ({ ...t, block: p.number, time: p.time, preconfirmed: true })));
 // Preconfirmed blocks the follower has not rebuilt from L1 yet, newest first.
 function waitingBlocks() {
   const blocks = state.index ? state.index.l2Blocks : [];
   const rebuilt = blocks.length ? blocks[blocks.length - 1].number : 0;
-  return ((state.session && state.session.events) || [])
-    .filter((e) => e.type === "preconfirm" && e.preconfirmation.number > rebuilt)
-    .map((e) => preconfirmationOf(e.preconfirmation.number)).reverse();
+  return ((state.session && state.session.waiting) || []).filter((p) => p.number > rebuilt).reverse();
 }
 
 // The steps every L2 block takes to L1, each linked to what shows it.
 function journey(b, rec) {
   const matches = b.hash === b.recordedHash;
-  const pre = preconfirmationOf(b.number);
-  const posted = l1Time(b.l1.tx);
+  const pre = preconfirmationIn(rec);
+  const posted = (rec && rec.l1 && rec.l1.timestamp) || l1Time(b.l1.tx);
   const steps = [
     ["Build", "real", "The operator's node, holding the L2 state, built the block.",
       `<a href="#/l2/block/${b.number}/txs">${num(b.transactions.length)} transactions</a>`],
@@ -620,17 +632,16 @@ async function messagePage(route) {
 }
 
 async function blockPage(route) {
-  const b = await object(`l2/blocks/${route.n}`);
+  const [b, rec] = await Promise.all([object(`l2/blocks/${route.n}`), blockRecord(route.n)]);
   if (!b) {
-    const p = preconfirmationOf(route.n);
+    const p = preconfirmationIn(rec);
     return p ? waitingPage(p) : `<h1>Block #${route.n}</h1><p class="note">The follower has not rebuilt this block yet.</p>`;
   }
-  const rec = state.session && state.session.events.find((e) => e.type === "advance" && e.l2.number === b.number);
   const kinds = {};
   b.transactions.forEach((t) => (kinds[t.kind] = (kinds[t.kind] || 0) + 1));
   const matches = b.hash === b.recordedHash;
-  const pre = preconfirmationOf(b.number);
-  const posted = l1Time(b.l1.tx);
+  const pre = preconfirmationIn(rec);
+  const posted = (rec && rec.l1 && rec.l1.timestamp) || l1Time(b.l1.tx);
   const last = state.index.l2Blocks.length;
   const base = `/l2/block/${b.number}`;
   const tab = route.tab;
@@ -718,7 +729,7 @@ function waitingPage(p) {
     ${stepper([
       ["Build", "real", "The operator's node, holding the L2 state, built the block.", `${num(p.transactions)} transactions`],
       ["Preconfirm", "real", `The sequencer signed its hash at once, backed by a ${term("bond")}.`, `${ago(p.time)}`],
-      ["Prove", "pending", "Posting waits for the proof. Here, a few blocks stand in for proving time.", ""],
+      ["Prove", "pending", "Posting waits for the proof. Here, a fixed wait stands in for proving time.", ""],
       ["Post", "pending", `Must reach L1 by L1 block ${num(deadline(p.anchorBlockNumber))}, while its anchor is in the BLOCKHASH window.`, ""],
       ["Verify", "pending", "The rollup contract will check that the proof is for exactly this block.", ""],
       ["Follow", "pending", "An independent node will rebuild it from L1 data alone.", ""],
@@ -1503,7 +1514,12 @@ const L2_SUMMARIES = {
 
 async function l2TxPage(route) {
   const tx = await object(`l2/txs/${route.hash}`);
-  if (!tx) return `<h1>Transaction details</h1><p class="note">Not in an L2 block the follower rebuilt. A transaction shows here once its block is on L1.</p>`;
+  if (!tx) {
+    const t = waitingTxs().find((t) => t.hash === route.hash);
+    return `<h1>Transaction details</h1><p class="note">${t
+      ? `Preconfirmed in block ${l2BlockLink(t.block)} ${ago(t.time)}, which is waiting for L1. Its details show here once the follower rebuilds the block from L1.`
+      : "Not in an L2 block the follower rebuilt. A transaction shows here once its block is on L1."}</p>`;
+  }
   const block = await object(`l2/blocks/${tx.block}`);
   const w = tx.kind === "withdrawal" && withdrawalOf(tx);
   const d = tx.kind === "deposit claim" && depositOf(tx);
@@ -1617,7 +1633,7 @@ async function l1TxPage(route) {
   const checked = advance && tx.l2Block ? await object(`l2/blocks/${tx.l2Block}`) : null;
   let summary = "";
   if (tx.kind === "advance") {
-    const pre = preconfirmationOf(tx.l2Block);
+    const pre = preconfirmationIn(await blockRecord(tx.l2Block));
     summary = `The operator adds L2 block ${l2BlockLink(tx.l2Block)} to the rollup${pre ? `, which it preconfirmed ${secs(tx.timestamp - pre.time)} earlier` : ""}.
       One EIP-8141 frame transaction carries the block's data in a blob, the proof in a frame, and the call to the rollup
       contract, which accepts the block only if the proof is for exactly this block.`;
