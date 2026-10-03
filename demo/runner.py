@@ -4,7 +4,7 @@ Runs the native rollup demo on the local frames devnet (`contracts/frames/`).
 It deploys a fresh rollup with the preconfirmations customization, starts
 the L2 node with its RPC, the operator's sequencer, and a follower that
 rebuilds the L2 chain from L1 on its own. The sequencer preconfirms a block
-every 12 seconds, empty if no transaction waits, and posts each once a
+every 4 seconds, empty if no transaction waits, and posts each once a
 stand-in proving time has passed. Each block's preconfirmation and post go
 to `demo/data/blocks/<number>.json`. The runner meanwhile plays a scripted
 story, one step every few seconds: Alice and Bob deposit from L1, and once an
@@ -62,9 +62,11 @@ USER_KEYS = {
 RELAYER_KEY = "0x5d2344259f42259f82d2c140aa66102ba89b57b4883ee441a8b312622bd42491"
 # Claims L2 to L1 messages that their recipients cannot claim, for their fee.
 CLAIMER_KEY = "0x27515f805127bebad2fb9b183508bdacb8c763da16f54e0678b16e8f28ef3fff"
-# Spamoor's funding wallets: on L1 for deposits, on L2 for everything else.
+# Spamoor's funding wallets: on L1 for deposits, on L2 for its transactions,
+# and on L2 for its messages to L1, which it sends at a slower pace.
 SPAMOOR_L1_KEY = "0x7ff1a4c1d57e5e784d327c4c7651e952350bc271f156afb3d00d20f5ef924856"
 SPAMOOR_L2_KEY = "0x3a91003acaf4c21b3953d94fa4a6db694fa69e5242b2e37be05dd82761058899"
+SPAMOOR_L2_MESSAGES_KEY = "0xbb1d0f125b4fb2bb173c318cdead45468474ca71474e2247776b2b4c0fa2d3f5"
 L2_MESSENGER = "0x8079000000000000000000000000000000000001"
 SEND_MESSAGE_ABI = json.dumps([{
     "type": "function", "name": "sendMessage", "stateMutability": "payable", "outputs": [],
@@ -280,8 +282,11 @@ class Episode:
         )
 
     def start_spamoor(self) -> None:
-        """Starts spamoor on each chain, at about one transaction per
-        scenario and L2 block."""
+        """Starts spamoor: about one L2 transaction per scenario and L2
+        block, and a message a minute per scenario in each direction, a pace
+        the relayer and the claimer keep up with. Spamoor paces a whole
+        process, so the L2 messages come from a process of their own, with
+        its own funding wallet."""
         a = self.args
         c = self.contracts
 
@@ -302,6 +307,8 @@ class Episode:
             {"scenario": "uniswap-swaps", "name": "Uniswap swaps", "config": {"throughput": 1, "max_wallets": 3}},
             {"scenario": "setcodetx", "name": "EIP-7702 delegations", "config": {"throughput": 1, "max_wallets": 2, "max_authorizations": 3}},
             {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {"throughput": 1, "max_wallets": 3, "envelope": "base"}},
+        ]
+        l2_messages = [
             messages("withdrawals", L2_MESSENGER, "{randomaddr}", "0x", 2 * MESSAGE_FEE // 10**9),
             messages("messages-to-l1", L2_MESSENGER, c["receiverL1"], "0xc0ffee", MESSAGE_FEE // 10**9, RECEIVER_GAS_LIMIT),
         ]
@@ -309,14 +316,23 @@ class Episode:
             messages("deposits", c["rollup"], "{randomaddr}", "0x", 10_000_000),
             messages("messages-to-l2", c["rollup"], c["receiverL2"], "0xc0ffee", MESSAGE_FEE // 10**9, RECEIVER_GAS_LIMIT),
         ]
-        for name, rpc, key, spammers in (("l1", a.rpc, SPAMOOR_L1_KEY, l1), ("l2", self.l2_rpc, SPAMOOR_L2_KEY, l2)):
+        self.contracts["spamoorL2Messages"] = cast("wallet", "address", "--private-key", SPAMOOR_L2_MESSAGES_KEY)
+        if int(json_rpc(self.l2_rpc, "eth_getBalance", self.contracts["spamoorL2Messages"], "latest"), 16) < 10 * ETH:
+            nonce = json_rpc(self.l2_rpc, "eth_getTransactionCount", self.contracts["spamoorL2"], "pending")
+            cast("send", "--rpc-url", self.l2_rpc, "--private-key", SPAMOOR_L2_KEY, "--nonce", str(int(nonce, 16)),
+                 self.contracts["spamoorL2Messages"], "--value", str(20 * ETH))
+        for name, rpc, key, slot, spammers in (
+            ("l1", a.rpc, SPAMOOR_L1_KEY, "60s", l1),
+            ("l2", self.l2_rpc, SPAMOOR_L2_KEY, f"{a.block_time}s", l2),
+            ("l2-messages", self.l2_rpc, SPAMOOR_L2_MESSAGES_KEY, "60s", l2_messages),
+        ):
             for spammer in spammers:
                 spammer["config"] = {"seed": f"{name}-{spammer['name']}", **fees, "max_pending": 3, **spammer["config"]}
             config = os.path.join(DATA, f"spamoor-{name}.json")
             write_json(config, spammers)
             log = open(os.path.join(DATA, f"spamoor-{name}.log"), "a")
             self.spamoor.append(subprocess.Popen(
-                [a.spamoor, "run", config, "-h", rpc, "-p", key, "--slot-duration", "60s"],
+                [a.spamoor, "run", config, "-h", rpc, "-p", key, "--slot-duration", slot],
                 stdout=log, stderr=subprocess.STDOUT,
             ))
         self.event("spamoor", "Spamoor starts generating activity on both chains")
@@ -543,7 +559,7 @@ def main() -> None:
     parser.add_argument("--zkevm-specs", default=os.path.expanduser("~/work/execution-specs-zkevm-frames"))
     parser.add_argument("--frames-specs", default=os.path.expanduser("~/work/execution-specs-frames"))
     parser.add_argument("--interval", type=float, default=12, help="seconds between steps of the story")
-    parser.add_argument("--block-time", type=int, default=12, help="seconds between L2 blocks")
+    parser.add_argument("--block-time", type=int, default=4, help="seconds between L2 blocks")
     parser.add_argument("--proving-time", type=int, default=20,
                         help="seconds the sequencer waits before posting a block, standing in for proving")
     parser.add_argument("--l2-port", type=int, default=8547, help="the port of the L2 node's RPC")

@@ -145,6 +145,7 @@ function labels() {
   add(c.claimer, "Claimer", "");
   add(c.spamoorL1, "Spamoor", "");
   add(c.spamoorL2, "Spamoor", "");
+  add(c.spamoorL2Messages, "Spamoor", "");
   add(c.receiverL1, "Message receiver", "");
   add(c.receiverL2, "Message receiver", "");
   return l;

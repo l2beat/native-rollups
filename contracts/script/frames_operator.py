@@ -535,7 +535,7 @@ def main() -> None:
     seq.add_argument("--sequencer-key", required=True, help="signs the preconfirmations and posts the blocks")
     seq.add_argument("--prover-key", required=True)
     seq.add_argument("--l2-rpc", required=True, help="the L2 node's RPC")
-    seq.add_argument("--block-time", type=int, default=12, help="seconds between L2 blocks")
+    seq.add_argument("--block-time", type=int, default=4, help="seconds between L2 blocks")
     seq.add_argument("--proving-time", type=int, default=20, help="seconds a block waits before it is posted")
     seq.add_argument("--log", required=True, help="append what happened to this file, one JSON line per event")
     adv = sub.add_parser("advance")
