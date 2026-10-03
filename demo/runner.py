@@ -1,9 +1,13 @@
 """
 Runs the native rollup demo on the local frames devnet (`contracts/frames/`).
 
-It deploys a fresh rollup, starts the L2 node with its RPC and a follower
-that rebuilds the L2 chain from L1 on its own, then plays a scripted story,
-adding one L2 block per step: Alice and Bob deposit from L1, and once an
+It deploys a fresh rollup with the preconfirmations customization, starts
+the L2 node with its RPC, the operator's sequencer, and a follower that
+rebuilds the L2 chain from L1 on its own. The sequencer preconfirms a block
+every 4 seconds, empty if no transaction waits, and posts each once a
+stand-in proving time has passed. Each block's preconfirmation and post go
+to `demo/data/blocks/<number>.json`. The runner meanwhile plays a scripted
+story, one step every few seconds: Alice and Bob deposit from L1, and once an
 L2 block anchors their deposits, each claims theirs with a frame transaction
 they sign, which pays for itself. The users pay each other through the
 L2 RPC, and Charlie, who never deposits, withdraws ETH received on L2 to L1
@@ -30,6 +34,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -57,9 +62,11 @@ USER_KEYS = {
 RELAYER_KEY = "0x5d2344259f42259f82d2c140aa66102ba89b57b4883ee441a8b312622bd42491"
 # Claims L2 to L1 messages that their recipients cannot claim, for their fee.
 CLAIMER_KEY = "0x27515f805127bebad2fb9b183508bdacb8c763da16f54e0678b16e8f28ef3fff"
-# Spamoor's funding wallets: on L1 for deposits, on L2 for everything else.
+# Spamoor's funding wallets: on L1 for deposits, on L2 for its transactions,
+# and on L2 for its messages to L1, which it sends at a slower pace.
 SPAMOOR_L1_KEY = "0x7ff1a4c1d57e5e784d327c4c7651e952350bc271f156afb3d00d20f5ef924856"
 SPAMOOR_L2_KEY = "0x3a91003acaf4c21b3953d94fa4a6db694fa69e5242b2e37be05dd82761058899"
+SPAMOOR_L2_MESSAGES_KEY = "0xbb1d0f125b4fb2bb173c318cdead45468474ca71474e2247776b2b4c0fa2d3f5"
 L2_MESSENGER = "0x8079000000000000000000000000000000000001"
 SEND_MESSAGE_ABI = json.dumps([{
     "type": "function", "name": "sendMessage", "stateMutability": "payable", "outputs": [],
@@ -82,6 +89,9 @@ L1_CLAIM_GAS = 400_000
 ETH = 10**18
 # What a user keeps on L2 for fees.
 RESERVE = ETH // 20
+# The sequencer's bond, which the rollup contract slashes if a block it
+# preconfirmed is not the one the rollup has at that height.
+BOND = 10 * ETH
 
 
 def run(cmd: list, cwd: str = CONTRACTS) -> str:
@@ -93,6 +103,18 @@ def run(cmd: list, cwd: str = CONTRACTS) -> str:
 
 def cast(*args: str) -> str:
     return run(["cast", *args]).strip()
+
+
+def devnet_url(container: str, port: int) -> str | None:
+    """The local URL of `port` of the devnet container whose name starts
+    with `container`, as kurtosis names them. Docker assigns new host ports
+    whenever it restarts."""
+    names = subprocess.run(["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True).stdout.split()
+    name = next((n for n in names if n.startswith(container)), None)
+    if name is None:
+        return None
+    mapping = subprocess.run(["docker", "port", name, str(port)], capture_output=True, text=True).stdout.splitlines()
+    return f"http://127.0.0.1:{mapping[0].rsplit(':', 1)[1]}" if mapping else None
 
 
 def json_rpc(url: str, method: str, *params):
@@ -125,6 +147,7 @@ class Episode:
         self.lock = threading.Lock()
         self.node = None
         self.follower = None
+        self.operator = None
         self.spamoor = []
 
     # Recording
@@ -152,6 +175,7 @@ class Episode:
             ["forge", "script", "script/DeployFrames.s.sol", "--rpc-url", a.rpc, "--broadcast", "--slow", "--skip-simulation"],
             cwd=CONTRACTS, capture_output=True, text=True, timeout=300,
             env={**os.environ, "PRIVATE_KEY": OPERATOR_KEY, "PROVER": prover["address"], "ROLLUP": rollup,
+                 "SEQUENCER": cast("wallet", "address", "--private-key", OPERATOR_KEY), "BOND": str(BOND),
                  "GENESIS_HASH": genesis["genesisHash"], "GENESIS_STATE_ROOT": genesis["genesisStateRoot"]},
         )
         found = dict(re.findall(r"^\s+(registry|verifier|rollup|helper)\s+(0x[0-9a-fA-F]{40})", out.stdout, re.M))
@@ -175,6 +199,8 @@ class Episode:
         self.contracts["receiverL1"] = json.loads(receiver)["contractAddress"]
         self.session["contracts"] = self.contracts
         write_json(PROVER, {"rollup": found["rollup"], "key": self.prover_key})
+        # The previous rollup's blocks.
+        shutil.rmtree(os.path.join(DATA, "blocks"), ignore_errors=True)
         self.event("deployed", "Deployed a new rollup on L1", contracts=self.contracts)
         self.start()
 
@@ -194,7 +220,7 @@ class Episode:
             return None
         self.session, self.contracts, self.users, self.prover_key = session, contracts, contracts["users"], prover["key"]
         self.number = session["episode"]
-        steps = sum(1 for e in session["events"] if e["type"] == "advance")
+        steps = session.get("step", -1) + 1
         self.event("resumed", "Resumed the rollup")
         self.start()
         if steps > 3 and self.args.spamoor:
@@ -204,6 +230,7 @@ class Episode:
     def start(self) -> None:
         self.start_node()
         self.start_follower()
+        self.start_operator()
         # Withdrawals already claimed on L1, when resuming, before the claimer
         # looks for withdrawals to claim.
         for index, _, _, _ in self.withdrawals():
@@ -255,8 +282,11 @@ class Episode:
         )
 
     def start_spamoor(self) -> None:
-        """Starts spamoor on each chain, at about one transaction per
-        scenario and L2 block."""
+        """Starts spamoor: about one L2 transaction per scenario and L2
+        block, and a message a minute per scenario in each direction, a pace
+        the relayer and the claimer keep up with. Spamoor paces a whole
+        process, so the L2 messages come from a process of their own, with
+        its own funding wallet."""
         a = self.args
         c = self.contracts
 
@@ -277,6 +307,8 @@ class Episode:
             {"scenario": "uniswap-swaps", "name": "Uniswap swaps", "config": {"throughput": 1, "max_wallets": 3}},
             {"scenario": "setcodetx", "name": "EIP-7702 delegations", "config": {"throughput": 1, "max_wallets": 2, "max_authorizations": 3}},
             {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {"throughput": 1, "max_wallets": 3, "envelope": "base"}},
+        ]
+        l2_messages = [
             messages("withdrawals", L2_MESSENGER, "{randomaddr}", "0x", 2 * MESSAGE_FEE // 10**9),
             messages("messages-to-l1", L2_MESSENGER, c["receiverL1"], "0xc0ffee", MESSAGE_FEE // 10**9, RECEIVER_GAS_LIMIT),
         ]
@@ -284,20 +316,82 @@ class Episode:
             messages("deposits", c["rollup"], "{randomaddr}", "0x", 10_000_000),
             messages("messages-to-l2", c["rollup"], c["receiverL2"], "0xc0ffee", MESSAGE_FEE // 10**9, RECEIVER_GAS_LIMIT),
         ]
-        for name, rpc, key, spammers in (("l1", a.rpc, SPAMOOR_L1_KEY, l1), ("l2", self.l2_rpc, SPAMOOR_L2_KEY, l2)):
+        self.contracts["spamoorL2Messages"] = cast("wallet", "address", "--private-key", SPAMOOR_L2_MESSAGES_KEY)
+        if int(json_rpc(self.l2_rpc, "eth_getBalance", self.contracts["spamoorL2Messages"], "latest"), 16) < 10 * ETH:
+            nonce = json_rpc(self.l2_rpc, "eth_getTransactionCount", self.contracts["spamoorL2"], "pending")
+            cast("send", "--rpc-url", self.l2_rpc, "--private-key", SPAMOOR_L2_KEY, "--nonce", str(int(nonce, 16)),
+                 self.contracts["spamoorL2Messages"], "--value", str(20 * ETH))
+        for name, rpc, key, slot, spammers in (
+            ("l1", a.rpc, SPAMOOR_L1_KEY, "60s", l1),
+            ("l2", self.l2_rpc, SPAMOOR_L2_KEY, f"{a.block_time}s", l2),
+            ("l2-messages", self.l2_rpc, SPAMOOR_L2_MESSAGES_KEY, "60s", l2_messages),
+        ):
             for spammer in spammers:
                 spammer["config"] = {"seed": f"{name}-{spammer['name']}", **fees, "max_pending": 3, **spammer["config"]}
             config = os.path.join(DATA, f"spamoor-{name}.json")
             write_json(config, spammers)
             log = open(os.path.join(DATA, f"spamoor-{name}.log"), "a")
             self.spamoor.append(subprocess.Popen(
-                [a.spamoor, "run", config, "-h", rpc, "-p", key, "--slot-duration", "60s"],
+                [a.spamoor, "run", config, "-h", rpc, "-p", key, "--slot-duration", slot],
                 stdout=log, stderr=subprocess.STDOUT,
             ))
         self.event("spamoor", "Spamoor starts generating activity on both chains")
 
+    def start_operator(self) -> None:
+        """Starts the sequencer, and files what it reports by block."""
+        a = self.args
+        log = os.path.join(DATA, "operator.jsonl")
+        open(log, "a").close()
+        threading.Thread(target=self.file_blocks, args=(log, os.path.getsize(log)), daemon=True).start()
+        self.operator = subprocess.Popen(
+            ["uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "sequence",
+             "--rpc", a.rpc, *[x for url in a.submit_rpc for x in ("--submit-rpc", url)], "--rollup", self.contracts["rollup"],
+             "--verifier", self.contracts["verifier"], "--sequencer-key", OPERATOR_KEY, "--prover-key", self.prover_key,
+             "--l2-rpc", self.l2_rpc, "--block-time", str(a.block_time), "--proving-time", str(a.proving_time), "--log", log],
+            cwd=CONTRACTS, stdout=open(os.path.join(DATA, "operator.log"), "a"), stderr=subprocess.STDOUT,
+        )
+
+    def file_blocks(self, log: str, offset: int) -> None:
+        """Merges each preconfirmation and post the sequencer reports into
+        its block's file, and keeps the session's summary of them: the
+        latest preconfirmed and posted blocks, the preconfirmed blocks L1
+        does not have yet, and the recent times from preconfirmation to L1."""
+        blocks = os.path.join(DATA, "blocks")
+        os.makedirs(blocks, exist_ok=True)
+        with open(log, "rb") as f:
+            f.seek(offset)
+            while True:
+                line = f.readline()
+                if not line.endswith(b"\n"):
+                    time.sleep(0.5)
+                    f.seek(f.tell() - len(line))
+                    continue
+                entry = json.loads(line)
+                n = entry["l2"]["number"]
+                path = os.path.join(blocks, f"{n}.json")
+                stored = json.load(open(path)) if os.path.exists(path) else {}
+                write_json(path, {**stored, **{k: v for k, v in entry.items() if k != "type"}})
+                p = entry["preconfirmation"]
+                with self.lock:
+                    head = self.session.setdefault("head", {"preconfirmed": 0, "posted": 0})
+                    waiting = self.session.setdefault("waiting", [])
+                    if entry["type"] == "preconfirm":
+                        head["preconfirmed"] = max(head["preconfirmed"], n)
+                        waiting.append({
+                            **p, "transactions": entry["l2"]["transactions"], "gasUsed": entry["l2"]["gasUsed"],
+                            "txs": entry["l2"].get("txs", []),
+                        })
+                    else:
+                        head["posted"] = max(head["posted"], n)
+                        self.session["waiting"] = [w for w in waiting if w["number"] > head["posted"]]
+                        timings = self.session.setdefault("timings", [])
+                        timings.append({"number": n, "preconfirmed": p["time"], "posted": entry["l1"]["timestamp"]})
+                        del timings[:-30]
+                    write_json(os.path.join(DATA, "session.json"), self.session)
+                print(f"[episode {self.number}] L2 block {n} is {'preconfirmed' if entry['type'] == 'preconfirm' else 'on L1'}", flush=True)
+
     def stop(self) -> None:
-        for process in (*self.spamoor, self.follower, self.node):
+        for process in (*self.spamoor, self.operator, self.follower, self.node):
             if process and process.poll() is None:
                 process.terminate()
                 process.wait(timeout=30)
@@ -343,23 +437,11 @@ class Episode:
             to = random.choice([u for u in USER_KEYS if u != sender])
             self.pay(sender, to, self.spendable(sender) * random.randint(2, 12) // 100 // 10**14 * 10**14)
 
-    def advance(self) -> None:
-        a = self.args
-        run([
-            "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "advance",
-            "--rpc", a.rpc, "--submit-rpc", a.submit_rpc, "--rollup", self.contracts["rollup"],
-            "--verifier", self.contracts["verifier"], "--operator-key", OPERATOR_KEY,
-            "--prover-key", self.prover_key, "--l2-rpc", self.l2_rpc, "--record", self.record,
-        ])
-        record = json.load(open(self.record))
-        n = record["l2"]["number"]
-        self.event("advance", f"L2 block {n} is on L1", **{k: v for k, v in record.items() if k != "type"})
-
     def withdrawals(self) -> list:
         """The withdrawals in L2 blocks the rollup has, with their index,
         recipient, fee and gas limit."""
         logs = json_rpc(self.l2_rpc, "eth_getLogs", {
-            "address": L2_MESSENGER, "fromBlock": "0x0", "toBlock": "latest", "topics": [L2_MESSAGE_SENT],
+            "address": L2_MESSENGER, "fromBlock": "0x0", "toBlock": "safe", "topics": [L2_MESSAGE_SENT],
         })
         return [
             (int(log["topics"][1], 16), "0x" + log["topics"][3][-40:], int(log["data"][66:130], 16), int(log["data"][130:194], 16))
@@ -421,10 +503,11 @@ class Episode:
             time.sleep(10)
 
     def step(self, i: int) -> None:
-        """The story: the first steps show each flow once, then they recur.
-        Each step ends with an L2 block."""
+        """The story: the first steps show each flow once, then they recur."""
         if self.node.poll() is not None:
             raise RuntimeError("the L2 node stopped")
+        if self.operator.poll() is not None:
+            raise RuntimeError("the sequencer stopped")
         # Claiming can fail, as can any transaction, but the block must go on.
         for claims in (self.claim_withdrawals, self.claim_deposits):
             try:
@@ -462,23 +545,33 @@ class Episode:
                     busy = (rich,)
             for _ in range(random.randint(1, 2)):
                 self.random_payment(busy)
-        self.advance()
+        with self.lock:
+            self.session["step"] = i
+            write_json(os.path.join(DATA, "session.json"), self.session)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rpc", default="http://127.0.0.1:51764", help="an L1 RPC for reads and ordinary transactions")
-    parser.add_argument("--submit-rpc", default="http://127.0.0.1:51746",
-                        help="a Nethermind or Reth RPC, which accept blob-carrying frame transactions")
-    parser.add_argument("--beacon", default="http://127.0.0.1:51846")
+    parser.add_argument("--rpc", help="an L1 RPC for reads and ordinary transactions, by default the devnet's Reth")
+    parser.add_argument("--submit-rpc", nargs="+",
+                        help="RPCs that accept blob-carrying frame transactions, by default the devnet's Nethermind and Reth")
+    parser.add_argument("--beacon", help="a beacon API that serves blobs, by default the devnet's first Lighthouse")
     parser.add_argument("--zkevm-specs", default=os.path.expanduser("~/work/execution-specs-zkevm-frames"))
     parser.add_argument("--frames-specs", default=os.path.expanduser("~/work/execution-specs-frames"))
-    parser.add_argument("--interval", type=float, default=12, help="seconds between steps")
+    parser.add_argument("--interval", type=float, default=12, help="seconds between steps of the story")
+    parser.add_argument("--block-time", type=int, default=4, help="seconds between L2 blocks")
+    parser.add_argument("--proving-time", type=int, default=20,
+                        help="seconds the sequencer waits before posting a block, standing in for proving")
     parser.add_argument("--l2-port", type=int, default=8547, help="the port of the L2 node's RPC")
     parser.add_argument("--spamoor", default=os.path.expanduser("~/work/spamoor/bin/spamoor"),
                         help="the spamoor binary, or empty for the story alone")
     parser.add_argument("--new", action="store_true", help="deploy a new rollup instead of resuming the last one")
     args = parser.parse_args()
+    # Reads go to Reth: Nethermind encodes frame transactions differently
+    # from geth and Reth, with other field names and plain numbers.
+    args.rpc = args.rpc or devnet_url("el-2-reth", 8545)
+    args.submit_rpc = args.submit_rpc or [devnet_url("el-1-nethermind", 8545), devnet_url("el-2-reth", 8545)]
+    args.beacon = args.beacon or devnet_url("cl-1-lighthouse", 4000)
     os.makedirs(DATA, exist_ok=True)
 
     number = 1
@@ -495,7 +588,7 @@ def main() -> None:
                 try:
                     episode.step(i)
                 except Exception as e:  # keep the story going, and show what failed
-                    if episode.node.poll() is not None:
+                    if episode.node.poll() is not None or episode.operator.poll() is not None:
                         raise
                     episode.event("error", "A step failed", message=str(e)[-400:])
                     traceback.print_exc()

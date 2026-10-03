@@ -195,7 +195,7 @@ abstract contract NativeRollup {
         emit L2MessageClaimed(m.index, m.sender, m.to, m.value, m.fee, feeRecipient);
     }
 
-    function advance(BlockParams calldata params, uint256 dependencyFrameIndex) external {
+    function advance(BlockParams calldata params, uint256 dependencyFrameIndex) public virtual {
         // 1. Read the EIP-8288 dependency declared by this transaction.
         (uint8 scheme, bytes32 dataHash, bytes32 vkHash) = _readDependency(dependencyFrameIndex);
         require(scheme == LEANSTARK_SCHEME, "not a LeanSTARK dependency");

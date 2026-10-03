@@ -68,8 +68,11 @@ class Signatures:
         self.events = {}  # topic -> ABI entries, one per indexing
         self.creations = {}  # creation code -> the artifacts and bindings that have it
         for directory in self.roots:
-            for root, _, files in os.walk(directory):
-                for name in files:
+            # In a fixed order, since the first ABI that decodes a topic or
+            # selector names its arguments.
+            for root, dirs, files in os.walk(directory):
+                dirs.sort()
+                for name in sorted(files):
                     path = os.path.join(root, name)
                     try:
                         if name.endswith(".json"):
@@ -539,7 +542,8 @@ def addresses(tx: dict) -> list:
         found.append(log["address"])
         event = log.get("event") or {}
         if event.get("name") == "Transfer":
-            found += [event["args"]["from"], event["args"]["to"]]
+            # By position: WETH names them src and dst.
+            found += list(event["args"].values())[:2]
     out = []
     for a in found:
         if a and a.lower() not in out:

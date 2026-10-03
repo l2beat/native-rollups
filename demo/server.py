@@ -15,13 +15,16 @@ import time
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
+from runner import devnet_url
+
 DEMO = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(DEMO, "data")
 ROOT = os.path.dirname(DEMO)
 
 # The contracts the explorer shows code from.
 SOURCES = [
-    "src/NativeRollup.sol", "src/frames/FramesNativeRollup.sol", "src/frames/MockDependencyVerifier.sol", "src/frames/Frames.sol",
+    "src/NativeRollup.sol", "src/SequencedNativeRollup.sol", "src/frames/FramesNativeRollup.sol",
+    "src/frames/FramesSequencedRollup.sol", "src/frames/MockDependencyVerifier.sol", "src/frames/Frames.sol",
     "src/l2/L2Messenger.sol", "src/libs/Messages.sol", "src/libs/MessageTree.sol", "src/libs/MptProof.sol",
     "src/NativeRollupSsz.sol",
 ]
@@ -163,6 +166,10 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(json.dumps(self.server.sources).encode())
         if self.path == "/api/snippets":
             return self.send_json(json.dumps(self.server.snippets).encode())
+        if re.fullmatch(r"/api/blocks/[0-9]+", self.path):
+            # What the sequencer reported about the block: its preconfirmation and post.
+            path = os.path.join(DATA, "blocks", self.path.split("/")[-1] + ".json")
+            return self.send_json(open(path, "rb").read() if os.path.exists(path) else b"null")
         if self.path in ("/api/session", "/api/follower"):
             path = os.path.join(DATA, self.path.split("/")[-1] + ".json")
             return self.send_json(open(path, "rb").read() if os.path.exists(path) else b"null")
@@ -194,11 +201,15 @@ class Handler(SimpleHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8088)
-    parser.add_argument("--rpc", default="http://127.0.0.1:51764")
-    parser.add_argument("--beacon", default="http://127.0.0.1:51846")
+    parser.add_argument("--rpc", help="an L1 RPC, by default the devnet's Reth")
+    parser.add_argument("--beacon", help="a beacon API, by default the devnet's first Lighthouse")
     parser.add_argument("--sys-asm", default=os.path.expanduser("~/work/sys-asm"), help="for the EIP-8357 registry's source")
     parser.add_argument("--l2beat", default=os.path.expanduser("~/work/l2beat"), help="for L2BEAT's flattener")
     args = parser.parse_args()
+    # Reads go to Reth: Nethermind encodes frame transactions differently
+    # from geth and Reth, with other field names and plain numbers.
+    args.rpc = args.rpc or devnet_url("el-2-reth", 8545)
+    args.beacon = args.beacon or devnet_url("cl-1-lighthouse", 4000)
     # Pages fetch many small files at once.
     ThreadingHTTPServer.request_queue_size = 256
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)

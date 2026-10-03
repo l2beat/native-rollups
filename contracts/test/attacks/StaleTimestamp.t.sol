@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {NativeRollupTest} from "../NativeRollup.t.sol";
+import {NativeRollupFixture} from "../NativeRollup.t.sol";
 
 /// @notice Attack round: without a lower bound on L2 timestamps, whoever
 ///         builds a block could keep L2 time in the past, past users'
 ///         deadlines.
-contract StaleTimestampTest is NativeRollupTest {
+contract StaleTimestampTest is NativeRollupFixture {
     function test_rejectsL2TimeAMonthBehind() public {
         _setL1Context(0);
         rollup.setDependency(LEANSTARK, _publicInputRoot(0), K1);
