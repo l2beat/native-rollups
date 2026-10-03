@@ -133,6 +133,24 @@ def l2_rpc(url: str, method: str, *params):
     return out["result"]
 
 
+def send_raw_transaction(url: str, raw: bytes) -> str:
+    # Over JSON-RPC rather than with cast: a blob transaction is longer than
+    # Linux allows one command-line argument to be.
+    request = urllib.request.Request(
+        url,
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_sendRawTransaction", "params": [hx(raw)]}).encode(),
+        {"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            out = json.load(response)
+    except OSError as e:
+        raise SystemExit(str(e))
+    if "error" in out:
+        raise SystemExit(out["error"]["message"])
+    return out["result"]
+
+
 def wait_for_receipt(rpc: str, tx_hash: str, blocks: int = 40) -> dict:
     """Polls for the receipt, giving up after `blocks` L1 blocks."""
     last = int(cast("block-number", "--rpc-url", rpc)) + blocks
@@ -294,7 +312,7 @@ def send_post(args: argparse.Namespace, bundle: dict, nonce: int) -> str:
     sent = []
     for url in args.submit_rpc or [rpc]:
         try:
-            sent.append(json.loads(cast("rpc", "--rpc-url", url, "eth_sendRawTransaction", hx(wrapped))))
+            sent.append(send_raw_transaction(url, wrapped))
         except SystemExit as e:
             print(f"{url} refused it: {e}", flush=True)
     if not sent:

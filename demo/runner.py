@@ -536,7 +536,7 @@ class Episode:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rpc", help="an L1 RPC for reads and ordinary transactions, by default the devnet's geth")
+    parser.add_argument("--rpc", help="an L1 RPC for reads and ordinary transactions, by default the devnet's Reth")
     parser.add_argument("--submit-rpc", nargs="+",
                         help="RPCs that accept blob-carrying frame transactions, by default the devnet's Nethermind and Reth")
     parser.add_argument("--beacon", help="a beacon API that serves blobs, by default the devnet's first Lighthouse")
@@ -551,8 +551,10 @@ def main() -> None:
                         help="the spamoor binary, or empty for the story alone")
     parser.add_argument("--new", action="store_true", help="deploy a new rollup instead of resuming the last one")
     args = parser.parse_args()
-    args.rpc = args.rpc or devnet_url("el-1-geth", 8545)
-    args.submit_rpc = args.submit_rpc or [devnet_url("el-2-nethermind", 8545), devnet_url("el-3-reth", 8545)]
+    # Reads go to Reth: Nethermind encodes frame transactions differently
+    # from geth and Reth, with other field names and plain numbers.
+    args.rpc = args.rpc or devnet_url("el-2-reth", 8545)
+    args.submit_rpc = args.submit_rpc or [devnet_url("el-1-nethermind", 8545), devnet_url("el-2-reth", 8545)]
     args.beacon = args.beacon or devnet_url("cl-1-lighthouse", 4000)
     os.makedirs(DATA, exist_ok=True)
 

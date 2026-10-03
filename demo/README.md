@@ -14,8 +14,8 @@ Its L2 data comes from the follower, which rebuilds every block from L1 alone, a
 Start the local network as in `contracts/frames/README.md`, then:
 
 ```shell
-python3 demo/runner.py --rpc <geth rpc> --submit-rpc <nethermind rpc> --beacon <beacon api>
-python3 demo/server.py --rpc <geth rpc> --beacon <beacon api>
+python3 demo/runner.py
+python3 demo/server.py
 ```
 
-and open http://127.0.0.1:8088. Kurtosis maps the ports at random, for example `kurtosis port print frames el-1-geth-lighthouse rpc`. The runner takes the paths of the two execution-specs environments with `--zkevm-specs` and `--frames-specs`. The finding cards link to the book served locally by `mdbook serve` on port 3000.
+and open http://127.0.0.1:8088. Both find the devnet's Nethermind, Reth and beacon node through Docker, or take them with `--rpc`, `--submit-rpc` and `--beacon`. The runner takes the paths of the two execution-specs environments with `--zkevm-specs` and `--frames-specs`. The finding cards link to the book served locally by `mdbook serve` on port 3000.

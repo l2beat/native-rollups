@@ -201,12 +201,14 @@ class Handler(SimpleHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8088)
-    parser.add_argument("--rpc", help="an L1 RPC, by default the devnet's geth")
+    parser.add_argument("--rpc", help="an L1 RPC, by default the devnet's Reth")
     parser.add_argument("--beacon", help="a beacon API, by default the devnet's first Lighthouse")
     parser.add_argument("--sys-asm", default=os.path.expanduser("~/work/sys-asm"), help="for the EIP-8357 registry's source")
     parser.add_argument("--l2beat", default=os.path.expanduser("~/work/l2beat"), help="for L2BEAT's flattener")
     args = parser.parse_args()
-    args.rpc = args.rpc or devnet_url("el-1-geth", 8545)
+    # Reads go to Reth: Nethermind encodes frame transactions differently
+    # from geth and Reth, with other field names and plain numbers.
+    args.rpc = args.rpc or devnet_url("el-2-reth", 8545)
     args.beacon = args.beacon or devnet_url("cl-1-lighthouse", 4000)
     # Pages fetch many small files at once.
     ThreadingHTTPServer.request_queue_size = 256
