@@ -17,7 +17,8 @@ L2 to L1 messages go the other way: the messenger's `sendMessage` locks the valu
 ## Local network
 
 ```shell
-kurtosis run github.com/ethpandaops/ethereum-package --enclave frames --args-file frames/kurtosis.yaml
+kurtosis run github.com/ethpandaops/ethereum-package@6dd3f2613d1f9d1a9274864083c692726146c9db \
+    --enclave frames --args-file frames/kurtosis.yaml
 ```
 
 Frame transactions work from epoch 1, when the EIP-8141 fork activates. `advance` transactions carry blobs, and of the frames-devnet-0 clients only Nethermind and Reth accept blob-carrying frame transactions, in the EIP-7594 network form, so the network runs these two. geth rejects that form and accepts the transaction without its blobs, which then makes the payloads it builds invalid until the transaction leaves its pool. ethrex does not support them yet.

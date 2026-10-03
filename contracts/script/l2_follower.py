@@ -56,7 +56,7 @@ ADVANCE_SELECTOR = keccak256(
 
 
 def cast(*args: str) -> str:
-    return subprocess.run(["cast", *args], check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["cast", *args], check=True, capture_output=True, text=True, timeout=180).stdout.strip()
 
 
 def rpc(url: str, method: str, *params: str):
@@ -64,7 +64,7 @@ def rpc(url: str, method: str, *params: str):
 
 
 def http_get(url: str):
-    return json.loads(subprocess.run(["curl", "-sf", url], check=True, capture_output=True, text=True).stdout)
+    return json.loads(subprocess.run(["curl", "-sf", "-m", "60", url], check=True, capture_output=True, text=True).stdout)
 
 
 def decode_advance(data: bytes) -> dict:

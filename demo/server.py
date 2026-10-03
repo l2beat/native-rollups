@@ -11,7 +11,9 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
+import urllib.error
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -29,11 +31,11 @@ SOURCES = [
     "src/NativeRollupSsz.sol",
 ]
 
+# The L1 reads the page makes, and nothing else: anyone can reach them.
 READ_METHODS = {
-    "eth_blockNumber", "eth_chainId", "eth_call", "eth_getBalance", "eth_getBlockByNumber",
-    "eth_getTransactionByHash", "eth_getTransactionReceipt", "eth_getLogs", "eth_blobBaseFee", "eth_getCode",
-    "eth_getTransactionCount",
+    "eth_blockNumber", "eth_call", "eth_getBalance", "eth_getBlockByNumber", "eth_getCode", "eth_getTransactionCount",
 }
+MAX_REQUEST_BYTES = 4096
 BEACON_PATHS = ("/eth/v1/beacon/blobs/", "/eth/v1/beacon/genesis", "/eth/v1/config/spec")
 # ETH's price in USD, for the explorer's mainnet fee estimates.
 PRICE_URL = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
@@ -142,18 +144,59 @@ def eth_price(server) -> float | None:
     return server.price
 
 
+def allowed(request) -> bool:
+    """Whether a JSON-RPC request is one the page makes. Its calls are view
+    functions without arguments, so `eth_call` takes a target and a selector
+    only, which keeps arbitrary code off the L1 node."""
+    if not isinstance(request, dict) or request.get("method") not in READ_METHODS:
+        return False
+    if request["method"] != "eth_call":
+        return True
+    params = request.get("params")
+    return (
+        isinstance(params, list) and len(params) == 2 and params[1] == "latest" and isinstance(params[0], dict)
+        and set(params[0]) == {"to", "data"} and re.fullmatch(r"0x[0-9a-fA-F]{8}", str(params[0]["data"])) is not None
+    )
+
+
 class Handler(SimpleHTTPRequestHandler):
+    # Seconds a connection may stay idle, so slow clients do not hold threads.
+    timeout = 30
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=os.path.join(DEMO, "site"), **kwargs)
 
     def send_json(self, body: bytes, status: int = 200) -> None:
-        self.send_response(status)
-        self.send_header("content-type", "application/json")
-        self.send_header("cache-control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("content-type", "application/json")
+            self.send_header("cache-control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the client left
+
+    def forward(self, request: urllib.request.Request) -> None:
+        """Answers with what the L1 or beacon node answers, or 502."""
+        try:
+            with urllib.request.urlopen(request, timeout=20) as r:
+                return self.send_json(r.read())
+        except urllib.error.HTTPError as e:
+            return self.send_json(e.read() or b'{"error": "upstream error"}', e.code)
+        except OSError:
+            return self.send_json(b'{"error": "the chain is not reachable"}', 502)
 
     def do_GET(self):
+        if self.path == "/book":
+            self.send_response(301)
+            self.send_header("location", "/book/")
+            self.end_headers()
+            return
+        if self.path.startswith("/book/"):
+            # The book, as `mdbook build` builds it from this checkout.
+            self.directory = os.path.join(ROOT, "book")
+            self.path = self.path[len("/book"):]
+            return super().do_GET()
         if self.path.startswith("/api/explorer/"):
             relative = self.path[len("/api/explorer/"):]
             path = os.path.join(DATA, "explorer", relative)
@@ -179,23 +222,35 @@ class Handler(SimpleHTTPRequestHandler):
             path = self.path[len("/beacon"):]
             if not path.startswith(BEACON_PATHS):
                 return self.send_json(b'{"error": "not allowed"}', 403)
-            with urllib.request.urlopen(self.server.beacon + path, timeout=20) as r:
-                return self.send_json(r.read())
+            return self.forward(urllib.request.Request(self.server.beacon + path))
         return super().do_GET()
 
     def do_POST(self):
         if self.path != "/rpc":
             return self.send_json(b'{"error": "not found"}', 404)
-        body = self.rfile.read(int(self.headers["content-length"]))
-        request = json.loads(body)
-        if request.get("method") not in READ_METHODS:
+        length = self.headers.get("content-length", "")
+        if not length.isdigit() or int(length) > MAX_REQUEST_BYTES:
+            return self.send_json(b'{"error": "too large"}', 413)
+        body = self.rfile.read(int(length))
+        try:
+            request = json.loads(body)
+        except ValueError:
+            return self.send_json(b'{"error": "not JSON"}', 400)
+        if not allowed(request):
             return self.send_json(b'{"error": "not allowed"}', 403)
-        forward = urllib.request.Request(self.server.rpc, data=body, headers={"content-type": "application/json"})
-        with urllib.request.urlopen(forward, timeout=20) as r:
-            return self.send_json(r.read())
+        return self.forward(urllib.request.Request(self.server.rpc, data=body, headers={"content-type": "application/json"}))
 
     def log_message(self, *args):
         pass
+
+
+class Server(ThreadingHTTPServer):
+    # Pages fetch many small files at once.
+    request_queue_size = 256
+
+    def handle_error(self, request, client_address):
+        if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError, TimeoutError)):
+            super().handle_error(request, client_address)
 
 
 def main() -> None:
@@ -210,9 +265,9 @@ def main() -> None:
     # from geth and Reth, with other field names and plain numbers.
     args.rpc = args.rpc or devnet_url("el-2-reth", 8545)
     args.beacon = args.beacon or devnet_url("cl-1-lighthouse", 4000)
-    # Pages fetch many small files at once.
-    ThreadingHTTPServer.request_queue_size = 256
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    if not args.rpc or not args.beacon:
+        sys.exit("the devnet is not running: start it, or pass --rpc and --beacon")
+    server = Server(("127.0.0.1", args.port), Handler)
     server.rpc, server.beacon = args.rpc, args.beacon
     server.snippets = extract_snippets()
     server.price, server.price_time = None, 0.0

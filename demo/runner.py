@@ -94,15 +94,20 @@ RESERVE = ETH // 20
 BOND = 10 * ETH
 
 
-def run(cmd: list, cwd: str = CONTRACTS) -> str:
-    out = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+def run(cmd: list, cwd: str = CONTRACTS, timeout: int = 900) -> str:
+    """Runs a command, which fails if it takes over `timeout` seconds, so
+    that nothing hangs the story. A claim on L1 waits for its receipt."""
+    try:
+        out = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{' '.join(cmd[:6])}...: no answer in {timeout} s")
     if out.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd[:6])}...: {(out.stderr or out.stdout).strip()[-600:]}")
     return out.stdout
 
 
 def cast(*args: str) -> str:
-    return run(["cast", *args]).strip()
+    return run(["cast", *args], timeout=180).strip()
 
 
 def devnet_url(container: str, port: int) -> str | None:
@@ -216,6 +221,11 @@ class Episode:
         rollup = contracts.get("rollup")
         if not rollup or prover.get("rollup") != rollup or not os.path.exists(self.state):
             return None
+        # A node still syncing L1 would not have the rollup yet: only trust
+        # its answer once it follows the chain's head.
+        latest = json_rpc(self.args.rpc, "eth_getBlockByNumber", "latest", False)
+        if int(latest["timestamp"], 16) < time.time() - 300:
+            raise RuntimeError("the L1 node is not at the chain's head yet")
         if cast("code", "--rpc-url", self.args.rpc, rollup) == "0x":
             return None
         self.session, self.contracts, self.users, self.prover_key = session, contracts, contracts["users"], prover["key"]
@@ -231,11 +241,6 @@ class Episode:
         self.start_node()
         self.start_follower()
         self.start_operator()
-        # Withdrawals already claimed on L1, when resuming, before the claimer
-        # looks for withdrawals to claim.
-        for index, _, _, _ in self.withdrawals():
-            if cast("call", "--rpc-url", self.args.rpc, self.contracts["rollup"], "claimedL2Messages(uint256)(bool)", str(index)) == "true":
-                self.claimed.add(index)
         threading.Thread(target=self.relay_withdrawals, daemon=True).start()
 
     def receiver_code(self, messenger: str, on_l2: bool) -> str:
@@ -342,7 +347,10 @@ class Episode:
         a = self.args
         log = os.path.join(DATA, "operator.jsonl")
         open(log, "a").close()
-        threading.Thread(target=self.file_blocks, args=(log, os.path.getsize(log)), daemon=True).start()
+        # From where filing stopped, if resuming, so no report is lost.
+        size = os.path.getsize(log)
+        filed = self.session.get("filed", size)
+        threading.Thread(target=self.file_blocks, args=(log, filed if filed <= size else 0), daemon=True).start()
         self.operator = subprocess.Popen(
             ["uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "sequence",
              "--rpc", a.rpc, *[x for url in a.submit_rpc for x in ("--submit-rpc", url)], "--rollup", self.contracts["rollup"],
@@ -365,18 +373,28 @@ class Episode:
                 if not line.endswith(b"\n"):
                     time.sleep(0.5)
                     f.seek(f.tell() - len(line))
+                    if os.path.getsize(log) < f.tell():
+                        f.seek(0)  # rotated: logrotate emptied it
                     continue
                 entry = json.loads(line)
                 n = entry["l2"]["number"]
                 path = os.path.join(blocks, f"{n}.json")
                 stored = json.load(open(path)) if os.path.exists(path) else {}
+                # Another block preconfirmed at this height, which never
+                # reached L1 and was dropped, stays as evidence.
+                old = stored.get("preconfirmation")
+                if entry["type"] == "preconfirm" and old and old["blockHash"] != entry["preconfirmation"]["blockHash"]:
+                    stored.setdefault("broken", []).append({"preconfirmation": old, "l2": stored.get("l2")})
                 write_json(path, {**stored, **{k: v for k, v in entry.items() if k != "type"}})
                 p = entry["preconfirmation"]
                 with self.lock:
                     head = self.session.setdefault("head", {"preconfirmed": 0, "posted": 0})
                     waiting = self.session.setdefault("waiting", [])
                     if entry["type"] == "preconfirm":
-                        head["preconfirmed"] = max(head["preconfirmed"], n)
+                        # A block preconfirmed at a height means the node
+                        # dropped any it had preconfirmed there and after.
+                        head["preconfirmed"] = n
+                        waiting = self.session["waiting"] = [w for w in waiting if w["number"] < n]
                         waiting.append({
                             **p, "transactions": entry["l2"]["transactions"], "gasUsed": entry["l2"]["gasUsed"],
                             "txs": entry["l2"].get("txs", []),
@@ -387,6 +405,7 @@ class Episode:
                         timings = self.session.setdefault("timings", [])
                         timings.append({"number": n, "preconfirmed": p["time"], "posted": entry["l1"]["timestamp"]})
                         del timings[:-30]
+                    self.session["filed"] = f.tell()
                     write_json(os.path.join(DATA, "session.json"), self.session)
                 print(f"[episode {self.number}] L2 block {n} is {'preconfirmed' if entry['type'] == 'preconfirm' else 'on L1'}", flush=True)
 
@@ -398,19 +417,31 @@ class Episode:
 
     # Story steps
 
-    def deposit(self, user: str, amount: str, key: str | None = None) -> None:
+    def deposit(self, user: str, amount: str, key: str | None = None, to: str | None = None, fee: int = 0) -> None:
+        """A deposit from `user`'s L1 account to its L2 account, or to `to`,
+        with a fee for whoever claims it, if the recipient does not."""
         key = key or USER_KEYS[user]
         address = cast("wallet", "address", "--private-key", key)
+        to = to or address
         receipt = json.loads(cast(
             "send", "--rpc-url", self.args.rpc, "--private-key", key, "--json", "--timeout", "120",
-            self.contracts["rollup"], "sendMessage(address,uint256,uint256,bytes)", address, "0", "0", "0x", "--value", amount,
+            self.contracts["rollup"], "sendMessage(address,uint256,uint256,bytes)", to, str(fee), "0", "0x", "--value", amount,
         ))
         self.event(
             "deposit", f"{user[0].upper() + user[1:]} deposits {amount.replace('ether', ' ETH')} from L1",
-            amount=amount, **{"from": address}, to=address,
+            amount=amount, **{"from": address}, to=to,
             l1={"txHash": receipt["transactionHash"], "block": int(receipt["blockNumber"], 16),
                 "gasUsed": int(receipt["gasUsed"], 16)},
         )
+
+    def fund_spamoor(self) -> None:
+        """Tops up spamoor's L2 funding wallets before they run dry. Spamoor
+        sends from them, so the deposits carry a fee, and the relayer claims
+        them instead of the wallets themselves."""
+        for wallet, low, amount in (("spamoorL2", 50 * ETH, "200ether"), ("spamoorL2Messages", 5 * ETH, "20ether")):
+            address = self.contracts.get(wallet)
+            if address and int(json_rpc(self.l2_rpc, "eth_getBalance", address, "latest"), 16) < low:
+                self.deposit("spamoor", amount, SPAMOOR_L2_KEY, to=address, fee=MESSAGE_FEE)
 
     def spendable(self, user: str) -> int:
         return max(0, int(json_rpc(self.l2_rpc, "eth_getBalance", self.users[user], "latest"), 16) - RESERVE)
@@ -449,12 +480,18 @@ class Episode:
         ]
 
     def claim(self, index: int, key: str, claimant: str) -> None:
+        """Claims an L2 to L1 message, unless anyone already did, such as
+        this runner before it restarted, with a claim still on its way."""
         a = self.args
+        if cast("call", "--rpc-url", a.rpc, self.contracts["rollup"], "claimedL2Messages(uint256)(bool)", str(index)) == "true":
+            self.claimed.add(index)
+            return
         run([
             "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "claim-l2-message",
             "--rpc", a.rpc, "--rollup", self.contracts["rollup"], "--key", key,
             "--index", str(index), "--l2-rpc", self.l2_rpc, "--record", self.record + f".{claimant}",
         ])
+        self.claimed.add(index)
         record = json.load(open(self.record + f".{claimant}"))
         value = record["message"]["value"] / ETH
         who = claimant if claimant in USER_KEYS else "The claimer"
@@ -469,7 +506,8 @@ class Episode:
         out = run([
             "uv", "run", "--project", a.zkevm_specs, "python", "script/l2_claims.py",
             "--l1-rpc", a.rpc, "--rollup", self.contracts["rollup"], "--l2-rpc", self.l2_rpc, "--relayer", RELAYER_KEY,
-            *[x for key in [*USER_KEYS.values(), SPAMOOR_L2_KEY] for x in ("--wallet", key)],
+            # Spamoor claims its first deposit itself, before it starts sending.
+            *[x for key in [*USER_KEYS.values(), *([] if self.spamoor else [SPAMOOR_L2_KEY])] for x in ("--wallet", key)],
         ])
         names = {address.lower(): name for name, address in self.users.items()}
         for line in out.splitlines():
@@ -481,11 +519,16 @@ class Episode:
     def claim_withdrawals(self) -> None:
         """Claims on L1 the withdrawals to the story's users, each with the
         recipient's key, though anyone could claim."""
+        failed = None
         for index, to, _, _ in self.withdrawals():
             user = next((u for u, address in self.users.items() if address.lower() == to), None)
             if user and index not in self.claimed:
-                self.claim(index, USER_KEYS[user], user)
-                self.claimed.add(index)
+                try:
+                    self.claim(index, USER_KEYS[user], user)
+                except Exception as e:  # the others still go ahead
+                    failed = e
+        if failed:
+            raise failed
 
     def relay_withdrawals(self) -> None:
         """Claims on L1, with the claimer's key, the withdrawals to addresses
@@ -496,8 +539,10 @@ class Episode:
                 price = int(cast("gas-price", "--rpc-url", self.args.rpc))
                 for index, to, fee, gas_limit in self.withdrawals():
                     if to not in users and index not in self.claimed and fee >= (L1_CLAIM_GAS + 2 * gas_limit) * price:
-                        self.claim(index, CLAIMER_KEY, "claimer")
-                        self.claimed.add(index)
+                        try:
+                            self.claim(index, CLAIMER_KEY, "claimer")
+                        except Exception:  # the others still go ahead
+                            traceback.print_exc()
             except Exception:
                 traceback.print_exc()
             time.sleep(10)
@@ -537,6 +582,8 @@ class Episode:
         else:
             if i % 6 == 0:
                 self.deposit(random.choice(["Alice", "Bob"]), "0.5ether")
+            if self.spamoor and i % 25 == 0:
+                self.fund_spamoor()
             busy = ()
             if i % 9 == 0:
                 rich = max(USER_KEYS, key=self.spendable)
@@ -572,6 +619,8 @@ def main() -> None:
     args.rpc = args.rpc or devnet_url("el-2-reth", 8545)
     args.submit_rpc = args.submit_rpc or [devnet_url("el-1-nethermind", 8545), devnet_url("el-2-reth", 8545)]
     args.beacon = args.beacon or devnet_url("cl-1-lighthouse", 4000)
+    if not args.rpc or not all(args.submit_rpc) or not args.beacon:
+        sys.exit("the devnet is not running: start it, or pass --rpc, --submit-rpc and --beacon")
     os.makedirs(DATA, exist_ok=True)
 
     number = 1

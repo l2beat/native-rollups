@@ -2,7 +2,8 @@
 # the EIP-8141 execution fork at epoch 1. It runs the two frames-devnet-0
 # clients whose pools take blob-carrying frame transactions, in the EIP-7594
 # network form: Nethermind and Reth. Run with:
-#   kurtosis run github.com/ethpandaops/ethereum-package --enclave frames --args-file frames/kurtosis.yaml
+#   kurtosis run github.com/ethpandaops/ethereum-package@6dd3f2613d1f9d1a9274864083c692726146c9db \
+#       --enclave frames --args-file frames/kurtosis.yaml
 participants:
   - el_type: nethermind
     el_image: ethpandaops/nethermind:frames-devnet-0
@@ -23,3 +24,10 @@ network_params:
   frames_enabled: true
   gas_limit: 200000000
   genesis_gaslimit: 200000000
+
+# Fixed host ports, so that a container keeps its address when it restarts.
+port_publisher:
+  el:
+    enabled: true
+  cl:
+    enabled: true

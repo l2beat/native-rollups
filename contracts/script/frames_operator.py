@@ -95,7 +95,10 @@ SENT_SLOT = 2  # L2Messenger.sentMessages
 
 
 def cast(*args: str) -> str:
-    out = subprocess.run(["cast", *args], capture_output=True, text=True)
+    try:
+        out = subprocess.run(["cast", *args], capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"cast {' '.join(a for a in args[:3] if len(a) < 80)}: no answer in 180 s")
     if out.returncode != 0:
         # The arguments can hold a whole blob transaction, so only the error.
         raise SystemExit(f"cast {' '.join(a for a in args[:3] if len(a) < 80)} failed: {out.stderr.strip()[-500:]}")
@@ -454,10 +457,21 @@ def record(path: str, entry: dict) -> None:
 
 def claim_l2_message(args: argparse.Namespace) -> None:
     rpc = args.rpc
-    head_hash = call(rpc, args.rollup, "blockHash()(bytes32)")
-    latest = l2_rpc(args.l2_rpc, "eth_getBlockByNumber", "safe", False)
-    if latest["hash"] != head_hash:
-        raise SystemExit(f"the L2 node's latest posted block is {latest['hash']}, the rollup's {head_hash}")
+    # The node's latest posted block, which the rollup contract keeps among
+    # its recent state roots even once it has newer blocks, and the proof
+    # against it: the node proves against its latest posted block, so both
+    # must come from the same one.
+    slot = int.from_bytes(keccak256(SENT_SLOT.to_bytes(32, "big")), "big") + args.index
+    for _ in range(5):
+        latest = l2_rpc(args.l2_rpc, "eth_getBlockByNumber", "safe", False)
+        proof = l2_rpc(args.l2_rpc, "eth_getProof", L2_MESSENGER, [f"0x{slot:064x}"], "safe")
+        if l2_rpc(args.l2_rpc, "eth_getBlockByNumber", "safe", False)["hash"] == latest["hash"]:
+            break
+    else:
+        raise SystemExit("the node kept marking blocks posted while proving")
+    root = cast("call", "--rpc-url", rpc, args.rollup, "stateRootAt(uint256)(bytes32)", str(int(latest["number"], 16)))
+    if root != latest["stateRoot"]:
+        raise SystemExit(f"the rollup's state root at L2 block {int(latest['number'], 16)} is {root}, the node's {latest['stateRoot']}")
     logs = l2_rpc(args.l2_rpc, "eth_getLogs", {
         "address": L2_MESSENGER, "fromBlock": "0x0", "toBlock": "safe",
         "topics": [hx(L2_MESSAGE_SENT), f"0x{args.index:064x}"],
@@ -474,8 +488,6 @@ def claim_l2_message(args: argparse.Namespace) -> None:
     }
     # The claimer receives the message's fee, if any.
     claimer = cast("wallet", "address", "--private-key", args.key)
-    slot = int.from_bytes(keccak256(SENT_SLOT.to_bytes(32, "big")), "big") + args.index
-    proof = l2_rpc(args.l2_rpc, "eth_getProof", L2_MESSENGER, [f"0x{slot:064x}"], "safe")
     p = {
         "blockNumber": int(latest["number"], 16),
         "accountProof": proof["accountProof"],

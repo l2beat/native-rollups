@@ -1,0 +1,17 @@
+# The explorer, with the book, on 127.0.0.1:8088. A systemd user service:
+# see demo/README.md.
+[Unit]
+Description=Native rollup explorer
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/work/native-rollups
+Environment=PATH=%h/.local/bin:%h/.foundry/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/bin/env mdbook build
+ExecStart=/usr/bin/python3 demo/server.py
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

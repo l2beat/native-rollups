@@ -136,6 +136,14 @@ L2_MESSAGE_SENT = keccak256(b"L2MessageSent(uint256,address,address,uint256,uint
 CLAIM_SELECTOR = keccak256(f"claimL1Message({MESSAGE_TYPE},bytes32[],address)".encode())[:4]
 PROVE_ROOT_SELECTOR = keccak256(b"proveL1MessageRoot(uint256,bytes,bytes[],bytes[])")[:4]
 BLOCK_HASH_SELECTOR = keccak256(b"blockHash()")[:4]
+MAX_TIMESTAMP_LAG_SELECTOR = keccak256(b"MAX_TIMESTAMP_LAG()")[:4]
+# A posted block's anchor must be one of the last 256 L1 blocks, which
+# BLOCKHASH reaches.
+BLOCKHASH_WINDOW = 256
+# How long before L1 would refuse a preconfirmed block the node gives up on
+# it, leaving room for a post on its way.
+EXPIRY_MARGIN_BLOCKS = 4
+EXPIRY_MARGIN_SECONDS = 60
 # The priority fee the RPC suggests. Blocks include any transaction that
 # pays the base fee.
 PRIORITY_FEE = 10**6
@@ -338,6 +346,13 @@ class Node:
         for stored in self.config.setdefault("preconfirmed", []):
             self.commit(self.replay(stored))
         self.config.setdefault("preconfirmations", {})
+        self.max_timestamp_lag = None  # the rollup contract's, once read
+        # Transactions of preconfirmed blocks the node dropped, valid or not.
+        for raw in self.config.pop("repool", []):
+            try:
+                self.send_raw_transaction(raw)
+            except RpcError:
+                pass
         print(f"L2 node at block {int(self.head.number)}, block {self.posted} posted", flush=True)
 
     def replay(self, stored: dict) -> Pending:
@@ -705,6 +720,36 @@ class Node:
         if derived:
             self.posted_state = copy_state(self.chain.state)
 
+    def drop_expired(self) -> None:
+        """Drops the preconfirmed blocks once L1 is about to refuse the oldest
+        of them, and with it those built on it: its anchor must be one of the
+        last 256 L1 blocks, and its timestamp at most `MAX_TIMESTAMP_LAG`
+        behind L1's, so after an outage it can no longer be posted."""
+        if not self.config["preconfirmed"]:
+            return
+        if self.max_timestamp_lag is None:
+            lag = json_rpc(self.l1_rpc, "eth_call", {"to": self.rollup, "data": hx(MAX_TIMESTAMP_LAG_SELECTOR)}, "latest")
+            self.max_timestamp_lag = int(lag, 16)
+        params = self.config["preconfirmed"][0]["post"]["params"]
+        l1 = json_rpc(self.l1_rpc, "eth_getBlockByNumber", "latest", False)
+        if params["anchorBlockNumber"] + BLOCKHASH_WINDOW - EXPIRY_MARGIN_BLOCKS <= int(l1["number"], 16):
+            reason = f"its anchor, L1 block {params['anchorBlockNumber']}, leaves BLOCKHASH's window"
+        elif params["timestamp"] + self.max_timestamp_lag - EXPIRY_MARGIN_SECONDS <= int(l1["timestamp"], 16):
+            reason = f"its timestamp falls {self.max_timestamp_lag} seconds behind L1's"
+        else:
+            return
+        print(f"L2 block {self.posted + 1} can no longer reach L1: {reason}", flush=True)
+        self.drop_preconfirmed()
+
+    def drop_preconfirmed(self) -> None:
+        """Drops the preconfirmed blocks and exits, for the runner to restart
+        the node from the posted ones. The preconfirmations stay, as
+        evidence, and the blocks' transactions go back to the pool."""
+        self.config["repool"] = [raw for stored in self.config["preconfirmed"] for raw in stored["transactions"]]
+        self.config["preconfirmed"] = []
+        self.save()
+        os._exit(1)
+
     def follow(self) -> None:
         """Marks blocks posted as soon as the rollup contract has them, and
         derives from L1 those it has that the node never had."""
@@ -715,16 +760,12 @@ class Node:
                     number = self.number_of(head)
                     if number is not None:
                         self.mark_posted(number)
+                        self.drop_expired()
                     elif not self.config["preconfirmed"]:
                         self.catch_up()
                     else:
-                        # The rollup has a block the node did not preconfirm:
-                        # drop the preconfirmed blocks and restart from the
-                        # posted ones. The preconfirmations stay, as evidence.
-                        print(f"the rollup's head {hx(head)} is not in the node's chain, restarting", flush=True)
-                        self.config["preconfirmed"] = []
-                        self.save()
-                        os._exit(1)
+                        print(f"the rollup's head {hx(head)} is not in the node's chain", flush=True)
+                        self.drop_preconfirmed()
             except Exception:
                 traceback.print_exc()
             time.sleep(2)

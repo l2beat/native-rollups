@@ -8,7 +8,7 @@
 
 const BLOB_USABLE_BYTES = 4096 * 31;
 const PAGE = 25;
-const BOOK = "http://127.0.0.1:3000";
+const BOOK = "/book";
 const SELECTORS = {
   blockNumber: "0x57e871e7", blockHash: "0xf22a195e", stateRoot: "0x9588eca2", l1MessageCount: "0x1214990d",
   l1MessageRoot: "0xdf06c677", anchorBlockNumber: "0x3cad82ff", chainId: "0x9a8a0592", l2GasLimit: "0xcf6e65b7",
@@ -659,6 +659,14 @@ async function blockPage(route) {
       <p><a class="button" href="#/blob/${b.number}">View the blob: decoded and raw →</a></p>
       ${pre ? `<h2>Preconfirmation</h2>
       ${preconfirmationFields(pre)}` : ""}
+      ${rec && rec.broken ? `<h2>Broken preconfirmations</h2>
+      <div class="callout"><p>The sequencer also signed ${rec.broken.length > 1 ? "other blocks" : "another block"} at this height,
+        which never reached L1 in time and which its node dropped. Each signature, with the block the rollup holds here, proves a
+        divergence, for which anyone can have the sequencer's bond burned.</p></div>
+      ${rec.broken.map(({ preconfirmation: p }) => fields([
+        ["Signed", `block ${num(p.number)}, hash ${hash(p.blockHash)}, anchor L1 block ${num(p.anchorBlockNumber)}`, `${ago(p.time)}.`],
+        ["Signature", hash(p.signature), ""],
+      ])).join("")}` : ""}
       ${rec ? `<h2>On the operator's side</h2>
       <div class="callout"><p>What the operator's node did before posting the block. None of it is on L1, and the follower's
         rebuild does not rely on it.</p></div>

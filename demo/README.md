@@ -18,4 +18,38 @@ python3 demo/runner.py
 python3 demo/server.py
 ```
 
-and open http://127.0.0.1:8088. Both find the devnet's Nethermind, Reth and beacon node through Docker, or take them with `--rpc`, `--submit-rpc` and `--beacon`. The runner takes the paths of the two execution-specs environments with `--zkevm-specs` and `--frames-specs`. The finding cards link to the book served locally by `mdbook serve` on port 3000.
+and open http://127.0.0.1:8088. Both find the devnet's Nethermind, Reth and beacon node through Docker, or take them with `--rpc`, `--submit-rpc` and `--beacon`. The runner takes the paths of the two execution-specs environments with `--zkevm-specs` and `--frames-specs`. The server also serves the book at `/book/`, as `mdbook build` builds it from the checkout, so that the explorer's links match the code it runs.
+
+## Running unattended
+
+The devnet's containers restart with Docker, after a crash or a reboot, once given a restart policy. The ports they publish stay the same:
+
+```shell
+docker update --restart unless-stopped $(docker ps -q --filter name=^el- --filter name=^cl- --filter name=^vc-)
+```
+
+`systemd/` has user services for the runner and the server, which restart them when they stop and start them at boot:
+
+```shell
+cp demo/systemd/*.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now native-rollup-demo native-rollup-explorer
+sudo loginctl enable-linger $USER  # start them at boot, before anyone logs in
+journalctl --user -u native-rollup-demo -f
+```
+
+They expect the checkout at `~/work/native-rollups`, as the runner expects execution-specs and spamoor under `~/work`. The runner logs to the journal, and the processes it starts write about 150 MB a day to `data/`, which logrotate can keep in check:
+
+```shell
+sudo tee /etc/logrotate.d/native-rollup-demo <<EOF
+$HOME/work/native-rollups/demo/data/*.log $HOME/work/native-rollups/demo/data/*.jsonl {
+    su $USER $USER
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+```
