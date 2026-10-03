@@ -15,7 +15,7 @@ const SELECTORS = {
   l2Messenger: "0xf5730a72", evmVkRegistry: "0x369e4ac9", prover: "0x32a8f30f", sequencer: "0x5c1bba38", bond: "0x64c9ec6f",
 };
 
-const state = { index: null, session: null, l1Head: null, rollupHead: null, cache: {}, records: {}, blobs: {}, beacon: null, snippets: null, sources: null, flat: null };
+const state = { index: null, session: null, l1Head: null, rollupHead: null, cache: {}, records: {}, blobs: {}, beacon: null, snippets: null, sources: null, flat: null, messages: { deposits: {}, withdrawals: {} } };
 
 // ---------------------------------------------------------------------------
 // Data
@@ -49,6 +49,7 @@ async function refresh() {
   if (index && state.index && index.rollup !== state.index.rollup) [state.cache, state.records] = [{}, {}]; // a new episode
   state.index = index;
   state.session = session;
+  state.messages = { deposits: {}, withdrawals: {} }; // older messages fetched for this render
   state.l1Head = head ? parseInt(head, 16) : null;
   if (index) {
     const [n, bond] = await Promise.all(["blockNumber", "bond"].map((k) => rpc("eth_call", [{ to: index.rollup, data: SELECTORS[k] }, "latest"])));
@@ -279,7 +280,7 @@ function renderStatus() {
   if (preconfirmed) pills.push(`<span class="pill">L2 block ${num(preconfirmed)} preconfirmed</span>`);
   if (state.rollupHead != null) pills.push(`<span class="pill">L2 block ${num(state.rollupHead)} on L1</span>`);
   if (state.index && state.rollupHead != null) {
-    const n = state.index.l2Blocks.length;
+    const n = state.index.totals.blocks;
     pills.push(n >= state.rollupHead
       ? `<a class="pill ok" href="#/about" title="An independent node rebuilt every L2 block from L1 data alone">follower rebuilt all ${num(n)} from L1</a>`
       : `<span class="pill warn">follower rebuilt ${num(n)} of ${num(state.rollupHead)}</span>`);
@@ -363,19 +364,17 @@ async function home() {
   // What the status pills do not already say: activity, value, and cost on L1.
   const escrow = await rpc("eth_getBalance", [ix.rollup, "latest"]);
   const recent = blocks.slice(0, 20);
-  const sum = (entries, f) => entries.reduce((s, e) => s + BigInt(f(e) || 0), 0n);
-  const deposits = Object.values(ix.deposits), withdrawals = Object.values(ix.withdrawals);
-  const total = blocks.reduce((s, b) => s + b.transactions, 0);
+  const { deposits, withdrawals, transactions: total } = ix.totals;
   const interval = median(recent.slice(1).map((b, i) => recent[i].timestamp - b.timestamp));
   const bytes = recent.length ? recent.reduce((s, b) => s + b.payloadBytes, 0) / recent.length : 0;
   // From preconfirmation to L1, over the recent blocks.
   const lag = median(((state.session && state.session.timings) || []).map((t) => t.posted - t.preconfirmed));
   const stats = [
-    ["L2 transactions", num(total), `${blocks.length ? (total / blocks.length).toFixed(1) : 0} per block`],
+    ["L2 transactions", num(total), `${ix.totals.blocks ? (total / ix.totals.blocks).toFixed(1) : 0} per block`],
     ["ETH on L2", escrow ? `${(Number(BigInt(escrow)) / 1e18).toLocaleString("en-US", { maximumFractionDigits: 2 })} <span class="unit">ETH</span>` : "",
       "held in the rollup's escrow on L1"],
-    ["Deposits", num(deposits.length), `${eth(sum(deposits, (d) => d.value).toString())}, ${num(deposits.filter((d) => d.l2Tx).length)} claimed on L2`],
-    ["Withdrawals", num(withdrawals.length), `${eth(sum(withdrawals, (w) => w.value).toString())}, ${num(withdrawals.filter((w) => w.l1Tx).length)} claimed on L1`],
+    ["Deposits", num(deposits.count), `${eth(deposits.value)}, ${num(deposits.claimed)} claimed on L2`],
+    ["Withdrawals", num(withdrawals.count), `${eth(withdrawals.value)}, ${num(withdrawals.claimed)} claimed on L1`],
     ["Block time", interval ? `${Math.round(interval)} s` : "", lag ? `preconfirmed at once, on L1 ${secs(lag)} later` : "the sequencer's fixed interval"],
     ["Blob use", pct(bytes / BLOB_USABLE_BYTES), `${(bytes / 1024).toFixed(1)} KB per recent block`],
   ];
@@ -425,71 +424,58 @@ function story() {
       <span>${esc(e.title)}</span><span class="muted">${(kind === "deposit" ? m.l2Tx : m.l1Tx) ? `claimed <span class="check">✓</span>` : "waiting to be claimed"}</span></a>`).join("")}</div>`;
 }
 
-function blockList(route) {
-  const blocks = [...state.index.l2Blocks].reverse();
+// A page of one of the explorer's lists, newest first, and their total.
+async function listPage(kind, n, extra = "") {
+  return (await getJSON(`/api/explorer/list/${kind}.json?page=${n}${extra}`)) || { total: 0, entries: [] };
+}
+
+async function blockList(route) {
   const n = Math.max(route.n, 1);
+  const list = await listPage("blocks", n);
   const waiting = n === 1 ? waitingBlocks() : [];
   return `<h1>L2 blocks</h1>
     ${waiting.length ? `<h2>Waiting for L1</h2>
       <p class="section-lead">Preconfirmed by the sequencer, which must post each before its deadline.</p>${waitingRows(waiting)}
       <h2>On L1</h2>` : ""}
     <p class="section-lead">Every L2 block the rollup contract accepted, newest first.</p>
-    ${pager(route, blocks.length, "blocks")}${blockRows(blocks.slice((n - 1) * PAGE, n * PAGE))}${pager(route, blocks.length, "blocks")}`;
+    ${pager(route, list.total, "blocks")}${blockRows(list.entries)}${pager(route, list.total, "blocks")}`;
 }
 
 async function txList(route) {
-  const blocks = [...state.index.l2Blocks].reverse();
-  const total = blocks.reduce((s, b) => s + b.transactions, 0);
-  const first = (Math.max(route.n, 1) - 1) * PAGE;
-  // Only the blocks that hold the page's transactions.
-  const needed = [];
-  let seen = 0, skip = 0;
-  for (const b of blocks) {
-    if (seen + b.transactions > first) {
-      if (!needed.length) skip = first - seen;
-      needed.push(b);
-    }
-    seen += b.transactions;
-    if (seen >= first + PAGE) break;
-  }
-  const loaded = await Promise.all(needed.map((b) => object(`l2/blocks/${b.number}`)));
-  const txs = loaded.flatMap((block, i) =>
-    block ? [...block.transactions].reverse().map((t) => ({ ...t, block: needed[i].number, time: needed[i].timestamp })) : []);
+  const list = await listPage("txs", Math.max(route.n, 1));
   const waiting = route.n > 1 ? [] : waitingTxs().map((t) => ({ ...t, kind: "preconfirmed" }));
   return `<h1>L2 transactions</h1>
     ${waiting.length ? `<h2>Waiting for L1</h2>
       <p class="section-lead">In blocks the sequencer preconfirmed, which L1 does not have yet.</p>${l2TxRows(waiting)}
       <h2>On L1</h2>` : ""}
     <p class="section-lead">Every transaction in the L2 blocks, newest first.</p>
-    ${pager(route, total, "txs")}${l2TxRows(txs.slice(skip, skip + PAGE))}${pager(route, total, "txs")}`;
+    ${pager(route, list.total, "txs")}${l2TxRows(list.entries)}${pager(route, list.total, "txs")}`;
 }
 
-function l1List(route) {
-  const txs = [...state.index.l1Txs].sort((a, b) => b.block - a.block);
-  const n = Math.max(route.n, 1);
+async function l1List(route) {
+  const list = await listPage("l1", Math.max(route.n, 1));
   return `<h1>Rollup transactions on L1</h1>
     <p class="section-lead">The L1 transactions that involve the rollup contract: one per L2 block, and the deposits and
       withdrawal claims.</p>
-    ${pager(route, txs.length, "l1")}${l1Rows(txs.slice((n - 1) * PAGE, n * PAGE))}${pager(route, txs.length, "l1")}`;
+    ${pager(route, list.total, "l1")}${l1Rows(list.entries)}${pager(route, list.total, "l1")}`;
 }
 
-function messages(route) {
-  const panel = (kind, key, lead) => {
-    const entries = Object.values(state.index[kind]).sort((a, b) => b.index - a.index);
+async function messages(route) {
+  const panel = async (kind, key, lead) => {
     const page = { n: route.tab === key ? route.n : 1 };
-    const n = Math.max(page.n, 1);
-    return [key, kind === "deposits" ? "Deposits" : "Withdrawals", entries.length, `<p class="section-lead">${lead}</p>
-      ${pager(page, entries.length, `messages/${kind}`)}${messageRows(kind, entries.slice((n - 1) * PAGE, n * PAGE))}`];
+    const list = await listPage(kind, Math.max(page.n, 1));
+    return [key, kind === "deposits" ? "Deposits" : "Withdrawals", list.total, `<p class="section-lead">${lead}</p>
+      ${pager(page, list.total, `messages/${kind}`)}${messageRows(kind, list.entries)}`];
   };
   return `<h1>Deposits and withdrawals</h1>
     <p class="lead">All L2 ETH comes from deposits: the L2 starts with no ETH outside a pre-minted supply held by the L2
       messenger, which only L1 deposits release, so the L1 escrow backs every L2 ETH.</p>
-    ${tabs("/messages", [
+    ${tabs("/messages", await Promise.all([
       panel("deposits", "", `L1 to L2. The rollup contract adds each deposit to a Merkle tree of messages. On L2, a claim proves it
         against the tree's root in an L1 block the L2 anchored.`),
       panel("withdrawals", "withdrawals", `L2 to L1. The L2 messenger records each withdrawal in its storage. Once its block is on L1,
         a claim proves it against the block's state root, and the rollup contract pays it from its escrow.`),
-    ], route.tab === "deposits" ? "" : route.tab)}`;
+    ]), route.tab === "deposits" ? "" : route.tab)}`;
 }
 
 function about() {
@@ -581,10 +567,30 @@ function stepper(steps) {
 
 const msgLink = (kind, i) => `<a href="#/${kind}/${i}">${kind} #${i}</a>`;
 
+// A deposit or withdrawal the index carries or this render fetched, by index.
+const cachedMessage = (kind, i) =>
+  i === undefined || i === null ? null : (state.index && state.index[kind][String(i)]) || state.messages[kind][String(i)] || null;
+// Fetches the messages of `txs` that the index does not carry, so that
+// depositOf and withdrawalOf find them.
+async function loadMessages(txs) {
+  const missing = { deposits: [], withdrawals: [] };
+  for (const t of txs) {
+    const claim = (t.frames || []).find((f) => f.call && f.call.function === "claimL1Message");
+    const deposit = t.deposit ?? (claim ? claim.call.args.m.index : null);
+    if (deposit !== null && !cachedMessage("deposits", deposit)) missing.deposits.push(deposit);
+    if (t.withdrawal !== undefined && t.withdrawal !== null && !cachedMessage("withdrawals", t.withdrawal)) missing.withdrawals.push(t.withdrawal);
+  }
+  if (!missing.deposits.length && !missing.withdrawals.length) return;
+  const found = await getJSON(`/api/explorer/messages.json?deposits=${missing.deposits.join(",")}&withdrawals=${missing.withdrawals.join(",")}`);
+  if (found) for (const kind of ["deposits", "withdrawals"]) Object.assign(state.messages[kind], found[kind]);
+}
+
 // A message's journey between the chains, with what it carries.
 async function messagePage(route) {
   const deposit = route.kind === "deposit";
-  const m = state.index[deposit ? "deposits" : "withdrawals"][String(route.n)];
+  const kind = deposit ? "deposits" : "withdrawals";
+  if (!cachedMessage(kind, route.n)) await loadMessages([deposit ? { deposit: route.n } : { withdrawal: route.n }]);
+  const m = cachedMessage(kind, route.n);
   const title = `${deposit ? "Deposit" : "Withdrawal"} #${route.n} ${net(deposit ? "l1" : "l2")} → ${net(deposit ? "l2" : "l1")}`;
   if (!m) return `<h1>${title}</h1><p class="note">Not found.</p>`;
   const [sent, claim] = await Promise.all([
@@ -596,7 +602,7 @@ async function messagePage(route) {
   const waiting = "Its recipient can claim it for free, or anyone for its fee.";
   let steps;
   if (deposit) {
-    const anchoring = state.index.l2Blocks.find((b) => b.anchor >= m.l1Block);
+    const anchoring = await getJSON(`/api/explorer/anchoring/${m.l1Block}.json`);
     steps = [
       ["Send", "real", "The rollup contract added it to its message tree and holds its ETH.",
         `${l1TxLink(m.l1Tx)} <span class="muted">L1 block ${num(m.l1Block)}</span>`],
@@ -608,7 +614,8 @@ async function messagePage(route) {
         : ["Claim", "pending", waiting, ""],
     ];
   } else {
-    const posted = state.index.l2Blocks.find((b) => b.number === m.l2Block);
+    const block = m.l2Block && state.rollupHead >= m.l2Block ? await object(`l2/blocks/${m.l2Block}`) : null;
+    const posted = block && { l1Tx: block.l1.tx };
     steps = [
       ["Send", "real", "The L2 messenger recorded it in its storage.", `${l2TxLink(m.l2Tx)} <span class="muted">in</span> ${l2BlockLink(m.l2Block)}`],
       posted
@@ -643,7 +650,8 @@ async function blockPage(route) {
   const matches = b.hash === b.recordedHash;
   const pre = preconfirmationIn(rec);
   const posted = (rec && rec.l1 && rec.l1.timestamp) || l1Time(b.l1.tx);
-  const last = state.index.l2Blocks.length;
+  const last = state.index.totals.blocks;
+  await loadMessages(b.transactions);
   const base = `/l2/block/${b.number}`;
   const tab = route.tab;
   const txsPanel = `<table><thead><tr><th>#</th><th>Transaction hash</th><th>What it does</th><th>Method</th><th>Status</th><th>Linked on L1</th><th>From</th><th class="num">Gas used</th><th class="num">Fee</th></tr></thead><tbody>
@@ -847,10 +855,11 @@ async function addressPage(route) {
     } else if (a === (c.verifier || "").toLowerCase()) {
       live = [["Prover", addr(wordAddress(await call(a, SELECTORS.prover)), "l1"), "The only key whose signatures it accepts."]];
     }
-    const txs = state.index.l1Txs.filter((t) => (t.addresses || []).includes(a)).sort((x, y) => y.block - x.block);
+    const list = await listPage("l1", 1, `&address=${a}`);
+    const txs = list.entries;
     emitted = [...((await object(`l1/events/${a}`)) || [])].reverse();
-    count = txs.length;
-    history = `<p class="section-lead">The rollup's L1 transactions that involve this address.</p>${txs.length ? l1Rows(txs.slice(0, 50)) : '<p class="note">None.</p>'}`;
+    count = list.total;
+    history = `<p class="section-lead">The rollup's L1 transactions that involve this address${list.total > txs.length ? `, the latest ${txs.length}` : ""}.</p>${txs.length ? l1Rows(txs) : '<p class="note">None.</p>'}`;
   } else {
     acc = await getJSON(`/api/explorer/l2/accounts/${a}.json`);
     if (!acc) {
@@ -1465,11 +1474,11 @@ function authorizationRows(tx) {
 
 // The deposit an L2 claim delivers, or the withdrawal an L2 transaction sends.
 function depositOf(tx) {
-  if (tx.deposit !== undefined && tx.deposit !== null) return state.index.deposits[String(tx.deposit)];
+  if (tx.deposit !== undefined && tx.deposit !== null) return cachedMessage("deposits", tx.deposit);
   const frame = (tx.frames || []).find((f) => f.call && f.call.function === "claimL1Message");
-  return frame ? state.index.deposits[String(frame.call.args.m.index)] : null;
+  return frame ? cachedMessage("deposits", frame.call.args.m.index) : null;
 }
-const withdrawalOf = (tx) => Object.values(state.index.withdrawals).find((w) => w.l2Tx === tx.hash);
+const withdrawalOf = (tx) => cachedMessage("withdrawals", tx.withdrawal);
 
 function counterpart(tx) {
   if (tx.kind === "deposit claim") {
@@ -1530,6 +1539,7 @@ async function l2TxPage(route) {
       : "Not in an L2 block the follower rebuilt. A transaction shows here once its block is on L1."}</p>`;
   }
   const block = await object(`l2/blocks/${tx.block}`);
+  await loadMessages([tx]);
   const w = tx.kind === "withdrawal" && withdrawalOf(tx);
   const d = tx.kind === "deposit claim" && depositOf(tx);
   const frame = tx.type === 6;
@@ -1637,6 +1647,8 @@ async function l1TxPage(route) {
   const tx = await object(`l1/txs/${route.hash}`);
   if (!tx) return `<h1>L1 transaction</h1><p class="note">Not found.</p>`;
   const kinds = await kindsOf(tx, "l1");
+  // The deposit this transaction sends, or the withdrawal it claims.
+  const found = ["deposit", "withdrawal claim"].includes(tx.kind) ? (await getJSON(`/api/explorer/find.json?l1Tx=${tx.hash}`)) || {} : {};
   // A block post: the block, whose proof the contract checked.
   const advance = tx.kind === "advance" && tx.frames.find((f) => f.call && f.call.function === "advance");
   const checked = advance && tx.l2Block ? await object(`l2/blocks/${tx.l2Block}`) : null;
@@ -1647,14 +1659,14 @@ async function l1TxPage(route) {
       One EIP-8141 frame transaction carries the block's data in a blob, the proof in a frame, and the call to the rollup
       contract, which accepts the block only if the proof is for exactly this block.`;
   } else if (tx.kind === "deposit") {
-    const d = Object.values(state.index.deposits).find((x) => x.l1Tx === tx.hash);
+    const d = found.deposit;
     const fee = BigInt(tx.call.args.fee || 0);
     summary = `${addr(tx.from, "l1")} deposits ${eth((BigInt(tx.value) - fee).toString())} to ${addr(tx.call.args.to, "l2")} on L2${
       fee ? `, with a fee of ${eth(fee.toString())} for whoever claims it there` : ""}. The rollup contract adds the message
       to its Merkle tree and keeps the ETH in escrow.${d && d.l2Tx ? ` It was claimed on L2 in ${l2TxLink(d.l2Tx)}, in block ${l2BlockLink(d.l2Block)}.` : ""}`;
   } else if (tx.kind === "withdrawal claim") {
     const m = tx.call.args.m;
-    const w = state.index.withdrawals[String(m.index)];
+    const w = found.withdrawal;
     summary = `${addr(tx.from, "l1")} claims a withdrawal of ${eth(m.value)} to ${addr(m.to, "l1")}${
       Number(m.fee) ? ` and earns its fee of ${eth(m.fee)}` : ""}. The rollup contract checks the message against the
       state root of L2 block ${l2BlockLink(tx.call.args.l2BlockNumber)} with a storage proof, and pays it from the escrow.${w && w.l2Tx ? ` It was sent on L2 in ${l2TxLink(w.l2Tx)}.` : ""}`;
@@ -1662,12 +1674,12 @@ async function l1TxPage(route) {
   const frame = !!tx.frames;
   const linked = [];
   if (tx.kind === "deposit") {
-    const d = Object.values(state.index.deposits).find((x) => x.l1Tx === tx.hash);
+    const d = found.deposit;
     if (d) linked.push(["Claim on L2", d.l2Tx ? `${l2TxLink(d.l2Tx)} <span class="muted">in L2 block</span> ${l2BlockLink(d.l2Block)}` : '<span class="muted">waiting for an L2 block that anchors it</span>',
       `The L2 transaction that delivered ${msgLink("deposit", d.index)}.`]);
   }
   if (tx.kind === "withdrawal claim") {
-    const w = state.index.withdrawals[String(tx.call.args.m.index)];
+    const w = found.withdrawal;
     if (w && w.l2Tx) linked.push(["Withdrawal on L2", `${l2TxLink(w.l2Tx)} <span class="muted">in L2 block</span> ${l2BlockLink(w.l2Block)}`, `The L2 transaction that sent ${msgLink("withdrawal", w.index)}.`]);
   }
   if (tx.kind === "advance") linked.push(["L2 block", l2BlockLink(tx.l2Block), "The L2 block this transaction adds."]);
@@ -1900,7 +1912,7 @@ document.getElementById("search").addEventListener("submit", async (e) => {
   if (/^#?\d+$/.test(q)) location.hash = `#/l2/block/${q.replace("#", "")}`;
   else if (/^0x[0-9a-f]{40}$/.test(q)) location.hash = `#/address/${(await object(`l2/accounts/${q}`)) ? "l2" : "l1"}/${q}`;
   else if (/^0x[0-9a-f]{64}$/.test(q)) {
-    if (state.index.l1Txs.some((t) => t.hash === q)) location.hash = `#/l1/tx/${q}`;
+    if (await object(`l1/txs/${q}`)) location.hash = `#/l1/tx/${q}`;
     else if (await object(`l2/txs/${q}`)) location.hash = `#/l2/tx/${q}`;
     else document.getElementById("app").innerHTML = `<h1>Not found</h1><p class="note">No rollup transaction with hash ${esc(q)}.</p>`;
   }

@@ -76,7 +76,7 @@ from execution_testing.forks import Bogota
 from execution_testing.specs.blockchain import BlockchainTest
 
 from ethereum_rlp import rlp
-from ethereum_types.bytes import Bytes, Bytes0, Bytes32
+from ethereum_types.bytes import Bytes, Bytes0, Bytes20, Bytes32
 from ethereum_types.numeric import U64, U256, Uint
 
 from ethereum.crypto.hash import keccak256
@@ -144,6 +144,10 @@ BLOCKHASH_WINDOW = 256
 # it, leaving room for a post on its way.
 EXPIRY_MARGIN_BLOCKS = 4
 EXPIRY_MARGIN_SECONDS = 60
+# How often the node snapshots the posted chain, in posted blocks, and how
+# many recent blocks the RPC keeps in memory.
+SNAPSHOT_INTERVAL = 300
+KEEP_BLOCKS = 2048
 # The priority fee the RPC suggests. Blocks include any transaction that
 # pays the base fee.
 PRIORITY_FEE = 10**6
@@ -210,6 +214,29 @@ def copy_state(state: State) -> State:
         _storage_tries={a: copy_trie(t) for a, t in state._storage_tries.items()},
         _code_store=dict(state._code_store),
     )
+
+
+def dump_state(state: State) -> bytes:
+    """The accounts, storage and code of `state`, as RLP."""
+    accounts = [[a, x.nonce, x.balance, x.code_hash] for a, x in state._main_trie._data.items() if x is not None]
+    storage = [[a, [[k, v] for k, v in t._data.items()]] for a, t in state._storage_tries.items()]
+    return rlp.encode([accounts, storage, list(state._code_store.values())])
+
+
+def load_state(data: bytes) -> State:
+    """The state `dump_state` stored, rebuilt with execution-specs' own
+    functions."""
+    accounts, storage, code = rlp.decode(data)
+    state = State()
+    for c in code:
+        store_code(state, Bytes(c))
+    for a, nonce, balance, code_hash in accounts:
+        account = Account(Uint.from_be_bytes(nonce), U256.from_be_bytes(balance), Bytes32(code_hash))
+        set_account(state, Bytes20(a), account)
+    for a, slots in storage:
+        for k, v in slots:
+            set_storage(state, Bytes20(a), Bytes32(k), U256.from_be_bytes(v))
+    return state
 
 
 def genesis_fixture(config: dict) -> dict:
@@ -332,12 +359,18 @@ class Node:
         self.lock = threading.RLock()
         self.pool: dict[bytes, PoolTransaction] = {}
         self.arrivals = 0
-        self.blocks: list[dict] = []  # every block, for the RPC
+        self.blocks: list[dict] = []  # recent blocks, for the RPC, from block `first`
+        self.first = 0
         self.transactions: dict[bytes, tuple] = {}  # hash -> (block number, index)
+        self.messages: list[dict] = []  # the logs of every L2 to L1 message
+        self.logs_from = 0  # the first block whose logs the RPC has
         self.diffs: dict[int, object] = {}  # state changes of blocks not posted yet
-        self.index(self.chain.blocks[0], None)
+        snapshot = self.load_snapshot() if self.config.get("snapshot") else 0
+        if not snapshot:
+            self.index(self.chain.blocks[0], None)
         for stored in self.config["blocks"]:
-            self.commit(self.replay(stored))
+            if int(rlp.decode_to(Header, bytes.fromhex(stored["header"][2:])).number) > snapshot:
+                self.commit(self.replay(stored))
         # The state of the latest block the rollup contract has.
         self.posted = int(self.head.number)
         self.posted_state = copy_state(self.chain.state)
@@ -354,6 +387,61 @@ class Node:
             except RpcError:
                 pass
         print(f"L2 node at block {int(self.head.number)}, block {self.posted} posted", flush=True)
+
+    def load_snapshot(self) -> int:
+        """Starts from the last snapshot of the posted chain, and returns its
+        block number."""
+        number, state, headers, messages = rlp.decode(open(self.config["snapshot"], "rb").read())
+        self.chain.state = load_state(state)
+        self.chain.blocks = [Block(header=rlp.decode_to(Header, h), transactions=(), ommers=(), withdrawals=()) for h in headers]
+        self.first = int(self.chain.blocks[0].header.number)
+        for block in self.chain.blocks:
+            self.index(block, None)
+        self.messages = json.loads(messages)
+        self.logs_from = int.from_bytes(number, "big") + 1
+        return self.logs_from - 1
+
+    def snapshot(self) -> None:
+        """Stores the posted chain, which the node then starts from instead of
+        replaying every block: its state, the headers BLOCKHASH reaches, and
+        the L2 to L1 messages, which can be claimed at any time. Then drops
+        what the snapshot holds from the state file, and the oldest blocks
+        from the RPC's memory."""
+        n = self.posted
+        headers = [rlp.encode(self.block_by_number(k)["header"]) for k in range(max(self.first, n - 254), n + 1)]
+        messages = [m for m in self.messages if int(m["blockNumber"], 16) <= n]
+        path = self.state_file + ".snapshot"
+        with open(path + ".tmp", "wb") as f:
+            f.write(rlp.encode([Uint(n), dump_state(self.posted_state), headers, json.dumps(messages).encode()]))
+        os.replace(path + ".tmp", path)
+        self.config["snapshot"] = path
+        self.config["blocks"] = [
+            b for b in self.config["blocks"] if int(rlp.decode_to(Header, bytes.fromhex(b["header"][2:])).number) > n
+        ]
+        self.config["preconfirmations"] = {k: v for k, v in self.config["preconfirmations"].items() if int(k) > n}
+        self.save()
+        drop = len(self.blocks) - KEEP_BLOCKS
+        if drop > 0:
+            for block in self.blocks[:drop]:
+                for entry in block["transactions"]:
+                    self.transactions.pop(entry["hash"], None)
+            del self.blocks[:drop]
+            self.first += drop
+            self.logs_from = max(self.logs_from, self.first)
+        print(f"snapshot of the posted chain at L2 block {n}", flush=True)
+
+    def block_by_number(self, number: int) -> dict | None:
+        i = number - self.first
+        return self.blocks[i] if 0 <= i < len(self.blocks) else None
+
+    def tag_number(self, tag) -> int:
+        if tag in ("safe", "finalized"):
+            return self.posted
+        if tag in ("latest", "pending", None):
+            return int(self.head.number)
+        if tag == "earliest":
+            return 0
+        return int(tag, 16)
 
     def replay(self, stored: dict) -> Pending:
         """Re-executes a stored block on the head."""
@@ -690,6 +778,8 @@ class Node:
             apply_changes_to_state(self.posted_state, self.diffs.pop(self.posted))
             self.save()
             print(f"L2 block {self.posted} is on L1", flush=True)
+            if self.posted % SNAPSHOT_INTERVAL == 0:
+                self.snapshot()
 
     def catch_up(self) -> None:
         """Derives from L1 the blocks the rollup contract has and the node
@@ -807,6 +897,9 @@ class Node:
                 "raw": raw, "tx": tx, "hash": tx_hash, "from": sender, "receipt": receipt, "frame": frame,
                 "gasUsed": int(receipt.cumulative_gas_used) - previous, "logs": rpc_logs, "contractAddress": created,
             })
+            self.messages += [
+                log for log in rpc_logs if log["address"] == hx(MESSENGER) and log["topics"][:1] == [hx(L2_MESSAGE_SENT)]
+            ]
             previous = int(receipt.cumulative_gas_used)
             self.transactions[tx_hash] = (int(h.number), i)
         self.blocks.append({"header": h, "hash": block_hash, "transactions": entries})
@@ -917,14 +1010,7 @@ class Node:
         }
 
     def block_at(self, tag) -> dict | None:
-        if tag in ("safe", "finalized"):
-            return self.blocks[self.posted]
-        if tag in ("latest", "pending", None):
-            return self.blocks[-1]
-        if tag == "earliest":
-            return self.blocks[0]
-        number = int(tag, 16)
-        return self.blocks[number] if number < len(self.blocks) else None
+        return self.block_by_number(self.tag_number(tag))
 
     # Calls
 
@@ -1087,7 +1173,7 @@ class Node:
         key = bytes.fromhex(h[2:])
         if key in self.transactions:
             number, index = self.transactions[key]
-            block = self.blocks[number]
+            block = self.block_by_number(number)
             return self.rpc_transaction(block["transactions"][index], block, index)
         if key in self.pool:
             t = self.pool[key]
@@ -1099,7 +1185,7 @@ class Node:
         if key not in self.transactions:
             return None
         number, index = self.transactions[key]
-        return self.rpc_receipt(self.blocks[number], index)
+        return self.rpc_receipt(self.block_by_number(number), index)
 
     def block_receipts(self, tag) -> list | None:
         if isinstance(tag, dict):  # {"blockHash": ...} or {"blockNumber": ...}
@@ -1111,25 +1197,24 @@ class Node:
         return None if block is None else [self.rpc_receipt(block, i) for i in range(len(block["transactions"]))]
 
     def logs(self, criteria: dict) -> list:
-        first = self.block_at(criteria.get("fromBlock", "latest"))
-        last = self.block_at(criteria.get("toBlock", "latest")) or self.blocks[-1]
-        if first is None:
-            return []
+        first = self.tag_number(criteria.get("fromBlock", "latest"))
+        last = min(self.tag_number(criteria.get("toBlock", "latest")), int(self.head.number))
         addresses = criteria.get("address")
         addresses = {a.lower() for a in ([addresses] if isinstance(addresses, str) else addresses or [])}
         topics = criteria.get("topics") or []
-        out = []
-        for block in self.blocks[int(first["header"].number) : int(last["header"].number) + 1]:
-            for entry in block["transactions"]:
-                for log in entry["logs"]:
-                    if addresses and log["address"] not in addresses:
-                        continue
-                    if all(
-                        t is None or (log["topics"][i] if i < len(log["topics"]) else None) in ([t] if isinstance(t, str) else t)
-                        for i, t in enumerate(topics)
-                    ):
-                        out.append(log)
-        return out
+        start = max(first, self.logs_from)
+        recent = self.blocks[max(0, start - self.first) : max(0, last - self.first + 1)]
+        candidates = [log for block in recent for entry in block["transactions"] for log in entry["logs"]]
+        if first < self.logs_from:
+            # Of older blocks, the node only keeps the L2 to L1 messages.
+            candidates = [m for m in self.messages if first <= int(m["blockNumber"], 16) < min(self.logs_from, last + 1)] + candidates
+        return [
+            log for log in candidates
+            if (not addresses or log["address"] in addresses) and all(
+                t is None or (log["topics"][i] if i < len(log["topics"]) else None) in ([t] if isinstance(t, str) else t)
+                for i, t in enumerate(topics)
+            )
+        ]
 
     # State
 
@@ -1149,7 +1234,7 @@ class Node:
         the latest posted one for `safe` and `finalized`."""
         posted = tag in ("safe", "finalized")
         state = self.posted_state if posted else self.chain.state
-        header = self.blocks[self.posted]["header"] if posted else self.head
+        header = self.block_by_number(self.posted)["header"] if posted else self.head
 
         def secure_trie(entries: dict) -> HexaryTrie:
             trie = HexaryTrie({})
@@ -1187,7 +1272,7 @@ class Node:
     def fee_history(self, count, newest, percentiles=None) -> dict:
         last = int(self.block_at(newest)["header"].number)
         first = max(0, last - int(count, 16) + 1 if isinstance(count, str) else last - count + 1)
-        blocks = self.blocks[first : last + 1]
+        blocks = self.blocks[max(0, first - self.first) : max(0, last - self.first + 1)]
         return {
             "oldestBlock": hex(first),
             "baseFeePerGas": [hex(int(b["header"].base_fee_per_gas)) for b in blocks] + [hex(self.next_base_fee())],

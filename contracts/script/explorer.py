@@ -11,7 +11,7 @@ re-execution of the data those transactions carry.
 import json
 import os
 import re
-import shutil
+import sqlite3
 import time
 
 from eth_abi import decode as abi_decode
@@ -551,84 +551,128 @@ def addresses(tx: dict) -> list:
     return out
 
 
+# The explorer's data: the documents the site shows, by path, and summaries
+# that lists, lookups and totals query. The follower writes each block in one
+# transaction, and writes it the same way if it processes it again.
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS docs (path TEXT PRIMARY KEY, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS blocks (number INTEGER PRIMARY KEY, anchor INTEGER NOT NULL, summary TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS blocks_by_anchor ON blocks (anchor);
+CREATE TABLE IF NOT EXISTS l2_txs (hash TEXT PRIMARY KEY, block INTEGER NOT NULL, position INTEGER NOT NULL, summary TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS l2_txs_in_order ON l2_txs (block, position);
+CREATE TABLE IF NOT EXISTS l1_txs (hash TEXT PRIMARY KEY, block INTEGER NOT NULL, summary TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS l1_txs_in_order ON l1_txs (block);
+CREATE TABLE IF NOT EXISTS l1_tx_addresses (address TEXT NOT NULL, hash TEXT NOT NULL, block INTEGER NOT NULL, PRIMARY KEY (address, hash));
+CREATE INDEX IF NOT EXISTS l1_tx_addresses_in_order ON l1_tx_addresses (address, block);
+CREATE TABLE IF NOT EXISTS deposits (idx INTEGER PRIMARY KEY, l1_tx TEXT, l2_tx TEXT, value REAL NOT NULL, entry TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS deposits_by_l1_tx ON deposits (l1_tx);
+CREATE INDEX IF NOT EXISTS deposits_by_l2_tx ON deposits (l2_tx);
+CREATE TABLE IF NOT EXISTS withdrawals (idx INTEGER PRIMARY KEY, l2_tx TEXT, l1_tx TEXT, value REAL NOT NULL, entry TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS withdrawals_by_l2_tx ON withdrawals (l2_tx);
+CREATE INDEX IF NOT EXISTS withdrawals_by_l1_tx ON withdrawals (l1_tx);
+CREATE TABLE IF NOT EXISTS contracts (address TEXT PRIMARY KEY, entry TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS snapshot (id INTEGER PRIMARY KEY CHECK (id = 0), number INTEGER NOT NULL, l1_block INTEGER NOT NULL, data BLOB NOT NULL);
+"""
+
+
 class Explorer:
-    def __init__(self, directory: str, rollup: str, messenger: str, flatten=None):
-        # Builds in a directory next to `directory`, which keeps serving the
-        # previous data until `publish` swaps them.
-        self.live, self.dir = directory, directory + ".next"
-        shutil.rmtree(self.dir, ignore_errors=True)
+    def __init__(self, path: str, rollup: str, messenger: str, flatten=None):
+        self.path = path
+        self.db = self.connect()
+        found = self.meta("rollup") if self.has_schema() else None
+        if found and found != rollup.lower():
+            # Another rollup's data, from an earlier episode.
+            self.db.close()
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(path + suffix):
+                    os.remove(path + suffix)
+            self.db = self.connect()
+        self.db.executescript(SCHEMA)
+        self.db.execute("BEGIN")
+        self.set_meta(rollup=rollup.lower(), messenger=messenger.lower())
         # Flattens a source file to one contract's flat source, or None.
         self.flatten = flatten
         self.flat = {}
-        self.accounts = {}  # L2 address -> the transactions that involve it
-        self.events = {"l1": {}, "l2": {}}  # address -> the events it emitted
-        self.events_seen = set()
-        self.index = {
-            "rollup": rollup.lower(), "messenger": messenger.lower(), "l2Blocks": [], "l1Txs": [],
-            "deposits": {}, "withdrawals": {}, "contracts": {},
-        }
-        for sub in ("l2/blocks", "l2/txs", "l1/txs", "l1/events", "l2/accounts", "l2/sources"):
-            os.makedirs(os.path.join(self.dir, sub), exist_ok=True)
 
-    def publish(self) -> None:
-        """Makes the data built so far the live data, once the follower has
-        caught up with L1. Later writes go to the live directory."""
-        if self.dir == self.live:
-            return
-        old = self.live + ".old"
-        shutil.rmtree(old, ignore_errors=True)
-        if os.path.exists(self.live):
-            os.rename(self.live, old)
-        os.rename(self.dir, self.live)
-        shutil.rmtree(old, ignore_errors=True)
-        self.dir = self.live
+    def connect(self):
+        db = sqlite3.connect(self.path, isolation_level=None)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=NORMAL")
+        return db
+
+    def has_schema(self) -> bool:
+        return self.db.execute("SELECT 1 FROM sqlite_master WHERE name = 'meta'").fetchone() is not None
+
+    def commit(self) -> None:
+        """Makes what was written since the last commit visible to readers."""
+        self.set_meta(updatedAt=int(time.time()))
+        self.db.execute("COMMIT")
+        self.db.execute("BEGIN")
+
+    def meta(self, key: str):
+        row = self.db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def set_meta(self, **values) -> None:
+        self.db.executemany("INSERT OR REPLACE INTO meta VALUES (?, ?)", [(k, json.dumps(v)) for k, v in values.items()])
+
+    def doc(self, path: str):
+        row = self.db.execute("SELECT json FROM docs WHERE path = ?", (path,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     def write(self, path: str, value) -> None:
-        full = os.path.join(self.dir, path)
-        with open(full + ".tmp", "w") as f:
-            json.dump(value, f)
-        os.replace(full + ".tmp", full)
+        self.db.execute("INSERT OR REPLACE INTO docs VALUES (?, ?)", (path, json.dumps(value)))
 
-    def save_index(self) -> None:
-        self.index["updatedAt"] = int(time.time())
-        self.write("index.json", self.index)
+    def snapshot(self) -> tuple | None:
+        """The L2 block, L1 block and data of the follower's last snapshot."""
+        return self.db.execute("SELECT number, l1_block, data FROM snapshot WHERE id = 0").fetchone()
 
-    def add_events(self, chain: str, tx: dict, block: int) -> list:
-        """Records a transaction's events under their emitters, and returns
-        the emitters."""
-        if (chain, tx["hash"]) in self.events_seen:
-            return []
-        self.events_seen.add((chain, tx["hash"]))
-        emitters = []
+    def save_snapshot(self, number: int, l1_block: int, data: bytes) -> None:
+        self.db.execute("INSERT OR REPLACE INTO snapshot VALUES (0, ?, ?, ?)", (number, l1_block, data))
+
+    def merge_message(self, table: str, index: int, **fields) -> None:
+        """Adds what one side of a deposit or withdrawal tells about it."""
+        row = self.db.execute(f"SELECT entry FROM {table} WHERE idx = ?", (index,)).fetchone()
+        entry = {**(json.loads(row[0]) if row else {"index": index}), **fields}
+        self.db.execute(
+            f"INSERT OR REPLACE INTO {table} (idx, {'l1_tx, l2_tx' if table == 'deposits' else 'l2_tx, l1_tx'}, value, entry) VALUES (?, ?, ?, ?, ?)",
+            (index, *((entry.get("l1Tx"), entry.get("l2Tx")) if table == "deposits" else (entry.get("l2Tx"), entry.get("l1Tx"))),
+             float(entry.get("value") or 0), json.dumps(entry)),
+        )
+
+    def add_events(self, chain: str, tx: dict, block: int) -> None:
+        """Records a transaction's events under their emitters, the latest
+        `EVENTS_KEPT` of each."""
+        emitted = {}
         for log in logs_of(tx):
-            self.events[chain].setdefault(log["address"], []).append({"hash": tx["hash"], "block": block, "log": log})
-            emitters.append(log["address"])
-        return emitters
+            emitted.setdefault(log["address"], []).append({"hash": tx["hash"], "block": block, "log": log})
+        for a, events in emitted.items():
+            kept = [e for e in self.doc(f"{chain}/events/{a}") or [] if e["hash"] != tx["hash"]]
+            self.write(f"{chain}/events/{a}", (kept + events)[-EVENTS_KEPT:])
 
     def add_l1_tx(self, tx: dict, kind: str, **links) -> None:
         tx.update({"kind": kind, **links})
-        self.write(f"l1/txs/{tx['hash']}.json", tx)
-        for a in set(self.add_events("l1", tx, tx["block"])):
-            self.write(f"l1/events/{a}.json", self.events["l1"][a][-EVENTS_KEPT:])
-        self.index["l1Txs"] = [t for t in self.index["l1Txs"] if t["hash"] != tx["hash"]]
-        self.index["l1Txs"].append({
+        self.write(f"l1/txs/{tx['hash']}", tx)
+        self.add_events("l1", tx, tx["block"])
+        involved = addresses(tx)
+        summary = {
             "hash": tx["hash"], "kind": kind, "block": tx["block"], "timestamp": tx["timestamp"],
-            "gasUsed": tx["gasUsed"], "addresses": addresses(tx), **links,
-        })
+            "gasUsed": tx["gasUsed"], "addresses": involved, **links,
+        }
+        self.db.execute("INSERT OR REPLACE INTO l1_txs VALUES (?, ?, ?)", (tx["hash"], tx["block"], json.dumps(summary)))
+        self.db.executemany("INSERT OR IGNORE INTO l1_tx_addresses VALUES (?, ?, ?)", [(a, tx["hash"], tx["block"]) for a in involved])
         if kind == "deposit":
             for log in tx["logs"]:
                 event = log.get("event") or {}
                 if event.get("name") == "L1MessageSent":
                     a = event["args"]
-                    entry = self.index["deposits"].setdefault(str(a["index"]), {})
-                    entry.update({
-                        "index": a["index"], "from": a["sender"], "to": a["to"], "value": a["value"], "fee": a["fee"],
-                        "gasLimit": a["gasLimit"], "l1Tx": tx["hash"], "l1Block": tx["block"],
-                    })
+                    self.merge_message(
+                        "deposits", a["index"], **{"from": a["sender"]}, to=a["to"], value=a["value"], fee=a["fee"],
+                        gasLimit=a["gasLimit"], l1Tx=tx["hash"], l1Block=tx["block"],
+                    )
         if kind == "withdrawal claim":
-            index = tx["call"]["args"]["m"]["index"]
-            entry = self.index["withdrawals"].setdefault(str(index), {"index": index})
-            entry.update({"l1Tx": tx["hash"], "l1Block": tx["block"]})
+            self.merge_message("withdrawals", tx["call"]["args"]["m"]["index"], l1Tx=tx["hash"], l1Block=tx["block"])
 
     def write_source(self, contract: dict) -> None:
         """The source a created contract was compiled from, flattened as
@@ -637,77 +681,85 @@ class Explorer:
         if key not in self.flat:
             flat = self.flatten(*key) if self.flatten else None
             self.flat[key] = flat or open(contract["source"], errors="replace").read()
-        self.write(f"l2/sources/{contract['address']}.json", {
+        self.write(f"l2/sources/{contract['address']}", {
             "name": contract["name"], "file": SIGNATURES.display(contract["source"]), "flat": self.flat[key],
             "flattened": self.flatten is not None,
         })
 
     def update_accounts(self, state, block: dict, transactions: list) -> None:
-        """Writes the state after `block` of every L2 account it touched."""
-        touched = {block["feeRecipient"].lower()}
+        """Writes the state after `block` of every L2 account it touched,
+        with its latest transactions and events."""
+        touched = {block["feeRecipient"].lower(): []}
         for tx in transactions:
             self.add_events("l2", tx, block["number"])
             for a in addresses(tx):
-                touched.add(a)
-                self.accounts.setdefault(a, []).append({
+                touched.setdefault(a, []).append({
                     "hash": tx["hash"], "block": block["number"], "time": block["timestamp"], "kind": tx["kind"],
                     "method": method(tx), "from": tx["from"], "to": tx.get("to"), "value": tx.get("value", 0), "fee": tx.get("fee"),
                 })
-        for a in touched:
+        for a, txs in touched.items():
+            hashes = {t["hash"] for t in txs}
+            earlier = [t for t in (self.doc(f"l2/accounts/{a}") or {}).get("txs", []) if t["hash"] not in hashes]
             account = state.get_account_optional(Address(bytes.fromhex(a[2:])))
             entry = {
-                "address": a, "block": block["number"], "txs": self.accounts.get(a, [])[-200:],
-                "events": self.events["l2"].get(a, [])[-EVENTS_KEPT:], "exists": account is not None,
+                "address": a, "block": block["number"], "txs": (earlier + txs)[-200:],
+                "events": self.doc(f"l2/events/{a}") or [], "exists": account is not None,
             }
             if account is not None:
                 code = b"" if account.code_hash == EMPTY_CODE_HASH else state.get_code(account.code_hash)
                 entry.update({"balance": str(int(account.balance)), "nonce": int(account.nonce), "codeSize": len(code), "codeHash": hx(account.code_hash)})
                 if 0 < len(code) <= 32768:
                     entry["code"] = hx(code)
-            if a == self.index["messenger"]:
+            if a == self.meta("messenger"):
                 slot = lambda n: int(state.get_storage(Address(bytes.fromhex(a[2:])), n.to_bytes(32, "big")))  # noqa: E731
                 entry["state"] = {
                     "l1Rollup": "0x%040x" % slot(0), "sentMessages": slot(2),
                     "provenAnchorTimestamp": slot(3), "provenL1MessageRoot": "0x%064x" % slot(4),
                 }
-            self.write(f"l2/accounts/{a}.json", entry)
+            self.write(f"l2/accounts/{a}", entry)
 
     def add_l2_block(self, block: dict, transactions: list) -> None:
         kinds = {}
-        for tx in transactions:
+        for position, tx in enumerate(transactions):
             kinds[tx["kind"]] = kinds.get(tx["kind"], 0) + 1
             tx["block"] = block["number"]
             for c in tx.get("created") or []:
-                self.index["contracts"][c["address"]] = {"name": c["name"], "tx": tx["hash"], "source": bool(c.get("source"))}
+                self.db.execute("INSERT OR REPLACE INTO contracts VALUES (?, ?)", (
+                    c["address"], json.dumps({"name": c["name"], "tx": tx["hash"], "source": bool(c.get("source"))}),
+                ))
                 if c.get("source"):
                     self.write_source(c)
                     c["source"] = SIGNATURES.display(c["source"])
-            self.write(f"l2/txs/{tx['hash']}.json", tx)
             for frame in tx.get("frames") or [tx]:
                 call = frame.get("call") or {}
                 if call.get("function") == "claimL1Message":
                     m = call["args"]["m"]
                     tx["deposit"] = m["index"]
-                    entry = self.index["deposits"].setdefault(str(m["index"]), {"index": m["index"]})
-                    entry.update({"l2Tx": tx["hash"], "l2Block": block["number"]})
-            for log in (tx.get("logs") or []) + [l for f in tx.get("frames") or [] for l in f.get("logs") or []]:
+                    self.merge_message("deposits", m["index"], l2Tx=tx["hash"], l2Block=block["number"])
+            for log in logs_of(tx):
                 event = log.get("event") or {}
                 if event.get("name") == "L2MessageSent":
                     a = event["args"]
-                    entry = self.index["withdrawals"].setdefault(str(a["index"]), {"index": a["index"]})
-                    entry.update({
-                        "from": a["sender"], "to": a["to"], "value": a["value"], "fee": a["fee"],
-                        "gasLimit": a["gasLimit"], "l2Tx": tx["hash"], "l2Block": block["number"],
-                    })
+                    tx["withdrawal"] = a["index"]
+                    self.merge_message(
+                        "withdrawals", a["index"], **{"from": a["sender"]}, to=a["to"], value=a["value"], fee=a["fee"],
+                        gasLimit=a["gasLimit"], l2Tx=tx["hash"], l2Block=block["number"],
+                    )
+            self.write(f"l2/txs/{tx['hash']}", tx)
         # What the block's transaction table shows, so it needs no other file.
         block["transactions"] = [
-            {k: tx.get(k) for k in ("hash", "kind", "from", "to", "value", "gasUsed", "bytes", "status", "fee", "deposit")} | {"method": method(tx)}
+            {k: tx.get(k) for k in ("hash", "kind", "from", "to", "value", "gasUsed", "bytes", "status", "fee", "deposit", "withdrawal")}
+            | {"method": method(tx)}
             for tx in transactions
         ]
-        self.write(f"l2/blocks/{block['number']}.json", block)
-        self.index["l2Blocks"].append({
+        self.write(f"l2/blocks/{block['number']}", block)
+        self.db.executemany("INSERT OR REPLACE INTO l2_txs VALUES (?, ?, ?, ?)", [
+            (t["hash"], block["number"], i, json.dumps({**t, "block": block["number"], "time": block["timestamp"]}))
+            for i, t in enumerate(block["transactions"])
+        ])
+        self.db.execute("INSERT OR REPLACE INTO blocks VALUES (?, ?, ?)", (block["number"], block["anchorBlockNumber"], json.dumps({
             "number": block["number"], "hash": block["hash"], "timestamp": block["timestamp"],
             "transactions": len(transactions), "kinds": kinds, "gasUsed": block["gasUsed"],
             "l1Tx": block["l1"]["tx"], "l1Block": block["l1"]["block"], "payloadBytes": block["payloadBytes"],
             "anchor": block["anchorBlockNumber"],
-        })
+        })))

@@ -49,6 +49,10 @@ DATA = os.path.join(ROOT, "demo", "data")
 PROVER = os.path.join(DATA, "prover.json")
 # npm packages whose artifacts spamoor deploys, for their sources.
 PACKAGES = os.path.join(DATA, "packages", "node_modules")
+# The story events the session keeps.
+EVENTS_KEPT = 100
+# What the follower rebuilds from L1, which the explorer shows.
+EXPLORER = os.path.join(DATA, "explorer.db")
 
 # ethereum-package's prefunded development keys.
 OPERATOR_KEY = "0xbcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31"
@@ -160,6 +164,8 @@ class Episode:
     def event(self, kind: str, title: str, **fields) -> None:
         with self.lock:
             self.session["events"].append({"type": kind, "title": title, "time": int(time.time()), **fields})
+            # The site shows the latest ones, and the journal keeps them all.
+            del self.session["events"][:-EVENTS_KEPT]
             write_json(os.path.join(DATA, "session.json"), self.session)
         print(f"[episode {self.number}] {title}", flush=True)
 
@@ -273,14 +279,12 @@ class Episode:
 
     def start_follower(self) -> None:
         a = self.args
-        # The follower rebuilds it from L1, and the previous data serves meanwhile.
-        explorer = os.path.join(DATA, "explorer")
+        # The follower resumes from its last snapshot in the explorer's data.
         log = open(os.path.join(DATA, "follower.log"), "a")
         self.follower = subprocess.Popen(
             ["uv", "run", "--project", a.zkevm_specs, "python", "script/l2_follower.py",
              "--l1-rpc", a.rpc, "--beacon", a.beacon, "--rollup", self.contracts["rollup"],
-             "--genesis", self.state, "--watch", "--record", os.path.join(DATA, "follower.json"),
-             "--explorer", explorer, "--abis", os.path.join(CONTRACTS, "out"),
+             "--genesis", self.state, "--watch", "--explorer", EXPLORER, "--abis", os.path.join(CONTRACTS, "out"),
              *([os.path.join(os.path.dirname(a.spamoor), "..", "scenarios")] if a.spamoor else []),
              *([PACKAGES] if os.path.isdir(PACKAGES) else [])],
             cwd=CONTRACTS, stdout=log, stderr=subprocess.STDOUT,
@@ -553,6 +557,19 @@ class Episode:
             raise RuntimeError("the L2 node stopped")
         if self.operator.poll() is not None:
             raise RuntimeError("the sequencer stopped")
+        # The follower and spamoor restart on their own, the follower from its
+        # last snapshot.
+        if self.follower.poll() is not None:
+            self.event("restarted", "The follower stopped, and restarts")
+            self.start_follower()
+        if any(p.poll() is not None for p in self.spamoor):
+            self.event("restarted", "Spamoor stopped, and restarts")
+            for p in self.spamoor:
+                if p.poll() is None:
+                    p.terminate()
+                    p.wait(timeout=30)
+            self.spamoor = []
+            self.start_spamoor()
         # Claiming can fail, as can any transaction, but the block must go on.
         for claims in (self.claim_withdrawals, self.claim_deposits):
             try:

@@ -7,17 +7,22 @@ chain itself instead of trusting the records.
 """
 
 import argparse
+import gzip
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
-from runner import devnet_url
+from runner import EXPLORER, devnet_url
 
 DEMO = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(DEMO, "data")
@@ -144,6 +149,120 @@ def eth_price(server) -> float | None:
     return server.price
 
 
+PAGE = 25  # entries per page of a list, as the site shows them
+RECENT = 25  # recent entries of each kind the index carries, more than the home page shows
+LISTS = {
+    "blocks": ("SELECT COALESCE(MAX(number), 0) FROM blocks", "SELECT summary FROM blocks ORDER BY number DESC"),
+    "txs": ("SELECT COUNT(*) FROM l2_txs", "SELECT summary FROM l2_txs ORDER BY block DESC, position DESC"),
+    "l1": ("SELECT COUNT(*) FROM l1_txs", "SELECT summary FROM l1_txs ORDER BY block DESC"),
+    "deposits": ("SELECT COUNT(*) FROM deposits", "SELECT entry FROM deposits ORDER BY idx DESC"),
+    "withdrawals": ("SELECT COUNT(*) FROM withdrawals", "SELECT entry FROM withdrawals ORDER BY idx DESC"),
+}
+HASH = re.compile(r"0x[0-9a-f]{64}")
+
+
+def rows(db, query: str, *args) -> list:
+    return [json.loads(r[0]) for r in db.execute(query, args)]
+
+
+def explorer_index(db) -> dict:
+    """What every page needs: the totals, and the recent blocks, L1
+    transactions and messages."""
+    meta = {k: json.loads(v) for k, v in db.execute("SELECT key, value FROM meta")}
+    totals = {}
+    for kind, claim in (("deposits", "l2_tx"), ("withdrawals", "l1_tx")):
+        count, value, claimed = db.execute(f"SELECT COUNT(*), TOTAL(value), COUNT({claim}) FROM {kind}").fetchone()
+        totals[kind] = {"count": count, "value": str(int(value)), "claimed": claimed}
+    return {
+        "rollup": meta.get("rollup"), "messenger": meta.get("messenger"), "updatedAt": meta.get("updatedAt"),
+        "contracts": {a: json.loads(e) for a, e in db.execute("SELECT address, entry FROM contracts")},
+        "l2Blocks": rows(db, "SELECT summary FROM blocks ORDER BY number DESC LIMIT ?", RECENT)[::-1],
+        "l1Txs": [{k: v for k, v in t.items() if k != "addresses"} for t in rows(db, "SELECT summary FROM l1_txs ORDER BY block DESC LIMIT ?", RECENT)][::-1],
+        "deposits": {str(e["index"]): e for e in rows(db, "SELECT entry FROM deposits ORDER BY idx DESC LIMIT ?", RECENT)},
+        "withdrawals": {str(e["index"]): e for e in rows(db, "SELECT entry FROM withdrawals ORDER BY idx DESC LIMIT ?", RECENT)},
+        "totals": {
+            **totals,
+            "blocks": db.execute("SELECT COALESCE(MAX(number), 0) FROM blocks").fetchone()[0],
+            "transactions": db.execute("SELECT COUNT(*) FROM l2_txs").fetchone()[0],
+        },
+    }
+
+
+def explorer_query(db, path: str, query: dict):
+    """The answer to a site request under /api/explorer/, or None for one it
+    does not make."""
+    if path == "index":
+        return explorer_index(db)
+    if m := re.fullmatch(r"list/(blocks|txs|l1|deposits|withdrawals)", path):
+        kind, page = m.group(1), int(query.get("page", "1"))
+        if not 1 <= page <= 10**6:
+            return None
+        count, entries = LISTS[kind]
+        if kind == "l1" and "address" in query:
+            if not re.fullmatch(r"0x[0-9a-f]{40}", query["address"]):
+                return None
+            count = "SELECT COUNT(*) FROM l1_tx_addresses WHERE address = ?"
+            entries = "SELECT t.summary FROM l1_tx_addresses a JOIN l1_txs t ON t.hash = a.hash WHERE a.address = ? ORDER BY a.block DESC"
+            args = (query["address"],)
+        else:
+            args = ()
+        return {
+            "total": db.execute(count, args).fetchone()[0],
+            "entries": rows(db, entries + " LIMIT ? OFFSET ?", *args, PAGE, (page - 1) * PAGE),
+        }
+    if m := re.fullmatch(r"messages", path):
+        out = {}
+        for kind in ("deposits", "withdrawals"):
+            ids = [int(i) for i in query.get(kind, "").split(",") if i.isdigit()][:RECENT]
+            out[kind] = {str(e["index"]): e for e in rows(db, f"SELECT entry FROM {kind} WHERE idx IN ({','.join('?' * len(ids))})", *ids)}
+        return out
+    if m := re.fullmatch(r"find", path):
+        out = {}
+        for key, column in (("l1Tx", "l1_tx"), ("l2Tx", "l2_tx")):
+            if HASH.fullmatch(query.get(key, "")):
+                for kind in ("deposits", "withdrawals"):
+                    found = rows(db, f"SELECT entry FROM {kind} WHERE {column} = ?", query[key])
+                    out[kind[:-1]] = found[0] if found else out.get(kind[:-1])
+        return out
+    if m := re.fullmatch(r"anchoring/([0-9]+)", path):
+        found = rows(db, "SELECT summary FROM blocks WHERE anchor >= ? ORDER BY number LIMIT 1", int(m.group(1)))
+        return found[0] if found else None
+    if re.fullmatch(r"(l1|l2)/[a-z]+/(0x[0-9a-f]+|[0-9]+)", path):
+        found = db.execute("SELECT json FROM docs WHERE path = ?", (path,)).fetchone()
+        return json.loads(found[0]) if found else None
+    return None
+
+
+class ExplorerData:
+    """The follower's data, read-only, with answers cached until it writes
+    again, so that many visitors cost the same as one."""
+
+    def __init__(self, path: str):
+        self.path, self.lock, self.cache = path, threading.Lock(), OrderedDict()
+
+    def get(self, path: str, query: dict) -> bytes:
+        if not os.path.exists(self.path):
+            return b"null"
+        db = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
+        try:
+            updated = db.execute("SELECT value FROM meta WHERE key = 'updatedAt'").fetchone()
+            key = (path, tuple(sorted(query.items())), updated)
+            with self.lock:
+                if key in self.cache:
+                    self.cache.move_to_end(key)
+                    return self.cache[key]
+            body = json.dumps(explorer_query(db, path, query)).encode()
+        except (sqlite3.Error, ValueError):
+            return b"null"  # being created, or a query it does not make
+        finally:
+            db.close()
+        with self.lock:
+            self.cache[key] = body
+            while len(self.cache) > 512:
+                self.cache.popitem(last=False)
+        return body
+
+
 def allowed(request) -> bool:
     """Whether a JSON-RPC request is one the page makes. Its calls are view
     functions without arguments, so `eth_call` takes a target and a selector
@@ -167,10 +286,17 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=os.path.join(DEMO, "site"), **kwargs)
 
     def send_json(self, body: bytes, status: int = 200) -> None:
+        # Pages poll several of these every few seconds.
+        compress = len(body) > 1024 and "gzip" in self.headers.get("accept-encoding", "")
+        if compress:
+            body = gzip.compress(body, compresslevel=5)
         try:
             self.send_response(status)
             self.send_header("content-type", "application/json")
             self.send_header("cache-control", "no-store")
+            self.send_header("vary", "accept-encoding")
+            if compress:
+                self.send_header("content-encoding", "gzip")
             self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
@@ -198,11 +324,11 @@ class Handler(SimpleHTTPRequestHandler):
             self.path = self.path[len("/book"):]
             return super().do_GET()
         if self.path.startswith("/api/explorer/"):
-            relative = self.path[len("/api/explorer/"):]
-            path = os.path.join(DATA, "explorer", relative)
-            if not re.fullmatch(r"[a-z0-9/]+(\.json)", relative) or ".." in relative or not os.path.exists(path):
-                return self.send_json(b"null", 404)
-            return self.send_json(open(path, "rb").read())
+            url = urllib.parse.urlsplit(self.path)
+            path = url.path[len("/api/explorer/"):].removesuffix(".json")
+            query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            body = self.server.explorer.get(path, query)
+            return self.send_json(body, 200 if body != b"null" else 404)
         if self.path == "/api/flat":
             return self.send_json(json.dumps(self.server.flat).encode())
         if self.path == "/api/sources":
@@ -213,7 +339,7 @@ class Handler(SimpleHTTPRequestHandler):
             # What the sequencer reported about the block: its preconfirmation and post.
             path = os.path.join(DATA, "blocks", self.path.split("/")[-1] + ".json")
             return self.send_json(open(path, "rb").read() if os.path.exists(path) else b"null")
-        if self.path in ("/api/session", "/api/follower"):
+        if self.path == "/api/session":
             path = os.path.join(DATA, self.path.split("/")[-1] + ".json")
             return self.send_json(open(path, "rb").read() if os.path.exists(path) else b"null")
         if self.path == "/api/eth-price":
@@ -269,6 +395,7 @@ def main() -> None:
         sys.exit("the devnet is not running: start it, or pass --rpc and --beacon")
     server = Server(("127.0.0.1", args.port), Handler)
     server.rpc, server.beacon = args.rpc, args.beacon
+    server.explorer = ExplorerData(EXPLORER)
     server.snippets = extract_snippets()
     server.price, server.price_time = None, 0.0
     server.sources = load_sources(args.sys_asm)
