@@ -356,3 +356,42 @@ body.loading::before { content: ""; position: fixed; top: 0; left: 0; z-index: 2
   .journey { grid-template-columns: 1fr; gap: 14px; }
   .journey li::before { display: none; }
 }
+
+/* A block across the L1/L2 boundary, scrolling sideways on narrow screens. */
+.boundary-wrap { overflow-x: auto; }
+@media (max-width: 860px) { svg.boundary { min-width: 960px; } }
+svg.boundary { display: block; width: 100%; height: auto; margin: 6px 0 18px; font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+svg.boundary text { fill: var(--ink); }
+svg.boundary .bd-band { fill: var(--soft); stroke: var(--line); }
+svg.boundary .bd-nest { fill: var(--panel); stroke: var(--line); }
+svg.boundary .bd-title { font-weight: 700; font-size: 12px; }
+svg.boundary .bd-sub, svg.boundary .bd-detail, svg.boundary .bd-l2 { fill: var(--muted); }
+svg.boundary .bd-group { font-weight: 700; font-size: 9.5px; letter-spacing: 0.06em; fill: var(--muted); }
+svg.boundary .bd-field { font: 11px var(--mono); }
+svg.boundary .bd-value { font: 11px var(--mono); fill: var(--muted); }
+svg.boundary .bd-back { fill: var(--accent); }
+svg.boundary .bd-hit { fill: transparent; }
+svg.boundary .bd-row:hover .bd-hit { fill: var(--hover); }
+svg.boundary .bd-arrow { stroke: var(--edge); stroke-width: 1.1; fill: none; }
+svg.boundary .bd-headpath { fill: var(--edge); }
+svg.boundary .bd-chip text { font-size: 10px; font-weight: 600; }
+svg.boundary .bd-chip.storage rect { fill: var(--accent-bg); stroke: var(--accent-line); }
+svg.boundary .bd-chip.storage text { fill: var(--accent); }
+svg.boundary .bd-chip.l1 rect { fill: var(--l1-bg); stroke: var(--l1); }
+svg.boundary .bd-chip.l1 text { fill: var(--l1); }
+svg.boundary .bd-chip.checked rect { fill: var(--real-bg); stroke: var(--real-line); }
+svg.boundary .bd-chip.checked text { fill: var(--real); }
+svg.boundary .bd-chip.free rect { fill: none; stroke: var(--edge); stroke-dasharray: 3 2; }
+svg.boundary .bd-chip.free text { fill: var(--muted); }
+svg.boundary .bd-chip.fixed rect { fill: var(--tag-bg); stroke: var(--line); }
+svg.boundary .bd-chip.fixed text { fill: var(--tag); }
+svg.boundary .bd-chip.registry rect { fill: var(--l2-bg); stroke: var(--l2); }
+svg.boundary .bd-chip.registry text { fill: var(--l2); }
+svg.boundary .bd-chip.computed rect { fill: var(--panel); stroke: var(--accent-line); }
+svg.boundary .bd-chip.computed text { fill: var(--accent); }
+svg.boundary .bd-box rect { fill: var(--panel); stroke: var(--line); }
+svg.boundary .bd-box.boundary rect { fill: var(--soft); stroke: var(--edge); }
+svg.boundary .bd-check rect { fill: var(--real-bg); stroke: var(--real); }
+svg.boundary .bd-check.bad rect { fill: var(--bad-bg); stroke: var(--bad); }
+svg.boundary .bd-ok { fill: var(--real); font-weight: 600; }
+svg.boundary .bd-bad { fill: var(--bad); font-weight: 600; }

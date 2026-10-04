@@ -387,6 +387,9 @@ async function home() {
     <div class="legend">${badge("real")} runs as specified ${badge("mock")} stands in for an L1 feature that does not exist yet
       · <a href="#/about">details</a></div>
     ${head ? `<h2>How block ${l2BlockLink(head.number)} reached L1</h2>${journey(head, rec)}` : ""}
+    ${head ? `<h2>Block ${l2BlockLink(head.number)} across the boundary</h2>
+      <p class="section-lead">Each field the proof covers: where the rollup contract gets it on L1, and what it is on L2.</p>
+      ${boundaryView(head, rec)}` : ""}
     <div class="stats">${stats.map(([label, value, sub]) => `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`).join("")}</div>
     <div class="columns">
       <div class="panel"><div class="panel-head"><b>Latest L2 blocks</b><a href="#/blocks">View all blocks →</a></div>
@@ -532,6 +535,129 @@ function waitingBlocks() {
   const blocks = state.index ? state.index.l2Blocks : [];
   const rebuilt = blocks.length ? blocks[blocks.length - 1].number : 0;
   return ((state.session && state.session.waiting) || []).filter((p) => p.number > rebuilt).reverse();
+}
+
+// Where each field of a block comes from on L1, and what it is on L2. The
+// proof's public input is the boundary: the rollup contract rebuilds it from
+// L1, and the L2 program checks the block against it.
+const SOURCE_LABELS = {
+  storage: "storage", l1: "L1 opcode", checked: "calldata, proven", free: "calldata, free", fixed: "fixed", registry: "registry",
+  computed: "computed",
+};
+function boundaryView(b, rec) {
+  const pi = b.proofInput, ssz = b.sszRoots, anchor = b.anchorBlockNumber, ok = pi.publicInputRoot === pi.dataHash;
+  const count = (key) => b.transactions.filter((t) => t[key] !== undefined && t[key] !== null).length;
+  const inBlock = (n, what) => (n ? `${n} ${what} in this block` : `none ${what} in this block`);
+  const claims = inBlock(count("deposit"), "claimed"), sent = inBlock(count("withdrawal"), "sent");
+  const ascii = (h) => String.fromCharCode(...(h.slice(2).match(/../g) || []).map((x) => parseInt(x, 16))).replace(/[^ -~]/g, "");
+  const history = `stateRootHistory[${num(b.number % 8191)}]`;
+  // [field, value, source, on L1, on L2, back to L1]; a lone string starts a
+  // group, and the payload's fields nest inside the request, as in SSZ.
+  const NEST = 16;
+  const rows = [
+    "NEW PAYLOAD REQUEST",
+    ["execution_payload", short(pi.executionPayloadRoot), "computed", "the root of its 19 fields", "the block's header", false, 0, true],
+    ["parent_hash", short(b.parentHash), "storage", "blockHash, its last block", "the parent, which BLOCKHASH reads"],
+    ["fee_recipient", short(b.feeRecipient), "free", "", "COINBASE, paid the priority fees"],
+    ["state_root", short(b.stateRoot), "checked", "", `stored on L1: ${history}, for withdrawals`, true],
+    ["receipts_root", short(b.receiptsRoot), "checked", "", "the receipts and their logs"],
+    ["logs_bloom", "256 bytes", "checked", "", "a filter over the logs"],
+    ["prev_randao", short(b.prevRandao), "free", "", "PREVRANDAO, here keccak256 of the anchor"],
+    ["block_number", num(b.number), "storage", "blockNumber + 1", "NUMBER"],
+    ["gas_limit", num(b.gasLimit), "fixed", "immutable l2GasLimit", "GASLIMIT"],
+    ["gas_used", num(b.gasUsed), "checked", "", ""],
+    ["timestamp", num(b.timestamp), "checked", "≤ L1 time, ≤ 1 h behind it", "TIMESTAMP, and the anchor's key in EIP-4788"],
+    ["extra_data", `"${ascii(b.extraData)}"`, "free", "", ""],
+    ["base_fee_per_gas", `${num(b.baseFeePerGas)} wei`, "checked", "", "BASEFEE"],
+    ["block_hash", short(b.hash), "checked", "", "stored on L1: blockHash, the next parent", true],
+    ["transactions_root", short(ssz.transactionsRoot), "checked", "the transactions: in the blob", `${b.transactions.length} transactions`],
+    ["withdrawals_root", "empty", "fixed", "constant", "no beacon withdrawals, so no minted ETH"],
+    ["blob_gas_used", "0", "fixed", "constant", "no blob transactions on L2"],
+    ["excess_blob_gas", "0", "fixed", "constant", ""],
+    ["block_access_list_root", short(ssz.blockAccessListRoot), "checked", "the list: in the blob", `EIP-7928 access list, ${num(b.balBytes)} bytes`],
+    ["slot_number", String(b.slotNumber), "fixed", "constant, to be defined", "SLOTNUM"],
+    ["versioned_hashes", short(b.l1.blobVersionedHashes[0]), "l1", "BLOBHASH(0)", `the blob: ${num(b.payloadBytes)} bytes of block data`],
+    ["parent_beacon_block_root", short(b.parentBeaconBlockRoot), "l1", `BLOCKHASH(${num(anchor)}), the anchor`, "kept by EIP-4788: see deposits, below"],
+    ["execution_requests", short(ssz.executionRequestsRoot), "checked", "any accepted", "no effect on L2"],
+    "EIP-8025 PUBLIC INPUT, AS FOR L1'S OWN PROOFS",
+    ["new_payload_request_root", short(pi.newPayloadRequestRoot), "computed", "the root of the request above", "the block the program validates"],
+    ["successful_validation", "true", "fixed", "only valid blocks", "the program's verdict on it"],
+    ["chain_id", String(pi.chainId), "fixed", "immutable chainId", "CHAINID"],
+    ["schema_id", `0x${pi.schemaId.toString(16)}`, "registry", "its current entry", "the input format, so the fork's rules"],
+  ];
+  const W = 1124, L = [0, 336], M = [372, 752], R = [788, 1124], RH = 21, GH = 22, TOP = 50;
+  const parts = [];
+  const t = (x, y, cls, content, anchorAt = "start") => `<text class="${cls}" x="${x}" y="${y}" text-anchor="${anchorAt}">${esc(content)}</text>`;
+  const arrow = (x1, y1, x2, y2) => `<path class="bd-arrow" d="M${x1},${y1} L${x2},${y2}" marker-end="url(#bd-head)"/>`;
+  let y = TOP;
+  const rowY = [];
+  const payload = new Set(["parent_hash", "fee_recipient", "state_root", "receipts_root", "logs_bloom", "prev_randao", "block_number",
+    "gas_limit", "gas_used", "timestamp", "extra_data", "base_fee_per_gas", "block_hash", "transactions_root", "withdrawals_root",
+    "blob_gas_used", "excess_blob_gas", "block_access_list_root", "slot_number"]);
+  let nestTop = null, nestBottom = null;
+  for (const row of rows) {
+    if (typeof row === "string") {
+      parts.push(t(M[0] + 12, y + 15, "bd-group", row));
+      y += GH;
+      continue;
+    }
+    const [field, value, source, onL1, onL2, back] = row;
+    const mid = y + RH / 2;
+    const indent = payload.has(field) ? NEST : 0;
+    if (indent && nestTop === null) nestTop = y;
+    if (indent) nestBottom = y + RH;
+    rowY.push([field, mid]);
+    const label = SOURCE_LABELS[source];
+    const chipW = 6.4 * label.length + 14;
+    parts.push(`<g class="bd-row"><title>${esc(`${field}: ${value}`)}</title>
+      <rect class="bd-hit" x="0" y="${y}" width="${W}" height="${RH}"/>
+      <g class="bd-chip ${source}"><rect x="${L[0] + 4}" y="${mid - 8}" width="${chipW}" height="16" rx="8"/>${t(L[0] + 4 + chipW / 2, mid + 3.5, "", label, "middle")}</g>
+      ${onL1 ? t(L[0] + chipW + 12, mid + 4, "bd-detail", onL1) : ""}
+      ${arrow(L[1] + 2, mid, M[0] - 3, mid)}
+      ${t(M[0] + 12 + indent, mid + 4, "bd-field", field)}${t(M[1] - 12 - indent, mid + 4, "bd-value", value, "end")}
+      ${onL2 ? arrow(M[1] + 3, mid, R[0] - 3, mid) + t(R[0] + 6, mid + 4, back ? "bd-back" : "bd-l2", onL2) : ""}</g>`);
+    y += RH;
+  }
+  const rowsEnd = y;
+  // The check: the root of all of the above against the proof's.
+  y += 12;
+  parts.push(`<g class="bd-check ${ok ? "ok" : "bad"}"><rect x="${M[0]}" y="${y}" width="${M[1] - M[0]}" height="48" rx="8"/>
+    ${t((M[0] + M[1]) / 2, y + 19, "bd-field", `hash_tree_root(PublicInput) ${short(pi.publicInputRoot)}`, "middle")}
+    ${t((M[0] + M[1]) / 2, y + 36, ok ? "bd-ok" : "bd-bad", ok ? "= the proof frame's data_hash ✓" : "≠ the proof frame's data_hash", "middle")}</g>
+    ${arrow(L[1] + 2, y + 24, M[0] - 3, y + 24)}
+    ${t(L[1] - 8, y + 19, "bd-detail", "EIP-8288 proof frame: data_hash,", "end")}${t(L[1] - 8, y + 35, "bd-detail", `key ${short(pi.verificationKeyHash)}, the registry's ✓`, "end")}
+    ${t(R[0] + 6, y + 19, "bd-l2", "the commitment L1's own execution proofs")}${t(R[0] + 6, y + 35, "bd-l2", "use; here a mock signs it, not a zkVM")}`);
+  y += 48 + 28;
+  // The messages, which cross the boundary through two of the fields.
+  const box = (x0, x1, top, lines, cls = "") => `<g class="bd-box ${cls}"><rect x="${x0}" y="${top}" width="${x1 - x0}" height="${16 * lines.length + 14}" rx="8"/>
+    ${lines.map((line, i) => t(x0 + 10, top + 20 + 16 * i, i ? "bd-l2" : "bd-title", line)).join("")}</g>`;
+  const lane = (title, top, cells, rightwards) => {
+    const h = 16 * 3 + 14, mid = top + h / 2;
+    return t(L[0], top - 8, "bd-group", title)
+      + box(L[0], L[1], top, cells[0]) + box(M[0], M[1], top, cells[1], "boundary") + box(R[0], R[1], top, cells[2])
+      + (rightwards ? arrow(L[1] + 2, mid, M[0] - 3, mid) + arrow(M[1] + 3, mid, R[0] - 3, mid)
+        : arrow(R[0] - 2, mid, M[1] + 3, mid) + arrow(M[0] - 2, mid, L[1] + 3, mid));
+  };
+  parts.push(lane("DEPOSITS, L1 TO L2", y, [
+    ["The rollup contract", "adds each deposit to a Merkle tree,", "its root in storage slot 3"],
+    [`parent_beacon_block_root = L1 block ${num(anchor)}`, "a block hash commits to that block's state,", "and so to the root in slot 3"],
+    [`EIP-4788 keeps it under ${num(b.timestamp)}`, "the messenger proves slot 3 against it, and", `each claim against that root: ${claims}`],
+  ], true));
+  y += 62 + 34;
+  parts.push(lane("WITHDRAWALS, L2 TO L1", y, [
+    [history, "keeps this state root, and a claim", "proves its withdrawal against it"],
+    ["state_root", "commits to the messenger's storage,", "so to every withdrawal sent so far"],
+    ["The L2 messenger", "records each withdrawal in its storage,", `slot 2: ${sent}`],
+  ], false));
+  y += 62 + 8;
+  const head = `${t(L[0], 16, "bd-title", "L1: where the rollup contract gets it")}${t(L[0], 33, "bd-sub", `advance, in L1 block ${num(b.l1.block)}`)}
+    ${t((M[0] + M[1]) / 2, 16, "bd-title", "The boundary: the proof's public input", "middle")}${t((M[0] + M[1]) / 2, 33, "bd-sub", "EIP-8025's, exactly as for L1 blocks", "middle")}
+    ${t(R[0] + 6, 16, "bd-title", `L2: what it is in block ${num(b.number)}`)}${t(R[0] + 6, 33, "bd-sub", "inside the L2 program's execution")}`;
+  return `<div class="boundary-wrap"><svg class="boundary" viewBox="0 0 ${W} ${y}" role="img" aria-label="Where each field of L2 block ${b.number} comes from on L1 and what it is on L2">
+    <defs><marker id="bd-head" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="6" markerHeight="6" orient="auto"><path class="bd-headpath" d="M0,0 L6,3 L0,6 z"/></marker></defs>
+    <rect class="bd-band" x="${M[0]}" y="${TOP - 6}" width="${M[1] - M[0]}" height="${rowsEnd - TOP + 12}" rx="10"/>
+    <rect class="bd-nest" x="${M[0] + NEST - 4}" y="${nestTop - 2}" width="${M[1] - M[0] - 2 * NEST + 8}" height="${nestBottom - nestTop + 4}" rx="7"/>
+    ${head}${parts.join("")}</svg></div>`;
 }
 
 // The steps every L2 block takes to L1, each linked to what shows it.
