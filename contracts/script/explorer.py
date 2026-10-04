@@ -267,14 +267,31 @@ def trie_path(proof: tuple) -> dict:
 MESSAGE_TREE_DEPTH = 32  # MessageTree.DEPTH
 
 
-def path_to_root(m: tuple, path: list) -> dict:
-    """The nodes from a message's leaf up to the message tree's root, as
-    `MessageTree.rootFromPath` computes them."""
-    sender, to, value, fee, gas_limit, data, index = m
-    node = keccak256(
+def message_hash(sender: str, to: str, value: int, fee: int, gas_limit: int, data: bytes, index: int) -> bytes:
+    """`Messages.hash`: a message's leaf in the message tree from L1, or its
+    entry in the L2 messenger's queue."""
+    return keccak256(
         bytes.fromhex(sender[2:]) + bytes.fromhex(to[2:]) + value.to_bytes(32, "big") + fee.to_bytes(32, "big")
         + gas_limit.to_bytes(32, "big") + keccak256(data) + index.to_bytes(32, "big")
     )
+
+
+def sent_message(a: dict) -> dict:
+    """What a message event tells about its message: its fields, hash and
+    call."""
+    data = bytes.fromhex(a["data"][2:])
+    return {
+        "from": a["sender"], "to": a["to"], "value": a["value"], "fee": a["fee"], "gasLimit": a["gasLimit"], "data": a["data"],
+        "hash": hx(message_hash(a["sender"], a["to"], int(a["value"]), int(a["fee"]), int(a["gasLimit"]), data, int(a["index"]))),
+        **message_call(a["data"]),
+    }
+
+
+def path_to_root(m: tuple, path: list) -> dict:
+    """The nodes from a message's leaf up to the message tree's root, as
+    `MessageTree.rootFromPath` computes them."""
+    _, _, _, _, _, _, index = m
+    node = message_hash(*m)
     out = {"leaf": hx(node), "levels": []}
     zero = bytes(32)
     for height in range(MESSAGE_TREE_DEPTH):
@@ -677,10 +694,7 @@ class Explorer:
                 event = log.get("event") or {}
                 if event.get("name") == "L1MessageSent":
                     a = event["args"]
-                    self.merge_message(
-                        "deposits", a["index"], **{"from": a["sender"]}, to=a["to"], value=a["value"], fee=a["fee"],
-                        gasLimit=a["gasLimit"], data=a["data"], **message_call(a["data"]), l1Tx=tx["hash"], l1Block=tx["block"],
-                    )
+                    self.merge_message("deposits", a["index"], **sent_message(a), l1Tx=tx["hash"], l1Block=tx["block"])
         if kind == "withdrawal claim":
             self.merge_message("withdrawals", tx["call"]["args"]["m"]["index"], l1Tx=tx["hash"], l1Block=tx["block"])
 
@@ -751,10 +765,7 @@ class Explorer:
                 if event.get("name") == "L2MessageSent":
                     a = event["args"]
                     tx["withdrawal"] = a["index"]
-                    self.merge_message(
-                        "withdrawals", a["index"], **{"from": a["sender"]}, to=a["to"], value=a["value"], fee=a["fee"],
-                        gasLimit=a["gasLimit"], data=a["data"], **message_call(a["data"]), l2Tx=tx["hash"], l2Block=block["number"],
-                    )
+                    self.merge_message("withdrawals", a["index"], **sent_message(a), l2Tx=tx["hash"], l2Block=block["number"])
             self.write(f"l2/txs/{tx['hash']}", tx)
         # What the block's transaction table shows, so it needs no other file.
         block["transactions"] = [

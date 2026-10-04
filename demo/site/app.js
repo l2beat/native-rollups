@@ -785,6 +785,124 @@ async function loadMessages(txs) {
 }
 
 // A message's journey between the chains, with what it carries.
+// The keccak256 of slot 2, where the L2 messenger's queue of sent messages, a
+// Solidity array, keeps its entries: entry i is at this slot plus i.
+const QUEUE_BASE = 0x405787fa12a823e0f2b7631cc41b3ba8828b3321ca811111fa75cd3aa3bb5acen;
+
+// A message's way between the chains, with its values: how it is sent and
+// committed on one chain, how the other learns the commitment, and how a
+// claim unpacks and delivers it. Steps not taken yet are dashed.
+function messageFlow({ m, deposit, claim, anchoring, posted }) {
+  const [from, to] = deposit ? ["l1", "l2"] : ["l2", "l1"];
+  const [FROM, TO] = [from.toUpperCase(), to.toUpperCase()];
+  const W = 1124, S = [0, 470], X = [327, 797], D = [654, 1124], GAP = 34, LINE = 17;
+  const name = (a) => (a ? (labels()[a.toLowerCase()] || [short(a)])[0] : "");
+  const method = m.method ? (m.call ? m.method : `the function ${m.method}`) : "";
+  const value = BigInt(m.value || 0) > 0n;
+  const what = method ? `${value ? `${eth(m.value)} and ` : ""}a call to ${method}` : eth(m.value);
+  // The claim's call, which a frame of a frame transaction may make.
+  const calls = claim ? (claim.frames ? claim.frames.map((f) => f.call) : [claim.call]).filter(Boolean) : [];
+  const claimCall = calls.find((c) => c.function === (deposit ? "claimL1Message" : "claimL2Message"));
+  const feeRecipient = claimCall && claimCall.args.feeRecipient;
+  const delivered = claim && [
+    `the ${deposit ? "L2 messenger" : "rollup contract"} ${method ? `calls ${method} on ${name(m.to)}${value ? ` with ${eth(m.value)}` : ""}` : `sends ${eth(m.value)} to ${name(m.to)}`},`,
+    `answering ${deposit ? "l1Sender()" : "l2Sender()"} with ${name(m.from)} meanwhile, and pays`,
+    `the fee of ${eth(m.fee)} to ${name(feeRecipient || claim.from)}`,
+    { text: `${TO} tx ${short(claim.hash)}`, href: `#/${to}/tx/${claim.hash}` },
+  ];
+  const sentLines = [
+    `${name(m.from)} sends ${what}`,
+    `to ${name(m.to)} on ${TO}, with a fee of ${eth(m.fee)} for whoever claims it`,
+    deposit ? { text: `L1 tx ${short(m.l1Tx)}, L1 block ${num(m.l1Block)}`, href: `#/l1/tx/${m.l1Tx}` }
+      : { text: `L2 tx ${short(m.l2Tx)}, L2 block #${num(m.l2Block)}`, href: `#/l2/tx/${m.l2Tx}` },
+  ];
+  let steps;
+  if (deposit) {
+    const prove = calls.find((c) => c.function === "proveL1MessageRoot");
+    const path = claimCall && claimCall.pathToRoot;
+    steps = [
+      ["S", "Sent on L1", sentLines],
+      ["S", "Committed", [
+        `keccak256 of its fields: ${short(m.hash)}, leaf ${num(m.index)}`,
+        "of the rollup contract's Merkle tree of messages,",
+        "whose root it keeps in storage slot 3",
+      ]],
+      ["X", "Anchored", anchoring && [
+        `L2 block #${num(anchoring.number)} anchors L1 block ${num(anchoring.anchor)}: its parent_beacon_block_root`,
+        "is that block's hash, which commits to L1's state and so to",
+        "slot 3. EIP-4788 keeps it in a contract on L2",
+        { text: `L2 block #${num(anchoring.number)}`, href: `#/l2/block/${anchoring.number}` },
+      ], `An L2 block that anchors L1 block ${num(m.l1Block)} or later`],
+      ["D", "Root proven on L2", path && (prove ? [
+        `the claim proves L1 block ${num(anchoring ? anchoring.anchor : m.l1Block)}'s header against the anchor,`,
+        "then the rollup contract's account and slot 3 in its state:",
+        `the root ${short(path.root)}`,
+        { text: "the proofs", href: `#/l2/tx/${claim.hash}/frames` },
+      ] : [
+        `the L2 messenger had proven the root ${short(path.root)}`,
+        "for an earlier claim, against the anchor of a recent",
+        "L2 block, and keeps it for the claims that follow",
+      ]), "A claim proves slot 3 against the anchor, once per root"],
+      ["D", "Unpacked", path && [
+        `claimL1Message hashes the fields into the leaf ${short(path.leaf)},`,
+        `then up ${path.levels.length} levels with the claim's siblings: the root ✓,`,
+        `and marks message #${num(m.index)} claimed`,
+        { text: "the path", href: `#/l2/tx/${claim.hash}/frames` },
+      ], "Its recipient claims it for free, or anyone for its fee"],
+      ["D", "Delivered", delivered, ""],
+    ];
+  } else {
+    const slot = `0x${(QUEUE_BASE + BigInt(m.index)).toString(16).padStart(64, "0")}`;
+    const n = m.l2Block;
+    steps = [
+      ["S", "Sent on L2", sentLines],
+      ["S", "Committed", [
+        `keccak256 of its fields: ${short(m.hash)}, entry ${num(m.index)}`,
+        "of the L2 messenger's queue of sent messages,",
+        `in its storage slot ${short(slot)}`,
+      ]],
+      ["X", "Posted", posted && [
+        `L2 block #${num(n)}'s state root commits to that slot. The block reached`,
+        "L1 with its proof, and the rollup contract keeps the root",
+        `in stateRootHistory[${num(n % 8191)}]`,
+        { text: `L1 tx ${short(posted)}`, href: `#/l1/tx/${posted}` },
+      ], `L2 block #${num(n)} reaching L1`],
+      ["D", "Proven on L1", claimCall && [
+        `claimL2Message proves the L2 messenger's account and slot ${short(slot)}`,
+        `against the state root of L2 block #${num(claimCall.args.l2BlockNumber)}: the entry is the hash ✓,`,
+        `and marks message #${num(m.index)} claimed`,
+        { text: "the proofs", href: `#/l1/tx/${claim.hash}` },
+      ], "Its recipient claims it for free, or anyone for its fee"],
+      ["D", "Delivered", delivered, ""],
+    ];
+  }
+  const cols = { S, X, D };
+  const t = (x, y, cls, content) => `<text class="${cls}" x="${x}" y="${y}">${esc(content)}</text>`;
+  const parts = [];
+  let y = 46, prev = null;
+  steps.forEach(([col, title, lines, waiting], i) => {
+    const [x0, x1] = cols[col];
+    const done = !!lines;
+    const body = done ? lines : [waiting].filter(Boolean);
+    const h = LINE * body.length + 34;
+    if (prev) {
+      // Down from the last box, across to this one's column if it moves.
+      const [px, py] = prev, cx = (x0 + x1) / 2, mid = (py + y) / 2;
+      parts.push(`<path class="bd-arrow" d="M${px},${py + 2} L${px},${mid} L${cx},${mid} L${cx},${y - 3}" marker-end="url(#mf-head)"/>`);
+    }
+    parts.push(`<g class="bd-box ${col === "X" ? "boundary" : ""} ${done ? "" : "pending"}"><rect x="${x0}" y="${y}" width="${x1 - x0}" height="${h}" rx="8"/>
+      ${t(x0 + 12, y + 21, "bd-title", `${i + 1}  ${title}`)}
+      ${body.map((line, j) => (typeof line === "string" ? t(x0 + 12, y + 40 + LINE * j, "bd-l2", line)
+        : `<a href="${line.href}">${t(x0 + 12, y + 40 + LINE * j, "bd-link", line.text)}</a>`)).join("")}</g>`);
+    prev = [(x0 + x1) / 2, y + h];
+    y += h + GAP;
+  });
+  const head = `${t(S[0], 16, "bd-title", `${FROM}: where it is sent`)}${t(D[1], 16, "bd-title mf-end", `${TO}: where it is delivered`)}`;
+  return `<div class="boundary-wrap"><svg class="boundary flow" viewBox="0 0 ${W} ${y - GAP + 4}" role="img" aria-label="How message #${m.index} goes from ${FROM} to ${TO}">
+    <defs><marker id="mf-head" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="6" markerHeight="6" orient="auto"><path class="bd-headpath" d="M0,0 L6,3 L0,6 z"/></marker></defs>
+    ${head}${parts.join("")}</svg></div>`;
+}
+
 async function messagePage(route) {
   const deposit = route.kind === "deposit";
   const kind = deposit ? "deposits" : "withdrawals";
@@ -797,37 +915,11 @@ async function messagePage(route) {
     deposit ? m.l2Tx && object(`l2/txs/${m.l2Tx}`) : m.l1Tx && object(`l1/txs/${m.l1Tx}`),
   ]);
   const [from, to] = deposit ? ["l1", "l2"] : ["l2", "l1"];
-  const claimer = claim && claim.from === m.to ? "Its recipient claimed it" : claim ? `${addr(claim.from, to)} claimed it for the fee` : "";
-  const waiting = "Its recipient can claim it for free, or anyone for its fee.";
-  let steps;
-  if (deposit) {
-    const anchoring = await getJSON(`/api/explorer/anchoring/${m.l1Block}.json`);
-    steps = [
-      ["Send", "real", `The rollup contract added it to its message tree${BigInt(m.value || 0) > 0n ? " and holds its ETH" : ""}.`,
-        `${l1TxLink(m.l1Tx)} <span class="muted">L1 block ${num(m.l1Block)}</span>`],
-      anchoring
-        ? ["Anchor", "real", `An L2 block ${term("anchored")} an L1 block with this tree, so L2 can prove its root.`, l2BlockLink(anchoring.number)]
-        : ["Anchor", "pending", "Waiting for an L2 block to anchor an L1 block with it.", ""],
-      m.l2Tx
-        ? ["Claim", "real", `${claimer}, proving it against that root, and the L2 messenger delivered it.`, l2TxLink(m.l2Tx)]
-        : ["Claim", "pending", waiting, ""],
-    ];
-  } else {
-    const block = m.l2Block && state.rollupHead >= m.l2Block ? await object(`l2/blocks/${m.l2Block}`) : null;
-    const posted = block && { l1Tx: block.l1.tx };
-    steps = [
-      ["Send", "real", "The L2 messenger recorded it in its storage.", `${l2TxLink(m.l2Tx)} <span class="muted">in</span> ${l2BlockLink(m.l2Block)}`],
-      posted
-        ? ["Post", "real", "Its block reached L1, and the rollup contract stored its state root.", l1TxLink(posted.l1Tx)]
-        : ["Post", "pending", "Waiting for its block to reach L1.", ""],
-      m.l1Tx
-        ? ["Claim", "real", `${claimer}, proving it against that state root, and the rollup contract delivered it.`, l1TxLink(m.l1Tx)]
-        : ["Claim", "pending", waiting, ""],
-    ];
-  }
+  const anchoring = deposit ? await getJSON(`/api/explorer/anchoring/${m.l1Block}.json`) : null;
+  const block = !deposit && m.l2Block && state.rollupHead >= m.l2Block ? await object(`l2/blocks/${m.l2Block}`) : null;
   const data = m.data || (sent && sent.call && sent.call.args.data);
   return `<h1>${title}</h1>
-    ${stepper(steps)}
+    ${messageFlow({ m, deposit, claim, anchoring, posted: block && block.l1.tx })}
     ${fields([
       ["Value", m.value !== undefined ? eth(m.value) : "", ""],
       ["Fee", m.fee ? eth(m.fee) : "none", "For whoever claims it. Its recipient claims it for free."],

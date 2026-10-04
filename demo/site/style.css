@@ -387,6 +387,12 @@ svg.boundary .bd-source.free { fill: var(--muted); }
 svg.boundary .bd-source.fixed { fill: var(--tag); }
 svg.boundary .bd-source.registry { fill: var(--l2); }
 svg.boundary .bd-box rect { fill: var(--panel); stroke: var(--line); }
+svg.boundary .bd-box.pending rect { fill: none; stroke-dasharray: 4 3; }
+svg.boundary .bd-box.pending text { fill: var(--muted); }
+svg.boundary .bd-link { fill: var(--accent); }
+svg.boundary a:hover .bd-link { text-decoration: underline; }
+svg.flow .bd-l2 { fill: var(--ink-soft); }
+svg.flow .mf-end { text-anchor: end; }
 svg.boundary .bd-box.boundary rect { fill: var(--soft); stroke: var(--edge); }
 svg.boundary .bd-check rect { fill: var(--real-bg); stroke: var(--real); }
 svg.boundary .bd-check.bad rect { fill: var(--bad-bg); stroke: var(--bad); }

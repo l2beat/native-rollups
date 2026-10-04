@@ -12,7 +12,8 @@ L2 block anchors their deposits, each claims theirs with a frame transaction
 they sign, which pays for itself. The users pay each other through the
 L2 RPC, and Charlie, who never deposits, withdraws ETH received on L2 to L1
 and claims it there. Alice and Bob also move a demo token through an example
-ERC-20 bridge, to L2 and back. Every step is recorded in `demo/data/session.json`,
+ERC-20 bridge, to L2 and back, and ping an example ping pong on the other
+chain, which answers with a pong. Every step is recorded in `demo/data/session.json`,
 which `demo/server.py` serves to the site. When it starts, or if the L2 node
 stops, the runner resumes the last rollup if L1 still has it: the L2 node
 replays its blocks, the follower rebuilds the chain from L1, and the story
@@ -560,6 +561,22 @@ class Episode:
                               str(amount), "--value", str(MESSAGE_FEE))
             self.event("message", f"{user} bridges {amount / ETH:g} DEMO back to L1", to="l1", sender=user, l2Tx=tx)
 
+    def ping(self, user: str, from_l1: bool) -> None:
+        """A ping from `user` to the ping pong on the other chain, which
+        answers it with a pong."""
+        c = self.contracts
+        if from_l1:
+            receipt = json.loads(cast(
+                "send", "--rpc-url", self.args.rpc, "--private-key", USER_KEYS[user], "--json", "--timeout", "120",
+                c["pingPongL1"], "ping()", "--value", str(PING_VALUE),
+            ))
+            index = next(int(log["topics"][1], 16) for log in receipt["logs"] if log["topics"][0] == L1_MESSAGE_SENT)
+            self.event("message", f"{user} sends a ping to L2", to="l2", sender=user, index=index,
+                       l1={"txHash": receipt["transactionHash"], "block": int(receipt["blockNumber"], 16)})
+        else:
+            tx = self.send_l2(user, c["pingPongL2"], "ping()", "--value", str(PING_VALUE))
+            self.event("message", f"{user} sends a ping to L1", to="l1", sender=user, l2Tx=tx)
+
     def random_payment(self, exclude: tuple) -> None:
         """A payment between users, a small part of what its sender can spend."""
         senders = [u for u in USER_KEYS if u not in exclude and self.spendable(u) > ETH // 100]
@@ -617,7 +634,7 @@ class Episode:
                 if c.get("to") in names:
                     self.event("claim", f"{names[c['to']]} claims a {c['value'] / ETH:g} ETH deposit on L2", l2Tx=c["tx"], deposit=c["index"])
                 elif c.get("index") in story:
-                    self.event("claim", f"The relayer delivers {story[c['index']]}'s DEMO on L2", l2Tx=c["tx"], deposit=c["index"])
+                    self.event("claim", f"The relayer delivers {story[c['index']]}'s message on L2", l2Tx=c["tx"], deposit=c["index"])
 
     def claim_withdrawals(self) -> None:
         """Claims on L1 the withdrawals to the story's users, each with the
@@ -707,6 +724,12 @@ class Episode:
                 holders = [u for u in ("Alice", "Bob") if self.demo_balance(u, False) >= 100 * ETH]
                 if holders:
                     self.bridge(random.choice(holders), True, 100 * ETH)
+            # A ping to the other chain every 20 steps, from either side.
+            if self.contracts.get("appsOnL2") and i % 20 == 10:
+                user, from_l1 = ("Alice", True) if i // 20 % 2 == 0 else ("Bob", False)
+                self.ping(user, from_l1)
+                if not from_l1:
+                    busy = (user,)
             if self.contracts.get("appsOnL2") and i % 20 == 15:
                 holder = max(("Alice", "Bob"), key=lambda u: self.demo_balance(u, True))
                 amount = self.demo_balance(holder, True) // 2 // ETH * ETH
