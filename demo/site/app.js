@@ -81,11 +81,11 @@ const badge = (kind, text) => `<span class="badge ${kind}">${text || kind}</span
 const pct = (x) => `${(100 * x).toFixed(x < 0.1 ? 1 : 0)}%`;
 const ago = (t) => {
   const s = Math.max(0, Math.round(Date.now() / 1000 - t));
-  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}min ago` : `${Math.round(s / 3600)}h ago`;
 };
 // The median, which a restart's gap does not skew.
 const median = (xs) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] : null);
-const secs = (s) => (s < 120 ? `${Math.round(s)} s` : `${Math.round(s / 60)} min`);
+const secs = (s) => (s < 120 ? `${Math.round(s)}s` : `${Math.round(s / 60)}min`);
 // Hashes of nothing, which could pass for arbitrary values.
 const EMPTY_HASHES = {
   "0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855": "the SHA-256 of nothing: no requests (EIP-7685)",
@@ -372,7 +372,7 @@ async function home() {
     ["ETH on L2", escrow ? `${(Number(BigInt(escrow)) / 1e18).toLocaleString("en-US", { maximumFractionDigits: 2 })} <span class="unit">ETH</span>` : ""],
     ["Deposits", num(deposits.count)],
     ["Withdrawals", num(withdrawals.count)],
-    ["Block time", interval ? `${Math.round(interval)} s` : ""],
+    ["Block time", interval ? `${Math.round(interval)}s` : ""],
   ];
   return `
     <h1>A native rollup, explained as it runs</h1>
@@ -574,7 +574,7 @@ function boundaryView(b, rec) {
     ["block_number", num(b.number), "storage", "blockNumber + 1", "NUMBER"],
     ["gas_limit", num(b.gasLimit), "fixed", "immutable l2GasLimit", "GASLIMIT"],
     ["gas_used", num(b.gasUsed), "checked", "", ""],
-    ["timestamp", num(b.timestamp), "checked", "≤ L1 time, ≤ 1 h behind it", "TIMESTAMP, and the anchor's key in EIP-4788"],
+    ["timestamp", num(b.timestamp), "checked", "≤ L1 time, ≤ 1h behind it", "TIMESTAMP, and the anchor's key in EIP-4788"],
     ["extra_data", `"${ascii(b.extraData)}"`, "free", "", ""],
     ["base_fee_per_gas", `${num(b.baseFeePerGas)} wei`, "checked", "", "BASEFEE"],
     ["block_hash", short(b.hash), "checked", "", "stored on L1: blockHash, the next parent", true],
