@@ -98,7 +98,9 @@ from ethereum.forks.amsterdam.stateless_host import (
     deserialize_stateless_output,
     serialize_stateless_input,
 )
-from ethereum.forks.amsterdam.stateless_host_exec_witness import build_execution_witness
+from ethereum.forks.amsterdam import stateless_host_exec_witness as host_witness
+from ethereum.forks.amsterdam.incremental_mpt import IncrementalMPT, MutableBranchNode, MutableExtensionNode, Witness, mpt_root
+from ethereum.forks.amsterdam.stateless import ExecutionWitness
 from ethereum.forks.amsterdam.transactions import (
     AccessListTransaction,
     BlobTransaction,
@@ -326,6 +328,20 @@ class PoolTransaction:
     claims: tuple  # the L1 messages it claims
 
 
+def settle(node) -> None:
+    """Marks the trie nodes a block changed as clean once the root has cached
+    their hashes. They are the ones on changed paths, so this walks only
+    those, and the next block's witness records them as pre-state nodes."""
+    if node is None or not getattr(node, "_dirty", False):
+        return
+    node._dirty = False
+    if isinstance(node, MutableBranchNode):
+        for child in node.children:
+            settle(child)
+    elif isinstance(node, MutableExtensionNode):
+        settle(node.child)
+
+
 def calls_messenger(frame, selector: bytes) -> bool:
     return len(frame.to) > 0 and bytes(frame.to) == bytes(MESSENGER) and bytes(frame.data[:4]) == selector
 
@@ -383,6 +399,9 @@ class Node:
         self.messages: list[dict] = []  # the logs of every L2 to L1 message
         self.logs_from = 0  # the first block whose logs the RPC has
         self.diffs: dict[int, object] = {}  # state changes of blocks not posted yet
+        # The head's state as execution-specs' incremental tries, kept across
+        # blocks: the account trie and each account's storage trie.
+        self.tries: tuple[IncrementalMPT, dict[Address, IncrementalMPT]] | None = None
         snapshot = self.load_snapshot() if self.config.get("snapshot") else 0
         if not snapshot:
             self.index(self.chain.blocks[0], None)
@@ -577,8 +596,7 @@ class Node:
         output, included, rejected = self.execute(env, [], [block_transaction(t.raw) for t in candidates])
         self.drop_rejected(block_state, rejected)
 
-        diff = extract_block_diff(block_state)
-        state_root = self.chain.state.compute_state_root(diff)
+        witness, state_root = self.witness(block_state)
         h = header({
             "parent_hash": keccak256(rlp.encode(parent)), "ommers_hash": fork.EMPTY_OMMER_HASH,
             "coinbase": FEE_RECIPIENT, "state_root": state_root, "transactions_root": root(output.transactions_trie),
@@ -593,13 +611,6 @@ class Node:
         block = Block(header=h, transactions=tuple(included), ommers=(), withdrawals=())
 
         # Validate the block with the L1 stateless validation program.
-        witness = build_execution_witness(
-            block_state,
-            expected_post_state_root=state_root,
-            pre_state_accounts_data=self.chain.state._main_trie,
-            pre_state_storages_data=self.chain.state._storage_tries,
-            blockchain_headers=[rlp.encode(b.header) for b in self.chain.blocks],
-        )
         input_bytes = serialize_stateless_input(build_stateless_input(
             block,
             execution_witness=witness,
@@ -766,6 +777,40 @@ class Node:
             if not waiting:
                 print(f"dropped {hx(h)}: {error!r}", flush=True)
                 del self.pool[h]
+
+    def witness(self, block_state: BlockState) -> tuple[ExecutionWitness, bytes]:
+        """The block's execution witness and post-state root, built as
+        execution-specs' `build_execution_witness` builds them, but on tries
+        the node keeps across blocks: rebuilding them from the whole state
+        made each block cost more as the state grew."""
+        accounts, storage = self.tries or (None, None)
+        if accounts is None or mpt_root(accounts) != self.head.state_root:
+            # The first block, or the last one built was not added.
+            storage = host_witness._build_pre_state_storage_mpts(self.chain.state._storage_tries)
+            accounts = host_witness._build_pre_state_account_mpt(self.chain.state._main_trie, storage)
+            self.tries = accounts, storage
+        for trie in [accounts, *storage.values()]:
+            trie.witness = Witness()
+
+        # As `build_execution_witness`: record the pre-state nodes the block
+        # reads or writes, then write.
+        host_witness._capture_pre_state_storage_nodes(storage, host_witness._collect_storage_accesses(block_state))
+        host_witness._apply_storage_writes(storage, block_state.storage_writes)
+        dirty = host_witness._get_all_dirty_accounts(block_state)
+        host_witness._capture_pre_state_account_nodes(accounts, block_state.account_reads, dirty)
+        host_witness._apply_account_writes(accounts, storage, block_state, dirty)
+        state_root = mpt_root(accounts)
+        nodes = host_witness._collect_accessed_nodes(accounts, storage)
+        settle(accounts.root_node)
+        for address in block_state.storage_writes:
+            settle(storage[address].root_node)
+
+        ancestors = host_witness.get_witness_ancestors(self.chain.blocks, block_state.oldest_ancestor_offset)
+        return ExecutionWitness(
+            state=tuple(sorted(nodes.values())),
+            codes=tuple(host_witness.get_witness_codes(block_state.code_reads, block_state.pre_state)),
+            headers=tuple(rlp.encode(b.header) for b in ancestors),
+        ), state_root
 
     def commit(self, pending: Pending) -> None:
         diff = extract_block_diff(pending.block_state)
