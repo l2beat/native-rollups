@@ -296,11 +296,6 @@ details.code > pre.code { margin: 0; border-radius: 0 0 10px 10px; background: v
 
 .pager { display: flex; gap: 12px; align-items: center; margin: 10px 0; font-size: 14px; }
 
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
-.card { display: block; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
-.card:hover { border-color: var(--accent); text-decoration: none; }
-.card h3 { margin: 0 0 6px; font-size: 16px; }
-.card p { margin: 0; font-size: 14px; color: var(--ink-mid); }
 
 footer { text-align: center; color: var(--muted); font-size: 14px; padding: 30px; border-top: 1px solid var(--line); }
 
