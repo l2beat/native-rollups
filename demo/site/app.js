@@ -285,17 +285,23 @@ async function render(live = false) {
 }
 
 // Live pages re-render on every refresh. Only touch the page when it changed,
-// and keep the scroll of inner blocks, such as sources, and which sections
-// are open.
+// and keep which sections are open and the scroll of every part that
+// scrolls on its own, such as sources, diagrams and wide tables, found again
+// by tag, classes and place among their likes.
 let shown = { key: null, html: null };
 function update(app, html, key) {
   if (shown.key === key && shown.html === html) return;
   const same = shown.key === key;
-  const scrolls = same ? [...app.querySelectorAll("pre")].map((e) => [e.scrollTop, e.scrollLeft]) : [];
+  const selector = (e) => e.tagName.toLowerCase() + [...e.classList].filter((c) => c !== "target").map((c) => `.${CSS.escape(c)}`).join("");
+  const scrolls = same ? [...app.querySelectorAll("*")].filter((e) => e.scrollLeft || e.scrollTop)
+    .map((e) => [selector(e), [...app.querySelectorAll(selector(e))].indexOf(e), e.scrollLeft, e.scrollTop]) : [];
   const open = same ? [...app.querySelectorAll("details")].map((d) => d.open) : [];
   app.innerHTML = html;
   shown = { key, html };
-  [...app.querySelectorAll("pre")].forEach((e, i) => i < scrolls.length && ([e.scrollTop, e.scrollLeft] = scrolls[i]));
+  for (const [sel, i, left, top] of scrolls) {
+    const e = app.querySelectorAll(sel)[i];
+    if (e) [e.scrollLeft, e.scrollTop] = [left, top];
+  }
   [...app.querySelectorAll("details")].forEach((d, i) => i < open.length && (d.open = open[i]));
 }
 
