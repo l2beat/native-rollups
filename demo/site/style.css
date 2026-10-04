@@ -9,7 +9,9 @@
   --real: #2b8a3e;
   --real-bg: #e6f4ea;
   --mock: #b35c00;
+  --mock-bg: #fff1dc;
   --tag: #495057;
+  --tag-bg: #eceff3;
   --bad: #c92a2a;
   --bad-bg: #fdecec;
   --ink-soft: #3a3a3e;
@@ -22,6 +24,8 @@
   --fainter: #b8b5ae;
   --track: #efece5;
   --accent-bg: #edf1ff;
+  --accent-line: #c9d4fb;
+  --real-line: #b7dfc2;
   --l1: #34487a;
   --l1-bg: #e3e8f4;
   --l2: #7b2fb5;
@@ -51,7 +55,9 @@
     --real: #5cc27a;
     --real-bg: #17301f;
     --mock: #eea54d;
+    --mock-bg: #382812;
     --tag: #c3c6cb;
+    --tag-bg: #2b2d31;
     --bad: #ff7070;
     --bad-bg: #3b1b1b;
     --ink-soft: #d6d4cf;
@@ -64,6 +70,8 @@
     --fainter: #5d5a55;
     --track: #2f2c28;
     --accent-bg: #1f2646;
+    --accent-line: #36427a;
+    --real-line: #2b5a39;
     --l1: #a7b8ea;
     --l1-bg: #222a42;
     --l2: #cfa0ec;
@@ -127,9 +135,9 @@ h3 { font-size: 16px; margin: 20px 0 8px; }
 .row-links { display: flex; gap: 14px; font-size: 14px; margin: -4px 0 8px; }
 
 /* Badges */
-.badge { font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; vertical-align: 1px; }
-.badge.real { color: var(--real); }
-.badge.mock { color: var(--mock); }
+.badge { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 2px 6px; border-radius: 5px; vertical-align: 1px; }
+.badge.real { background: var(--real-bg); color: var(--real); }
+.badge.mock { background: var(--mock-bg); color: var(--mock); }
 .legend { display: flex; gap: 8px 14px; flex-wrap: wrap; align-items: center; font-size: 14px; color: var(--muted); }
 
 /* Callouts */
@@ -199,7 +207,7 @@ table.txs .addr .muted, .targets .addr .muted, .item .addr .muted { display: non
 .targets { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; align-items: baseline; }
 .prose { font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
 .tag-note { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); }
-.empty-hash { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); white-space: nowrap; }
+.empty-hash { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--tag); background: var(--tag-bg); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
 .net { display: inline-block; font: 700 9.5px/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: 0.03em; padding: 2px 4px; border-radius: 4px; margin-right: 4px; vertical-align: 1.5px; }
 .net.l1 { background: var(--l1-bg); color: var(--l1); }
 .net.l2 { background: var(--l2-bg); color: var(--l2); }
@@ -222,16 +230,17 @@ details.more > table { margin-top: 6px; }
 .frame { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .frame-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; background: var(--soft); border-bottom: 1px solid var(--line); }
 .frame-head .idx { font-weight: 700; }
-.frame-head .mode { font: 700 12px var(--mono); }
+.frame-head .mode { font: 700 12px var(--mono); padding: 2px 8px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); }
 .frame-head .status { margin-left: auto; font-size: 13px; }
 .frame-body { padding: 10px 14px 14px; }
 .frame-body .explain { margin: 2px 0 10px; max-width: 880px; }
 .frame table { border: none; border-radius: 0; }
 .gasbar { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 4px 0 8px; }
-.kind { font: 11.5px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); white-space: nowrap; }
-.kind.verified { color: var(--real); }
+.kind { font: 11.5px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); background: var(--soft); border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; white-space: nowrap; }
+.kind.verified { color: var(--real); background: var(--real-bg); border-color: var(--real-line); }
+.kind.unverified { border-style: dashed; }
 .term { text-decoration: underline dotted var(--faint); text-underline-offset: 3px; cursor: help; }
-.flag { font: 600 11.5px var(--mono); color: var(--accent); }
+.flag { font: 600 11.5px var(--mono); color: var(--accent); background: var(--accent-bg); border: 1px solid var(--accent-line); padding: 1px 6px; border-radius: 5px; }
 
 .fill { position: relative; height: 10px; background: var(--track); border-radius: 5px; overflow: hidden; margin: 6px 0; max-width: 520px; }
 .fill > span { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 5px; min-width: 2px; }
