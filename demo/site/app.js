@@ -187,14 +187,11 @@ const contents = (kinds) =>
   ["deposit claim", "withdrawal", "transfer", "call", "deploy", "delegation", "frame transaction"].filter((k) => kinds[k]).map((k) => kindText(k, kinds[k])).join(", ") || '<span class="muted">empty</span>';
 const TX_TYPES = { 0: "legacy", 1: "EIP-2930 access list", 2: "EIP-1559", 4: "EIP-7702 set code", 6: "EIP-8141 frame transaction" };
 const L1_KINDS = { advance: "adds an L2 block", deposit: "message to L2", "withdrawal claim": "message claim" };
-// What a message delivers: ETH, a call with its data, or both.
+// The function a message's call runs, as transaction lists show it: its
+// name if the explorer knows it, or its selector.
 const hasData = (d) => !!d && d !== "0x";
-const dataText = (d) => {
-  const bytes = hasData(d) ? d.slice(2).match(/../g).map((x) => parseInt(x, 16)) : [];
-  return bytes.length && bytes.every((b) => b >= 32 && b < 127) ? String.fromCharCode(...bytes) : null;
-};
-const callText = (d) => (dataText(d) ? `a call with "${esc(dataText(d))}"` : `a call with ${num((d.length - 2) / 2)} bytes of data`);
-const carries = (m) => [BigInt(m.value || 0) > 0n ? `<span class="nowrap">${eth(m.value)}</span>` : "", hasData(m.data) ? callText(m.data) : ""].filter(Boolean).join(" and ") || "nothing";
+const callOf = (method, data) => (method && method !== data.slice(0, 10) ? `<code>${esc(method)}</code>` : `<code class="muted">${data.slice(0, 10)}</code>`);
+const withValue = (value) => (BigInt(value || 0) > 0n ? ` with ${eth(value)}` : "");
 
 // Tabs, as on Etherscan. All panels render with the page, so switching only
 // changes which one shows, at once, and the URL, so each tab stays linkable.
@@ -343,12 +340,12 @@ function messageRows(kind, entries) {
   if (!entries.length) return `<p class="note">None yet.</p>`;
   const one = kind === "deposits" ? "deposit" : "withdrawal";
   if (kind === "deposits") {
-    return `<table><thead><tr><th>#</th><th>Carries</th><th class="num">Fee</th><th>From (L1)</th><th>To (L2)</th><th>Sent on L1</th><th>Claimed on L2</th></tr></thead><tbody>
-      ${entries.map((d) => `<tr><td><a href="#/${one}/${d.index}">${d.index}</a></td><td>${d.value !== undefined ? carries(d) : ""}</td><td class="num">${d.fee ? eth(d.fee) : ""}</td><td>${addr(d.from, "l1")}</td><td>${addr(d.to, "l2")}</td>
+    return `<table class="txs"><thead><tr><th>#</th><th class="num">Value</th><th>Method</th><th class="num">Fee</th><th>From (L1)</th><th>To (L2)</th><th>Sent on L1</th><th>Claimed on L2</th></tr></thead><tbody>
+      ${entries.map((d) => `<tr><td><a href="#/${one}/${d.index}">${d.index}</a></td><td class="num">${d.value !== undefined ? eth(d.value) : ""}</td><td>${hasData(d.data) ? callOf(d.method, d.data) : ""}</td><td class="num">${d.fee ? eth(d.fee) : ""}</td><td>${addr(d.from, "l1")}</td><td>${addr(d.to, "l2")}</td>
         <td>${d.l1Tx ? l1TxLink(d.l1Tx) : ""}</td><td>${d.l2Tx ? `${l2TxLink(d.l2Tx)} in ${l2BlockLink(d.l2Block)}` : '<span class="muted">waiting for an L2 block that anchors it</span>'}</td></tr>`).join("")}</tbody></table>`;
   }
-  return `<table><thead><tr><th>#</th><th>Carries</th><th class="num">Fee</th><th>From (L2)</th><th>To (L1)</th><th>Sent on L2</th><th>Claimed on L1</th></tr></thead><tbody>
-    ${entries.map((w) => `<tr><td><a href="#/${one}/${w.index}">${w.index}</a></td><td>${w.value !== undefined ? carries(w) : ""}</td><td class="num">${w.fee ? eth(w.fee) : ""}</td><td>${addr(w.from, "l2")}</td><td>${addr(w.to, "l1")}</td>
+  return `<table class="txs"><thead><tr><th>#</th><th class="num">Value</th><th>Method</th><th class="num">Fee</th><th>From (L2)</th><th>To (L1)</th><th>Sent on L2</th><th>Claimed on L1</th></tr></thead><tbody>
+    ${entries.map((w) => `<tr><td><a href="#/${one}/${w.index}">${w.index}</a></td><td class="num">${w.value !== undefined ? eth(w.value) : ""}</td><td>${hasData(w.data) ? callOf(w.method, w.data) : ""}</td><td class="num">${w.fee ? eth(w.fee) : ""}</td><td>${addr(w.from, "l2")}</td><td>${addr(w.to, "l1")}</td>
       <td>${w.l2Tx ? `${l2TxLink(w.l2Tx)} in ${l2BlockLink(w.l2Block)}` : ""}</td><td>${w.l1Tx ? l1TxLink(w.l1Tx) : '<span class="muted">not claimed yet</span>'}</td></tr>`).join("")}</tbody></table>`;
 }
 
@@ -827,12 +824,13 @@ async function messagePage(route) {
   return `<h1>${title}</h1>
     ${stepper(steps)}
     ${fields([
-      ["Carries", carries({ value: m.value, data }), ""],
+      ["Value", m.value !== undefined ? eth(m.value) : "", ""],
+      ...(hasData(data) ? [["Method", callOf(m.method, data), "The function its call runs on the recipient."]] : []),
       ["Fee", m.fee ? eth(m.fee) : "none", "For whoever claims it. Its recipient claims it for free."],
       ...(Number(m.gasLimit) ? [["Gas limit", num(m.gasLimit), "The gas its call gets, whoever claims it."]] : []),
       ["From", addr(m.from, from), ""],
       ["To", addr(m.to, to), ""],
-      ...(hasData(data) ? [["Data", `${dataText(data) ? `"${esc(dataText(data))}"<br>` : ""}${hash(data, true)}`, "Delivered as the call's data."]] : []),
+      ...(hasData(data) ? [["Data", hash(data, true), "Delivered as the call's data."]] : []),
       ...(received ? [["Received", `${addr(m.to, to)} <span class="muted">recorded</span> ${addr(received.args.crossChainSender, from)} <span class="muted">as the sender</span>`,
         `The messenger on ${to.toUpperCase()} exposes the sender on ${from.toUpperCase()} while it calls the recipient, so the app can check who sent it.`]] : []),
     ])}`;
@@ -1705,14 +1703,14 @@ const L2_SUMMARIES = {
     const own = claim.to === tx.from;
     return `${own ? `${addr(claim.to, "l2")} claims a deposit of ${eth(claim.value)} and pays the fee from it. It is an EIP-8141 frame
       transaction: the claim frames run first, then the VERIFY frame approves the payment from the balance the claim
-      just delivered.` : `${addr(tx.from, "l2")} claims ${hasData(claim.data) ? `a message from L1 for ${addr(claim.to, "l2")}, ${carries(claim)}`
+      just delivered.` : `${addr(tx.from, "l2")} claims ${hasData(claim.data) ? `a message from L1 that calls ${callOf((depositOf(tx) || {}).method, claim.data)} on ${addr(claim.to, "l2")}${withValue(claim.value)}`
       : `a deposit of ${eth(claim.value)} for ${addr(claim.to, "l2")}`}.
       ${claim.fee > 0 ? `The claimer earns the message's fee of ${eth(claim.fee)}, which covers the claim's gas, but pays the gas from its own funds: only a message to the claimer can pay for its own claim.` : "The message carries no fee, so the claimer pays the gas itself."}`}${proves ? " It also proves the root of L1's message tree, against the anchor of a recent L2 block." : ""}`;
   },
   withdrawal: (tx) => {
     const fee = Number(tx.call.args.fee || 0);
     const value = (BigInt(tx.value) - BigInt(tx.call.args.fee || 0)).toString(), data = tx.call.args.data;
-    return `${addr(tx.from, "l2")} ${hasData(data) ? `sends ${addr(tx.call.args.to, "l1")} on L1 ${carries({ value, data })}` : `withdraws ${eth(value)} to ${addr(tx.call.args.to, "l1")} on L1`}${
+    return `${addr(tx.from, "l2")} ${hasData(data) ? `sends a message to ${addr(tx.call.args.to, "l1")} on L1 that calls ${callOf((withdrawalOf(tx) || {}).method, data)}${withValue(value)}` : `withdraws ${eth(value)} to ${addr(tx.call.args.to, "l1")} on L1`}${
       fee ? `, with a fee of ${eth(tx.call.args.fee)} for whoever claims it there` : ", to claim there itself"}. The L2 messenger records the
       message, which can be claimed on L1 once this block is on L1.`;
   },
@@ -1863,13 +1861,13 @@ async function l1TxPage(route) {
     const d = found.deposit;
     const fee = BigInt(tx.call.args.fee || 0);
     const value = (BigInt(tx.value) - fee).toString(), data = tx.call.args.data;
-    summary = `${addr(tx.from, "l1")} ${hasData(data) ? `sends ${addr(tx.call.args.to, "l2")} on L2 ${carries({ value, data })}` : `deposits ${eth(value)} to ${addr(tx.call.args.to, "l2")} on L2`}${
+    summary = `${addr(tx.from, "l1")} ${hasData(data) ? `sends a message to ${addr(tx.call.args.to, "l2")} on L2 that calls ${callOf((d || {}).method, data)}${withValue(value)}` : `deposits ${eth(value)} to ${addr(tx.call.args.to, "l2")} on L2`}${
       fee ? `, with a fee of ${eth(fee.toString())} for whoever claims it there` : ""}. The rollup contract adds the message
       to its Merkle tree${BigInt(value) > 0n ? " and keeps the ETH in escrow" : ""}.${d && d.l2Tx ? ` It was claimed on L2 in ${l2TxLink(d.l2Tx)}, in block ${l2BlockLink(d.l2Block)}.` : ""}`;
   } else if (tx.kind === "withdrawal claim") {
     const m = tx.call.args.m;
     const w = found.withdrawal;
-    summary = `${addr(tx.from, "l1")} claims ${hasData(m.data) ? `a message to ${addr(m.to, "l1")}, ${carries(m)},` : `a withdrawal of ${eth(m.value)} to ${addr(m.to, "l1")}`}${
+    summary = `${addr(tx.from, "l1")} claims ${hasData(m.data) ? `a message that calls ${callOf((w || {}).method, m.data)} on ${addr(m.to, "l1")}${withValue(m.value)}` : `a withdrawal of ${eth(m.value)} to ${addr(m.to, "l1")}`}${
       Number(m.fee) ? ` and earns its fee of ${eth(m.fee)}` : ""}. The rollup contract checks the message against the
       state root of L2 block ${l2BlockLink(tx.call.args.l2BlockNumber)} with a storage proof, and delivers it${BigInt(m.value || 0) > 0n ? ", its ETH from the escrow" : ""}.${w && w.l2Tx ? ` It was sent on L2 in ${l2TxLink(w.l2Tx)}.` : ""}`;
   }

@@ -516,6 +516,13 @@ def l1_transaction(tx: dict, receipt: dict, block: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def data_method(data: str) -> str | None:
+    """The function a message's call runs: its name, or its selector."""
+    if data == "0x":
+        return None
+    return (decode_call(bytes.fromhex(data[2:])) or {}).get("function") or data[:10]
+
+
 def method(tx: dict) -> str | None:
     """The function a transaction calls: its name, or its selector."""
     calls = [f for f in tx.get("frames") or [tx] if (f.get("data") or "0x") != "0x"]
@@ -670,7 +677,7 @@ class Explorer:
                     a = event["args"]
                     self.merge_message(
                         "deposits", a["index"], **{"from": a["sender"]}, to=a["to"], value=a["value"], fee=a["fee"],
-                        gasLimit=a["gasLimit"], data=a["data"], l1Tx=tx["hash"], l1Block=tx["block"],
+                        gasLimit=a["gasLimit"], data=a["data"], method=data_method(a["data"]), l1Tx=tx["hash"], l1Block=tx["block"],
                     )
         if kind == "withdrawal claim":
             self.merge_message("withdrawals", tx["call"]["args"]["m"]["index"], l1Tx=tx["hash"], l1Block=tx["block"])
@@ -744,7 +751,7 @@ class Explorer:
                     tx["withdrawal"] = a["index"]
                     self.merge_message(
                         "withdrawals", a["index"], **{"from": a["sender"]}, to=a["to"], value=a["value"], fee=a["fee"],
-                        gasLimit=a["gasLimit"], data=a["data"], l2Tx=tx["hash"], l2Block=block["number"],
+                        gasLimit=a["gasLimit"], data=a["data"], method=data_method(a["data"]), l2Tx=tx["hash"], l2Block=block["number"],
                     )
             self.write(f"l2/txs/{tx['hash']}", tx)
         # What the block's transaction table shows, so it needs no other file.
