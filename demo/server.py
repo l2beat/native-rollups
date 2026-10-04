@@ -211,10 +211,15 @@ def explorer_query(db, path: str, query: dict):
             "entries": rows(db, entries + " LIMIT ? OFFSET ?", *args, PAGE, (page - 1) * PAGE),
         }
     if m := re.fullmatch(r"messages", path):
+        # By index, or by the transaction that sent them: deposits by their
+        # L1 transaction, withdrawals by their L2 one.
         out = {}
-        for kind in ("deposits", "withdrawals"):
+        for kind, sent in (("deposits", "l1_tx"), ("withdrawals", "l2_tx")):
             ids = [int(i) for i in query.get(kind, "").split(",") if i.isdigit()][:RECENT]
-            out[kind] = {str(e["index"]): e for e in rows(db, f"SELECT entry FROM {kind} WHERE idx IN ({','.join('?' * len(ids))})", *ids)}
+            hashes = [h for h in query.get(f"{kind}By", "").split(",") if HASH.fullmatch(h)][:RECENT]
+            found = rows(db, f"SELECT entry FROM {kind} WHERE idx IN ({','.join('?' * len(ids))})", *ids)
+            found += rows(db, f"SELECT entry FROM {kind} WHERE {sent} IN ({','.join('?' * len(hashes))})", *hashes)
+            out[kind] = {str(e["index"]): e for e in found}
         return out
     if m := re.fullmatch(r"find", path):
         out = {}

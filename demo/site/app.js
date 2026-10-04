@@ -361,6 +361,7 @@ async function home() {
   const txs = await Promise.all(latest.slice(0, 8).map((t) => t.preconfirmed ? t : object(`l2/txs/${t.hash}`).then((x) => ({ ...t, ...(x || {}) }))));
   const head = blocks.length ? await object(`l2/blocks/${blocks[0].number}`) : null;
   const rec = head && (await blockRecord(head.number));
+  await loadStoryMessages();
   // What the status pills do not already say: activity, value, and cost on L1.
   const escrow = await rpc("eth_getBalance", [ix.rollup, "latest"]);
   const recent = blocks.slice(0, 20);
@@ -410,10 +411,22 @@ async function home() {
 
 // The message a deposit or withdrawal of the runner's story sent.
 function storyMessage(e) {
-  const find = (kind, key, value) => Object.values(state.index[kind]).find((m) => m[key] === value);
+  const find = (kind, key, value) => [...Object.values(state.index[kind]), ...Object.values(state.messages[kind])].find((m) => m[key] === value);
   if (e.type === "deposit") return ["deposit", find("deposits", "l1Tx", e.l1.txHash)];
   if (e.type === "withdrawal") return ["withdrawal", find("withdrawals", "l2Tx", e.l2Tx)];
   return [null, null];
+}
+
+// Fetches the messages of the story's latest deposits and withdrawals that
+// the index does not carry.
+async function loadStoryMessages() {
+  const events = (state.session && state.session.events) || [];
+  const missing = (type, kind, key, tx) => events.filter((e) => e.type === type).map(tx).filter((h) => h && !storyMessage({ type, l1: { txHash: h }, l2Tx: h })[1]);
+  const deposits = missing("deposit", "deposits", "l1Tx", (e) => e.l1 && e.l1.txHash);
+  const withdrawals = missing("withdrawal", "withdrawals", "l2Tx", (e) => e.l2Tx);
+  if (!deposits.length && !withdrawals.length) return;
+  const found = await getJSON(`/api/explorer/messages.json?depositsBy=${deposits.join(",")}&withdrawalsBy=${withdrawals.join(",")}`);
+  if (found) for (const kind of ["deposits", "withdrawals"]) Object.assign(state.messages[kind], found[kind]);
 }
 
 // The messages the demo's users send between the chains, newest first,
