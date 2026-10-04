@@ -177,10 +177,9 @@ function chainFor(key, ctx = {}) {
   return (m && m[key]) || c;
 }
 
-const L2_KINDS = { "deposit claim": "deposit", withdrawal: "withdrawal" };
-const chip = (kind, n) => `<span class="chip ${L2_KINDS[kind] || ""}">${n ? `${n} ` : ""}${kind}${n > 1 ? "s" : ""}</span>`;
+const kindText = (kind, n) => `${n ? `${n} ` : ""}${kind}${n > 1 ? "s" : ""}`;
 const contents = (kinds) =>
-  ["deposit claim", "withdrawal", "transfer", "call", "deploy", "delegation", "frame transaction"].filter((k) => kinds[k]).map((k) => chip(k, kinds[k])).join("") || '<span class="muted">empty</span>';
+  ["deposit claim", "withdrawal", "transfer", "call", "deploy", "delegation", "frame transaction"].filter((k) => kinds[k]).map((k) => kindText(k, kinds[k])).join(", ") || '<span class="muted">empty</span>';
 const TX_TYPES = { 0: "legacy", 1: "EIP-2930 access list", 2: "EIP-1559", 4: "EIP-7702 set code", 6: "EIP-8141 frame transaction" };
 const L1_KINDS = { advance: "adds an L2 block", deposit: "deposit", "withdrawal claim": "withdrawal claim" };
 
@@ -274,19 +273,19 @@ function update(app, html, key) {
 }
 
 function renderStatus() {
-  const pills = [];
-  if (state.l1Head != null) pills.push(`<span class="pill"><span class="dot"></span>L1 block ${num(state.l1Head)}</span>`);
+  const items = [];
+  if (state.l1Head != null) items.push(`<span class="status-item"><span class="dot"></span>L1 block ${num(state.l1Head)}</span>`);
   const preconfirmed = state.session && state.session.head && state.session.head.preconfirmed;
-  if (preconfirmed) pills.push(`<span class="pill">L2 block ${num(preconfirmed)} preconfirmed</span>`);
-  if (state.rollupHead != null) pills.push(`<span class="pill">L2 block ${num(state.rollupHead)} on L1</span>`);
+  if (preconfirmed) items.push(`<span class="status-item">L2 block ${num(preconfirmed)} preconfirmed</span>`);
+  if (state.rollupHead != null) items.push(`<span class="status-item">L2 block ${num(state.rollupHead)} on L1</span>`);
   if (state.index && state.rollupHead != null) {
     const n = state.index.totals.blocks;
-    pills.push(n >= state.rollupHead
-      ? `<a class="pill ok" href="#/about" title="An independent node rebuilt every L2 block from L1 data alone">follower rebuilt all ${num(n)} from L1</a>`
-      : `<span class="pill warn">follower rebuilt ${num(n)} of ${num(state.rollupHead)}</span>`);
+    items.push(n >= state.rollupHead
+      ? `<a class="status-item ok" href="#/about" title="An independent node rebuilt every L2 block from L1 data alone">follower rebuilt all ${num(n)} from L1</a>`
+      : `<span class="status-item warn">follower rebuilt ${num(n)} of ${num(state.rollupHead)}</span>`);
   }
-  if (state.session && state.index) pills.push(`<a class="pill" href="#/address/l1/${state.index.rollup}">rollup deployed ${ago(state.session.startedAt)}</a>`);
-  document.getElementById("status").innerHTML = pills.join("");
+  if (state.session && state.index) items.push(`<a class="status-item" href="#/address/l1/${state.index.rollup}">rollup deployed ${ago(state.session.startedAt)}</a>`);
+  document.getElementById("status").innerHTML = items.join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -313,7 +312,7 @@ function l2TxRows(txs, self) {
   const party = (x) => (!x ? "" : x === self ? '<span class="muted">this address</span>' : addr(x, "l2"));
   return `<table class="txs"><thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th class="hide-narrow">Age</th>
     <th>From</th><th>To</th><th class="num">Value</th><th class="num">Fee</th></tr></thead><tbody>
-    ${txs.map((t) => `<tr><td>${l2TxLink(t.hash)}</td><td>${t.method ? `<code>${esc(t.method)}</code>` : chip(t.kind)}</td>
+    ${txs.map((t) => `<tr><td>${l2TxLink(t.hash)}</td><td>${t.method ? `<code>${esc(t.method)}</code>` : kindText(t.kind)}</td>
       <td>${l2BlockLink(t.block)}</td><td class="hide-narrow nowrap">${t.time ? ago(t.time) : ""}</td>
       <td>${party(t.from)}</td><td>${party(t.to)}</td>
       <td class="num">${t.value ? eth(t.value) : ""}</td><td class="num">${t.fee !== undefined && t.fee !== null ? ethShort(t.fee) : ""}</td></tr>`).join("")}</tbody></table>`;
@@ -362,7 +361,7 @@ async function home() {
   const head = blocks.length ? await object(`l2/blocks/${blocks[0].number}`) : null;
   const rec = head && (await blockRecord(head.number));
   await loadStoryMessages();
-  // What the status pills do not already say: activity, value, and cost on L1.
+  // What the status strip does not already say: activity, value, and cost on L1.
   const escrow = await rpc("eth_getBalance", [ix.rollup, "latest"]);
   const recent = blocks.slice(0, 20);
   const { deposits, withdrawals, transactions: total } = ix.totals;
@@ -396,10 +395,10 @@ async function home() {
               <div class="num"><div class="line muted">${num(b.gasUsed)} gas</div><div class="line" title="Its share of a blob">${fill(b.payloadBytes)}</div></div></div>`).join("");
         })()}</div>
       <div class="panel"><div class="panel-head"><b>Latest L2 transactions</b><a href="#/txs">View all transactions →</a></div>
-        ${txs.map((t) => `<div class="item"><div><div class="line">${l2TxLink(t.hash)}</div><div class="line muted">${ago(t.timestamp)}</div></div>
+        ${txs.map((t) => `<div class="item tx"><div><div class="line">${l2TxLink(t.hash)}</div><div class="line muted">${ago(t.timestamp)}</div></div>
           <div><div class="line"><span class="muted">From</span> ${addr(t.from, "l2")}</div>
             <div class="line">${t.to ? `<span class="muted">To</span> ${addr(t.to, "l2")}` : t.frames ? `<span class="muted">${t.frames.length ?? t.frames} frames</span>` : '<span class="muted">contract creation</span>'}</div></div>
-          <div class="num"><div class="line">${chip(t.kind)}</div><div class="line">${t.value ? eth(t.value) : ""}</div></div></div>`).join("")}</div>
+          <div class="num"><div class="line">${t.value ? eth(t.value) : ""}</div></div></div>`).join("")}</div>
     </div>
     ${story()}
     ${head ? `<h2>How block ${l2BlockLink(head.number)} reached L1</h2>${journey(head, rec)}
@@ -456,7 +455,7 @@ async function blockList(route) {
 
 async function txList(route) {
   const list = await listPage("txs", Math.max(route.n, 1));
-  const waiting = route.n > 1 ? [] : waitingTxs().map((t) => ({ ...t, kind: "preconfirmed" }));
+  const waiting = route.n > 1 ? [] : waitingTxs();
   return `<h1>L2 transactions</h1>
     ${waiting.length ? `<h2>Waiting for L1</h2>
       <p class="section-lead">In blocks the sequencer preconfirmed, which L1 does not have yet.</p>${l2TxRows(waiting)}
@@ -554,6 +553,8 @@ const SOURCE_LABELS = {
   storage: "storage", l1: "L1 opcode", checked: "calldata, proven", free: "calldata, free", fixed: "fixed", registry: "registry",
   computed: "computed",
 };
+// The details start in one column, after the longest label.
+const SOURCE_WIDTH = 6.1 * Math.max(...Object.values(SOURCE_LABELS).map((l) => l.length)) + 10;
 function boundaryView(b, rec) {
   const pi = b.proofInput, ssz = b.sszRoots, anchor = b.anchorBlockNumber, ok = pi.publicInputRoot === pi.dataHash;
   const count = (key) => b.transactions.filter((t) => t[key] !== undefined && t[key] !== null).length;
@@ -618,11 +619,10 @@ function boundaryView(b, rec) {
     if (indent) nestBottom = y + RH;
     rowY.push([field, mid]);
     const label = SOURCE_LABELS[source];
-    const chipW = 6.4 * label.length + 14;
     parts.push(`<g class="bd-row"><title>${esc(`${field}: ${value}`)}</title>
       <rect class="bd-hit" x="0" y="${y}" width="${W}" height="${RH}"/>
-      <g class="bd-chip ${source}"><rect x="${L[0] + 4}" y="${mid - 8}" width="${chipW}" height="16" rx="8"/>${t(L[0] + 4 + chipW / 2, mid + 3.5, "", label, "middle")}</g>
-      ${onL1 ? t(L[0] + chipW + 12, mid + 4, "bd-detail", onL1) : ""}
+      ${t(L[0] + 4, mid + 4, `bd-source ${source}`, label)}
+      ${onL1 ? t(L[0] + 4 + SOURCE_WIDTH, mid + 4, "bd-detail", onL1) : ""}
       ${arrow(L[1] + 2, mid, M[0] - 3, mid)}
       ${t(M[0] + 12 + indent, mid + 4, "bd-field", field)}${t(M[1] - 12 - indent, mid + 4, "bd-value", value, "end")}
       ${onL2 ? arrow(M[1] + 3, mid, R[0] - 3, mid) + t(R[0] + 6, mid + 4, back ? "bd-back" : "bd-l2", onL2) : ""}</g>`);
@@ -791,7 +791,7 @@ async function blockPage(route) {
   const base = `/l2/block/${b.number}`;
   const tab = route.tab;
   const txsPanel = `<table><thead><tr><th>#</th><th>Transaction hash</th><th>What it does</th><th>Method</th><th>Status</th><th>Linked on L1</th><th>From</th><th class="num">Gas used</th><th class="num">Fee</th></tr></thead><tbody>
-    ${b.transactions.map((t, i) => `<tr><td>${i}</td><td>${l2TxLink(t.hash)}</td><td>${chip(t.kind)}</td><td>${method(t)}</td><td>${statusText(t.status)}</td><td>${counterpart(t)}</td><td>${addr(t.from, "l2")}</td>
+    ${b.transactions.map((t, i) => `<tr><td>${i}</td><td>${l2TxLink(t.hash)}</td><td>${kindText(t.kind)}</td><td>${method(t)}</td><td>${statusText(t.status)}</td><td>${counterpart(t)}</td><td>${addr(t.from, "l2")}</td>
       <td class="num">${num(t.gasUsed)}</td><td class="num">${t.fee !== undefined && t.fee !== null ? eth(t.fee) : ""}</td></tr>`).join("")}</tbody></table>`;
   const l1Panel = `
       <h2>Data on L1</h2>
@@ -835,7 +835,7 @@ async function blockPage(route) {
       ["Timestamp", `${ago(b.timestamp)} <span class="muted">(${new Date(b.timestamp * 1000).toLocaleString()})</span>`,
         "Chosen by the operator. It must increase, and the contract keeps it at or below L1 time: a block at the maximum timestamp would halt the chain."],
       ["Posted on L1", `${l1TxLink(b.l1.tx)} <span class="muted">in L1 block ${num(b.l1.block)}</span>`, "Its blob carries the block's transactions."],
-      ["Transactions", `<a href="#${base}/txs">${num(b.transactions.length)} transactions</a> ${contents(kinds)}`, ""],
+      ["Transactions", `<a href="#${base}/txs">${num(b.transactions.length)} transactions</a>${b.transactions.length ? `: ${contents(kinds)}` : ""}`, ""],
       ["Fee recipient", addr(b.feeRecipient, "l2"), "A free input of the operator, set by the consensus layer on L1."],
       ["Size in blob", `${num(b.payloadBytes)} bytes <span class="muted">(${pct(b.payloadBytes / BLOB_USABLE_BYTES)} of a blob)</span>`, "Its transactions and access list, in EIP-8142's encoding."],
       ["Gas used", `${num(b.gasUsed)} <span class="muted">(${pct(b.gasUsed / b.gasLimit)})</span>`, ""],
@@ -1723,7 +1723,7 @@ async function l2TxPage(route) {
     ${frame ? "" : tx.to ? (tx.data !== "0x" ? `<h2>Input data</h2>${inputData(tx.data, tx.call, { chain: "l2", fn: tx.call && tx.call.function })}` : "")
       : `<h2>Init code</h2>${rawInput(tx.data, true)}`}`;
   return `
-    <h1>Transaction details ${chip(tx.kind)} <span class="net l2">L2</span></h1>
+    <h1>Transaction details <span class="net l2">L2</span></h1>
     ${tabs(base, [
       ["", "Overview", undefined, overview],
       ["logs", "Logs", logs.length, events(logs, "l2")],
@@ -1846,7 +1846,7 @@ async function l1TxPage(route) {
     ])}
     ${!frame && tx.data && tx.data !== "0x" ? `<h2>Input data</h2>${inputData(tx.data, tx.call, { chain: "l1", fn: tx.call && tx.call.function, ok: tx.status === 1 })}${codeFor(tx.to, tx.call)}` : ""}`;
   return `
-    <h1>Transaction details <span class="chip">${esc(L1_KINDS[tx.kind] || tx.kind)}</span> <span class="net l1">L1</span></h1>
+    <h1>Transaction details <span class="net l1">L1</span></h1>
     ${tabs(base, [
       ["", "Overview", undefined, overview],
       ["logs", "Logs", logs.length, events(logs, "l1")],
