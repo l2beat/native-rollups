@@ -213,6 +213,9 @@ table.txs .addr .muted, .targets .addr .muted, .item .addr .muted { display: non
 .net.l2 { background: var(--l2-bg); color: var(--l2); }
 /* Between two chain tags, as small as they are. */
 .route-arrow { font: 12px/1 -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); margin-right: 4px; vertical-align: 1px; }
+/* A message's route, next to its title. */
+h1 .route .net { font-size: 14px; padding: 3px 7px; border-radius: 5px; margin-right: 6px; vertical-align: 5px; }
+h1 .route .route-arrow { font-size: 18px; margin-right: 6px; vertical-align: 4px; }
 table.fields td.value.nested { width: auto; padding: 2px 0; }
 table.fields table.fields { border: none; background: transparent; }
 table.fields table.fields td:first-child { width: 190px; font-weight: 500; white-space: nowrap; }

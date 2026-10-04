@@ -908,7 +908,7 @@ async function messagePage(route) {
   const kind = deposit ? "deposits" : "withdrawals";
   if (!cachedMessage(kind, route.n)) await loadMessages([deposit ? { deposit: route.n } : { withdrawal: route.n }]);
   const m = cachedMessage(kind, route.n);
-  const title = `Message #${route.n} ${net(deposit ? "l1" : "l2")}<span class="route-arrow">→</span>${net(deposit ? "l2" : "l1")}`;
+  const title = `Message #${route.n} <span class="route">${net(deposit ? "l1" : "l2")}<span class="route-arrow">→</span>${net(deposit ? "l2" : "l1")}</span>`;
   if (!m) return `<h1>${title}</h1><p class="note">Not found.</p>`;
   const [sent, claim] = await Promise.all([
     object(deposit ? `l1/txs/${m.l1Tx}` : `l2/txs/${m.l2Tx}`),
