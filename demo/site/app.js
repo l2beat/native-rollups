@@ -387,10 +387,6 @@ async function home() {
       from Ethereum.</p>
     <div class="legend">${badge("real")} runs as specified ${badge("mock")} stands in for an L1 feature that does not exist yet
       · <a href="#/about">details</a></div>
-    ${head ? `<h2>How block ${l2BlockLink(head.number)} reached L1</h2>${journey(head, rec)}` : ""}
-    ${head ? `<h2>Block ${l2BlockLink(head.number)} across the boundary</h2>
-      <p class="section-lead">Each field the proof covers: where the rollup contract gets it on L1, and what it is on L2.</p>
-      ${boundaryView(head, rec)}` : ""}
     <div class="stats">${stats.map(([label, value, sub]) => `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`).join("")}</div>
     <div class="columns">
       <div class="panel"><div class="panel-head"><b>Latest L2 blocks</b><a href="#/blocks">View all blocks →</a></div>
@@ -406,7 +402,10 @@ async function home() {
             <div class="line">${t.to ? `<span class="muted">To</span> ${addr(t.to, "l2")}` : t.frames ? `<span class="muted">${t.frames.length ?? t.frames} frames</span>` : '<span class="muted">contract creation</span>'}</div></div>
           <div class="num"><div class="line">${t.preconfirmed ? '<span class="muted">preconfirmed</span>' : chip(t.kind)}</div><div class="line">${t.value ? eth(t.value) : ""}</div></div></div>`).join("")}</div>
     </div>
-    ${story()}`;
+    ${story()}
+    ${head ? `<h2>How block ${l2BlockLink(head.number)} reached L1</h2>${journey(head, rec)}
+      <p class="section-lead">Each field its proof covers: where the rollup contract gets it on L1, and what it is on L2.</p>
+      ${boundaryView(head, rec)}` : ""}`;
 }
 
 // The message a deposit or withdrawal of the runner's story sent.
@@ -569,7 +568,7 @@ function boundaryView(b, rec) {
   const NEST = 16;
   const rows = [
     "NEW PAYLOAD REQUEST",
-    ["execution_payload", short(pi.executionPayloadRoot), "computed", "the root of its 19 fields", "the block's header", false, 0, true],
+    ["execution_payload", short(pi.executionPayloadRoot), "computed", "the root of its 19 fields", "the block's header"],
     ["parent_hash", short(b.parentHash), "storage", "blockHash, its last block", "the parent, which BLOCKHASH reads"],
     ["fee_recipient", short(b.feeRecipient), "free", "", "COINBASE, paid the priority fees"],
     ["state_root", short(b.stateRoot), "checked", "", `stored on L1: ${history}, for withdrawals`, true],
