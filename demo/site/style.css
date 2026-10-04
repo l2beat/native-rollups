@@ -401,3 +401,6 @@ svg.boundary .bd-check rect { fill: var(--real-bg); stroke: var(--real); }
 svg.boundary .bd-check.bad rect { fill: var(--bad-bg); stroke: var(--bad); }
 svg.boundary .bd-ok { fill: var(--real); font-weight: 600; }
 svg.boundary .bd-bad { fill: var(--bad); font-weight: 600; }
+/* The part of a page a link points at, for a moment. */
+[data-at] > td { transition: background-color 0.6s; }
+[data-at].target > td { background: var(--accent-bg); }

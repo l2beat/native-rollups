@@ -241,7 +241,13 @@ function fields(rows) {
 // ---------------------------------------------------------------------------
 
 function parseRoute() {
-  const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  const route = pageRoute();
+  route.at = location.hash.split("@")[1] || "";
+  return route;
+}
+
+function pageRoute() {
+  const parts = location.hash.split("@")[0].replace(/^#\/?/, "").split("/").filter(Boolean);
   if (!parts.length) return { page: "home" };
   if (parts[0] === "blocks") return { page: "blocks", n: Number(parts[1] || 1) };
   if (parts[0] === "txs") return { page: "txs", n: Number(parts[1] || 1) };
@@ -871,7 +877,7 @@ function messageFlow({ m, deposit, sent, claim, anchoring, posted }) {
         `the claim proves L1 block ${num(anchoring ? anchoring.anchor : m.l1Block)}'s header against the anchor,`,
         "then the rollup contract's account and slot 3 in its state:",
         `the root ${short(path.root)}`,
-        { text: "the proofs", href: `#/l2/tx/${claim.hash}/frames` },
+        { text: "the proofs", href: `#/l2/tx/${claim.hash}/frames@proveL1MessageRoot.accountProof` },
       ] : [
         `the L2 messenger had proven the root ${short(path.root)}`,
         "for an earlier claim, against the anchor of a recent",
@@ -881,7 +887,7 @@ function messageFlow({ m, deposit, sent, claim, anchoring, posted }) {
         `claimL1Message hashes the fields into the leaf ${short(path.leaf)},`,
         `then up ${path.levels.length} levels with the claim's siblings: the root ✓,`,
         `and marks message #${num(m.index)} claimed`,
-        { text: "the path", href: `#/l2/tx/${claim.hash}/frames` },
+        { text: "the path", href: `#/l2/tx/${claim.hash}/frames@claimL1Message.path` },
       ], "Its recipient claims it for free, or anyone for its fee"],
       ["D", "Delivered", delivered, ""],
     ];
@@ -905,7 +911,7 @@ function messageFlow({ m, deposit, sent, claim, anchoring, posted }) {
         `claimL2Message proves the L2 messenger's account and slot ${short(slot)}`,
         `against the state root of L2 block #${num(claimCall.args.l2BlockNumber)}: the entry is the hash ✓,`,
         `and marks message #${num(m.index)} claimed`,
-        { text: "the proofs", href: `#/l1/tx/${claim.hash}` },
+        { text: "the proofs", href: `#/l1/tx/${claim.hash}@claimL2Message.accountProof` },
       ], "Its recipient claims it for free, or anyone for its fee"],
       ["D", "Delivered", delivered, ""],
     ];
@@ -1553,7 +1559,7 @@ function argTable(args, notes = {}, ctx = {}, views = {}) {
   const nested = (v) => v && typeof v === "object" && (!Array.isArray(v) || v.some((x) => x && typeof x === "object"));
   return `<table class="fields"><tbody>${Object.entries(args)
     .map(([k, v]) => views[k] || nested(v)
-      ? `<tr><td>${esc(k)}</td><td class="value nested" colspan="2">${views[k] || value(v, k, ctx)}</td></tr>`
+      ? `<tr${views[k] && ctx.fn ? ` data-at="${ctx.fn}.${k}"` : ""}><td>${esc(k)}</td><td class="value nested" colspan="2">${views[k] || value(v, k, ctx)}</td></tr>`
       : `<tr><td>${esc(k)}</td><td class="value">${value(v, k, ctx)}</td><td class="note">${notes[k] || ""}</td></tr>`)
     .join("")}</tbody></table>`;
 }
@@ -2333,6 +2339,16 @@ document.getElementById("search").addEventListener("submit", async (e) => {
   e.target.q.value = "";
 });
 
-window.addEventListener("hashchange", () => render().then(() => window.scrollTo(0, 0)));
-refresh().then(render);
+// After navigating, the top of the page, or the part a link points at,
+// below the sticky header, for a moment highlighted.
+function scrollToTarget() {
+  const at = parseRoute().at;
+  const target = at && document.querySelector(`[data-at="${CSS.escape(at)}"]`);
+  if (!target) return window.scrollTo(0, 0);
+  window.scrollTo(0, target.getBoundingClientRect().top + window.scrollY - document.querySelector(".top").offsetHeight - 12);
+  target.classList.add("target");
+  setTimeout(() => target.classList.remove("target"), 2000);
+}
+window.addEventListener("hashchange", () => render().then(scrollToTarget));
+refresh().then(render).then(scrollToTarget);
 setInterval(refresh, 4000);
