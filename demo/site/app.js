@@ -383,12 +383,16 @@ async function home() {
     <div class="stats">${stats.map(([label, value]) => `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div></div>`).join("")}</div>
     <div class="columns">
       <div class="panel"><div class="panel-head"><b>Latest L2 blocks</b><a href="#/blocks">View all blocks →</a></div>
-        ${waitingBlocks().slice(0, 3).map((p) => `<div class="item"><div><div class="line">${l2BlockLink(p.number)}</div><div class="line muted">${ago(p.time)}</div></div>
-          <div><div class="line">${num(p.transactions)} transactions</div><div class="line muted">preconfirmed, waiting for L1</div></div>
-          <div class="num"><div class="line muted">${num(p.gasUsed)} gas</div><div class="line muted" title="It must reach L1 while its anchor is in the BLOCKHASH window">by L1 block ${num(deadline(p.anchorBlockNumber))}</div></div></div>`).join("")}
-        ${blocks.slice(0, Math.max(3, 6 - waitingBlocks().length)).map((b) => `<div class="item"><div><div class="line">${l2BlockLink(b.number)}</div><div class="line muted">${ago(b.timestamp)}</div></div>
-          <div><div class="line">${num(b.transactions)} transactions</div><div class="line"><span class="muted">posted in</span> ${l1TxLink(b.l1Tx)}</div></div>
-          <div class="num"><div class="line muted">${num(b.gasUsed)} gas</div><div class="line" title="Its share of a blob">${fill(b.payloadBytes)}</div></div></div>`).join("")}</div>
+        ${(() => {
+          // Grouped as the blocks page does, since more blocks wait than show.
+          const waiting = waitingBlocks().slice(0, 3);
+          return (waiting.length ? `<div class="item-group">Waiting for L1</div>${waiting.map((p) => `<div class="item"><div><div class="line">${l2BlockLink(p.number)}</div><div class="line muted">${ago(p.time)}</div></div>
+              <div><div class="line">${num(p.transactions)} transactions</div><div class="line muted">preconfirmed by the sequencer</div></div>
+              <div class="num"><div class="line muted">${num(p.gasUsed)} gas</div></div></div>`).join("")}` : "")
+            + `<div class="item-group">On L1</div>${blocks.slice(0, 5 - waiting.length).map((b) => `<div class="item"><div><div class="line">${l2BlockLink(b.number)}</div><div class="line muted">${ago(b.timestamp)}</div></div>
+              <div><div class="line">${num(b.transactions)} transactions</div><div class="line"><span class="muted">posted in</span> ${l1TxLink(b.l1Tx)}</div></div>
+              <div class="num"><div class="line muted">${num(b.gasUsed)} gas</div><div class="line" title="Its share of a blob">${fill(b.payloadBytes)}</div></div></div>`).join("")}`;
+        })()}</div>
       <div class="panel"><div class="panel-head"><b>Latest L2 transactions</b><a href="#/txs">View all transactions →</a></div>
         ${txs.map((t) => `<div class="item"><div><div class="line">${l2TxLink(t.hash)}</div><div class="line muted">${ago(t.timestamp)}</div></div>
           <div><div class="line"><span class="muted">From</span> ${addr(t.from, "l2")}</div>

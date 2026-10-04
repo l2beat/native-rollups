@@ -334,6 +334,7 @@ footer { text-align: center; color: var(--muted); font-size: 14px; padding: 30px
 /* minmax(0, …) keeps each row's columns the same width whatever their content. */
 .item { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.5fr) minmax(0, 0.9fr); gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--line); font-size: 13.5px; line-height: 1.7; }
 .item .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item-group { padding: 5px 14px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; background: var(--soft); border-bottom: 1px solid var(--line); }
 .item:last-child { border-bottom: none; }
 @media (max-width: 860px) { .columns { grid-template-columns: 1fr; } }
 
