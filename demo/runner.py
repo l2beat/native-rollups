@@ -524,7 +524,7 @@ class Episode:
             if line.startswith("{"):
                 c = json.loads(line)
                 if c.get("to") in names:
-                    self.event("claim", f"{names[c['to']]} claims a {c['value'] / ETH:g} ETH deposit on L2", l2Tx=c["tx"])
+                    self.event("claim", f"{names[c['to']]} claims a {c['value'] / ETH:g} ETH deposit on L2", l2Tx=c["tx"], deposit=c["index"])
 
     def claim_withdrawals(self) -> None:
         """Claims on L1 the withdrawals to the story's users, each with the

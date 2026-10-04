@@ -361,6 +361,7 @@ async function home() {
   const head = blocks.length ? await object(`l2/blocks/${blocks[0].number}`) : null;
   const rec = head && (await blockRecord(head.number));
   await loadStoryMessages();
+  const between = await crossings();
   // What the status strip does not already say: activity, value, and cost on L1.
   const escrow = await rpc("eth_getBalance", [ix.rollup, "latest"]);
   const recent = blocks.slice(0, 20);
@@ -400,7 +401,7 @@ async function home() {
             <div class="line">${t.to ? `<span class="muted">To</span> ${addr(t.to, "l2")}` : t.frames ? `<span class="muted">${t.frames.length ?? t.frames} frames</span>` : '<span class="muted">contract creation</span>'}</div></div>
           <div class="num"><div class="line">${t.value ? eth(t.value) : ""}</div></div></div>`).join("")}</div>
     </div>
-    ${story()}
+    ${between}
     ${head ? `<h2>How block ${l2BlockLink(head.number)} reached L1</h2>${journey(head, rec)}
       <p class="section-lead">Each field its proof covers: where the rollup contract gets it on L1, and what it is on L2.</p>
       ${boundaryView(head, rec)}` : ""}`;
@@ -426,14 +427,52 @@ async function loadStoryMessages() {
   if (found) for (const kind of ["deposits", "withdrawals"]) Object.assign(state.messages[kind], found[kind]);
 }
 
-// The messages the demo's users send between the chains, newest first,
-// each with whether it was claimed.
-function story() {
-  const events = ((state.session && state.session.events) || []).map((e) => [e, ...storyMessage(e)]).filter(([, , m]) => m).slice(-5).reverse();
-  if (!events.length) return "";
-  return `<h2>Between the chains</h2>
-    <div class="story">${events.map(([e, kind, m]) => `<a href="#/${kind}/${m.index}"><span class="muted">${ago(e.time)}</span>
-      <span>${esc(e.title)}</span><span class="muted">${(kind === "deposit" ? m.l2Tx : m.l1Tx) ? `claimed <span class="check">✓</span>` : "waiting to be claimed"}</span></a>`).join("")}</div>`;
+// The deposits and withdrawals of the demo's users, newest first: each sent
+// on one chain and claimed on the other, with how long the crossing took,
+// or what it waits for.
+async function crossings() {
+  const events = (state.session && state.session.events) || [];
+  const story = events.filter((e) => e.type === "deposit" || e.type === "withdrawal").slice(-5).reverse();
+  if (!story.length) return "";
+  const waiting = waitingTxs();
+  const txLink = { l1: l1TxLink, l2: l2TxLink };
+  const l2Time = async (n) => (state.index.l2Blocks.find((b) => b.number === n) || (await object(`l2/blocks/${n}`)) || {}).timestamp;
+  const l1TxTime = async (h) => l1Time(h) || ((await object(`l1/txs/${h}`)) || {}).timestamp;
+  // The newest L1 block an L2 block anchored: deposits up to it can be claimed.
+  const anchored = Math.max(0, ...state.index.l2Blocks.map((b) => b.anchor), ...waitingBlocks().map((p) => p.anchorBlockNumber));
+  const rows = await Promise.all(story.map(async (e) => {
+    const [kind, m] = storyMessage(e);
+    const deposit = e.type === "deposit";
+    const [from, to] = deposit ? ["l1", "l2"] : ["l2", "l1"];
+    // Sent: a withdrawal's block may still be preconfirmed.
+    const sentTx = deposit ? e.l1.txHash : e.l2Tx;
+    const sentPre = !deposit && !m && waiting.find((t) => t.hash === sentTx);
+    const sentBlock = deposit ? e.l1.block : m ? m.l2Block : sentPre && sentPre.block;
+    const sentTime = (deposit ? await l1TxTime(sentTx) : m && (await l2Time(m.l2Block))) || e.time;
+    // Claimed: a deposit's claim may still be preconfirmed.
+    let claimTx = m && (deposit ? m.l2Tx : m.l1Tx), claimBlock = m && (deposit ? m.l2Block : m.l1Block), claimPre = null, claimTime;
+    if (deposit && !claimTx && m) {
+      const event = events.find((c) => c.type === "claim" && c.deposit === m.index);
+      claimPre = event && waiting.find((t) => t.hash === event.l2Tx);
+      if (claimPre) [claimTx, claimBlock, claimTime] = [claimPre.hash, claimPre.block, claimPre.time];
+    } else if (claimTx) {
+      claimTime = deposit ? await l2Time(claimBlock) : await l1TxTime(claimTx);
+    }
+    const reason = deposit
+      ? anchored >= sentBlock ? "an L2 block anchored it, so it can be claimed" : `waiting for an L2 block to anchor L1 block ${num(sentBlock)}`
+      : sentBlock && state.rollupHead >= sentBlock ? "its block is on L1, so it can be claimed" : "waiting for its block to reach L1";
+    return `<div class="item crossing">
+      <div><div class="line"><a href="${m ? `#/${kind}/${m.index}` : `#/${from}/tx/${sentTx}`}">${esc(e.title.replace(/ (from|to) L1$/, ""))}</a></div>
+        <div class="line muted">${ago(sentTime)}</div></div>
+      <div><div class="line"><span class="muted">Sent</span> ${txLink[from](sentTx)}</div>
+        <div class="line muted">${sentBlock ? `block ${num(sentBlock)}` : ""}${sentPre ? ", preconfirmed" : ""}</div></div>
+      ${claimTx
+        ? `<div><div class="line"><span class="muted">Claimed</span> ${txLink[to](claimTx)}</div>
+          <div class="line">${claimTime ? `${secs(claimTime - sentTime)} later` : ""}<span class="muted">${claimBlock ? `, block ${num(claimBlock)}` : ""}${claimPre ? ", preconfirmed" : ""}</span></div></div>`
+        : `<div><div class="line muted">Not claimed yet</div><div class="line muted">${reason}</div></div>`}</div>`;
+  }));
+  return `<div class="panel crossings"><div class="panel-head"><b>Between the chains</b><a href="#/messages">All deposits and withdrawals →</a></div>
+    ${rows.join("")}</div>`;
 }
 
 // A page of one of the explorer's lists, newest first, and their total.
