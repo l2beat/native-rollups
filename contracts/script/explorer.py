@@ -632,7 +632,8 @@ class Explorer:
         self.db.execute("INSERT OR REPLACE INTO snapshot VALUES (0, ?, ?, ?)", (number, l1_block, data))
 
     def merge_message(self, table: str, index: int, **fields) -> None:
-        """Adds what one side of a deposit or withdrawal tells about it."""
+        """Adds what one side of a message, L1 to L2 or L2 to L1, tells about
+        it."""
         row = self.db.execute(f"SELECT entry FROM {table} WHERE idx = ?", (index,)).fetchone()
         entry = {**(json.loads(row[0]) if row else {"index": index}), **fields}
         self.db.execute(
@@ -669,7 +670,7 @@ class Explorer:
                     a = event["args"]
                     self.merge_message(
                         "deposits", a["index"], **{"from": a["sender"]}, to=a["to"], value=a["value"], fee=a["fee"],
-                        gasLimit=a["gasLimit"], l1Tx=tx["hash"], l1Block=tx["block"],
+                        gasLimit=a["gasLimit"], data=a["data"], l1Tx=tx["hash"], l1Block=tx["block"],
                     )
         if kind == "withdrawal claim":
             self.merge_message("withdrawals", tx["call"]["args"]["m"]["index"], l1Tx=tx["hash"], l1Block=tx["block"])
@@ -743,7 +744,7 @@ class Explorer:
                     tx["withdrawal"] = a["index"]
                     self.merge_message(
                         "withdrawals", a["index"], **{"from": a["sender"]}, to=a["to"], value=a["value"], fee=a["fee"],
-                        gasLimit=a["gasLimit"], l2Tx=tx["hash"], l2Block=block["number"],
+                        gasLimit=a["gasLimit"], data=a["data"], l2Tx=tx["hash"], l2Block=block["number"],
                     )
             self.write(f"l2/txs/{tx['hash']}", tx)
         # What the block's transaction table shows, so it needs no other file.

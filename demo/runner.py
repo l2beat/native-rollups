@@ -85,11 +85,13 @@ SEND_MESSAGE_ABI = json.dumps([{
 }])
 # keccak256("L2MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
 L2_MESSAGE_SENT = "0xe854ec33ea124f454be5a868ee40540f56f837bd6eae1cbd8d5add769ccc7ed6"
-# The fee of spamoor's messages to addresses that cannot claim them, which
-# covers a relayer's claim in either direction.
+# keccak256("L1MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
+L1_MESSAGE_SENT = "0x1aaf2a3a1847e999050228d1cbe598e5d4c1522411ec1422281a18b4ad3ffe10"
+# The fee of messages to addresses that cannot claim them, which covers a
+# relayer's claim in either direction.
 MESSAGE_FEE = 10**15
-# The gas limit of spamoor's messages to a `MessageReceiver`, whose first
-# call creates a storage slot.
+# The gas limit of messages to a `MessageReceiver`, whose first call creates
+# a storage slot.
 RECEIVER_GAS_LIMIT = 200_000
 # A bound on the gas of a claim on L1 besides its call, for the claimer's
 # fee check.
@@ -470,6 +472,26 @@ class Episode:
         tx = self.send_l2(user, L2_MESSENGER, "sendMessage(address,uint256,uint256,bytes)", self.users[user], "0", "0", "0x", "--value", str(amount))
         self.event("withdrawal", f"{user} withdraws {amount / ETH:g} ETH to L1", l2Tx=tx)
 
+    def message(self, user: str, to_l2: bool) -> None:
+        """A call from `user` to the example app on the other chain, which
+        records the sender the messenger exposes. The app cannot claim, so
+        the message carries a fee for whoever does."""
+        side = "L1" if to_l2 else "L2"
+        data = "0x" + f"hello from {side}".encode().hex()
+        if to_l2:
+            receipt = json.loads(cast(
+                "send", "--rpc-url", self.args.rpc, "--private-key", USER_KEYS[user], "--json", "--timeout", "120",
+                self.contracts["rollup"], "sendMessage(address,uint256,uint256,bytes)", self.contracts["receiverL2"],
+                str(MESSAGE_FEE), str(RECEIVER_GAS_LIMIT), data, "--value", str(MESSAGE_FEE),
+            ))
+            index = next(int(log["topics"][1], 16) for log in receipt["logs"] if log["topics"][0] == L1_MESSAGE_SENT)
+            self.event("message", f"{user} sends a message to an app on L2", to="l2", sender=user, index=index,
+                       l1={"txHash": receipt["transactionHash"], "block": int(receipt["blockNumber"], 16)})
+        else:
+            tx = self.send_l2(user, L2_MESSENGER, "sendMessage(address,uint256,uint256,bytes)", self.contracts["receiverL1"],
+                              str(MESSAGE_FEE), str(RECEIVER_GAS_LIMIT), data, "--value", str(MESSAGE_FEE))
+            self.event("message", f"{user} sends a message to an app on L1", to="l1", sender=user, l2Tx=tx)
+
     def random_payment(self, exclude: tuple) -> None:
         """A payment between users, a small part of what its sender can spend."""
         senders = [u for u in USER_KEYS if u not in exclude and self.spendable(u) > ETH // 100]
@@ -520,11 +542,14 @@ class Episode:
             *[x for key in [*USER_KEYS.values(), *([] if self.spamoor else [SPAMOOR_L2_KEY])] for x in ("--wallet", key)],
         ])
         names = {address.lower(): name for name, address in self.users.items()}
+        story = {e["index"]: e["sender"] for e in self.session.get("events", []) if e["type"] == "message" and "index" in e}
         for line in out.splitlines():
             if line.startswith("{"):
                 c = json.loads(line)
                 if c.get("to") in names:
                     self.event("claim", f"{names[c['to']]} claims a {c['value'] / ETH:g} ETH deposit on L2", l2Tx=c["tx"], deposit=c["index"])
+                elif c.get("index") in story:
+                    self.event("claim", f"The relayer delivers {story[c['index']]}'s message on L2", l2Tx=c["tx"], deposit=c["index"])
 
     def claim_withdrawals(self) -> None:
         """Claims on L1 the withdrawals to the story's users, each with the
@@ -603,16 +628,22 @@ class Episode:
             if self.args.spamoor:
                 self.start_spamoor()
         else:
-            if i % 6 == 0:
+            if i % 12 == 0:
                 self.deposit(random.choice(["Alice", "Bob"]), "0.5ether")
             if self.spamoor and i % 25 == 0:
                 self.fund_spamoor()
             busy = ()
+            # A call to the app on the other chain, each way every 20 steps.
+            if i % 20 == 5:
+                self.message("Alice", True)
+            if i % 20 == 15:
+                self.message("Bob", False)
+                busy = ("Bob",)
             if i % 30 == 0:
                 rich = max(USER_KEYS, key=self.spendable)
                 if self.spendable(rich) > ETH // 10:
                     self.withdraw(rich, self.spendable(rich) // 4 // 10**15 * 10**15)
-                    busy = (rich,)
+                    busy = (*busy, rich)
             for _ in range(random.randint(1, 2)):
                 self.random_payment(busy)
         with self.lock:
