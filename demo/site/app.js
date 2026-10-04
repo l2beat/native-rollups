@@ -354,11 +354,11 @@ async function home() {
   // with transactions.
   const latest = waitingTxs().map((t) => ({ ...t, timestamp: t.time }));
   for (const b of blocks.slice(0, 100).filter((b) => b.transactions)) {
-    if (latest.length >= 8) break;
+    if (latest.length >= 6) break;
     const block = await object(`l2/blocks/${b.number}`);
     if (block) latest.push(...[...block.transactions].reverse().map((t) => ({ ...t, block: b.number, timestamp: b.timestamp })));
   }
-  const txs = await Promise.all(latest.slice(0, 8).map((t) => t.preconfirmed ? t : object(`l2/txs/${t.hash}`).then((x) => ({ ...t, ...(x || {}) }))));
+  const txs = await Promise.all(latest.slice(0, 6).map((t) => t.preconfirmed ? t : object(`l2/txs/${t.hash}`).then((x) => ({ ...t, ...(x || {}) }))));
   const head = blocks.length ? await object(`l2/blocks/${blocks[0].number}`) : null;
   const rec = head && (await blockRecord(head.number));
   await loadStoryMessages();
@@ -367,7 +367,6 @@ async function home() {
   const recent = blocks.slice(0, 20);
   const { deposits, withdrawals, transactions: total } = ix.totals;
   const interval = median(recent.slice(1).map((b, i) => recent[i].timestamp - b.timestamp));
-  const bytes = recent.length ? recent.reduce((s, b) => s + b.payloadBytes, 0) / recent.length : 0;
   // From preconfirmation to L1, over the recent blocks.
   const lag = median(((state.session && state.session.timings) || []).map((t) => t.posted - t.preconfirmed));
   const stats = [
@@ -377,23 +376,20 @@ async function home() {
     ["Deposits", num(deposits.count), `${eth(deposits.value)}, ${num(deposits.claimed)} claimed on L2`],
     ["Withdrawals", num(withdrawals.count), `${eth(withdrawals.value)}, ${num(withdrawals.claimed)} claimed on L1`],
     ["Block time", interval ? `${Math.round(interval)} s` : "", lag ? `preconfirmed at once, on L1 ${secs(lag)} later` : "the sequencer's fixed interval"],
-    ["Blob use", pct(bytes / BLOB_USABLE_BYTES), `${(bytes / 1024).toFixed(1)} KB per recent block`],
   ];
   return `
     <h1>A native rollup, explained as it runs</h1>
     <p class="lead">A native rollup is an L2 whose blocks Ethereum checks with its own proof program, the one it will use
-      for its own blocks. This explorer shows one running on a local copy of frames-devnet-0, with notes on every field.
-      Its L2 data is rebuilt from L1 alone by an independent node, so everything here is what anyone could reconstruct
-      from Ethereum.</p>
+      for its own blocks. This one runs on a local copy of frames-devnet-0, and everything here is rebuilt from L1 alone.</p>
     <div class="legend">${badge("real")} runs as specified ${badge("mock")} stands in for an L1 feature that does not exist yet
       · <a href="#/about">details</a></div>
     <div class="stats">${stats.map(([label, value, sub]) => `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`).join("")}</div>
     <div class="columns">
       <div class="panel"><div class="panel-head"><b>Latest L2 blocks</b><a href="#/blocks">View all blocks →</a></div>
-        ${waitingBlocks().slice(0, 4).map((p) => `<div class="item"><div><div class="line">${l2BlockLink(p.number)}</div><div class="line muted">${ago(p.time)}</div></div>
+        ${waitingBlocks().slice(0, 3).map((p) => `<div class="item"><div><div class="line">${l2BlockLink(p.number)}</div><div class="line muted">${ago(p.time)}</div></div>
           <div><div class="line">${num(p.transactions)} transactions</div><div class="line muted">preconfirmed, waiting for L1</div></div>
           <div class="num"><div class="line muted">${num(p.gasUsed)} gas</div><div class="line muted" title="It must reach L1 while its anchor is in the BLOCKHASH window">by L1 block ${num(deadline(p.anchorBlockNumber))}</div></div></div>`).join("")}
-        ${blocks.slice(0, Math.max(4, 8 - waitingBlocks().length)).map((b) => `<div class="item"><div><div class="line">${l2BlockLink(b.number)}</div><div class="line muted">${ago(b.timestamp)}</div></div>
+        ${blocks.slice(0, Math.max(3, 6 - waitingBlocks().length)).map((b) => `<div class="item"><div><div class="line">${l2BlockLink(b.number)}</div><div class="line muted">${ago(b.timestamp)}</div></div>
           <div><div class="line">${num(b.transactions)} transactions</div><div class="line"><span class="muted">posted in</span> ${l1TxLink(b.l1Tx)}</div></div>
           <div class="num"><div class="line muted">${num(b.gasUsed)} gas</div><div class="line" title="Its share of a blob">${fill(b.payloadBytes)}</div></div></div>`).join("")}</div>
       <div class="panel"><div class="panel-head"><b>Latest L2 transactions</b><a href="#/txs">View all transactions →</a></div>
@@ -431,10 +427,9 @@ async function loadStoryMessages() {
 // The messages the demo's users send between the chains, newest first,
 // each with whether it was claimed.
 function story() {
-  const events = ((state.session && state.session.events) || []).map((e) => [e, ...storyMessage(e)]).filter(([, , m]) => m).slice(-8).reverse();
+  const events = ((state.session && state.session.events) || []).map((e) => [e, ...storyMessage(e)]).filter(([, , m]) => m).slice(-5).reverse();
   if (!events.length) return "";
   return `<h2>Between the chains</h2>
-    <p class="section-lead">The demo's users deposit and withdraw. Each links to the message's journey.</p>
     <div class="story">${events.map(([e, kind, m]) => `<a href="#/${kind}/${m.index}"><span class="muted">${ago(e.time)}</span>
       <span>${esc(e.title)}</span><span class="muted">${(kind === "deposit" ? m.l2Tx : m.l1Tx) ? `claimed <span class="check">✓</span>` : "waiting to be claimed"}</span></a>`).join("")}</div>`;
 }
