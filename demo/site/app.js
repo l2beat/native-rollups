@@ -379,11 +379,11 @@ async function home() {
   const { deposits, withdrawals, transactions: total } = ix.totals;
   const interval = median(recent.slice(1).map((b, i) => recent[i].timestamp - b.timestamp));
   const stats = [
-    ["L2 transactions", num(total)],
+    ["L2 <span class=\"long\">transactions</span><span class=\"short\">txs</span>", num(total)],
     ["ETH on L2", escrow ? `${(Number(BigInt(escrow)) / 1e18).toLocaleString("en-US", { maximumFractionDigits: 2 })} <span class="unit">ETH</span>` : ""],
+    ["Block time", interval ? `${Math.round(interval)}s` : ""],
     ["Messages to L2", num(deposits.count)],
     ["Messages to L1", num(withdrawals.count)],
-    ["Block time", interval ? `${Math.round(interval)}s` : ""],
   ];
   return `
     <div class="stats">${stats.map(([label, value]) => `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div></div>`).join("")}</div>

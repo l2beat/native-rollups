@@ -147,9 +147,12 @@ h3 { font-size: 16px; margin: 20px 0 8px; }
 .stat .value { font-size: 18px; font-weight: 700; white-space: nowrap; }
 .stat .value .unit { font-size: 13px; font-weight: 600; color: var(--muted); }
 @media (max-width: 640px) {
-  .stats { grid-template-columns: 1fr 1fr; }
-  .stat { border-left: none; }
-  .stat:nth-child(even) { border-left: 1px solid var(--line); }
+  /* Three stats, then the two message counts, each row the full width. */
+  .stats { grid-template-columns: repeat(6, 1fr); }
+  .stat { grid-column: span 2; padding: 8px 10px; }
+  .stat:nth-child(n + 4) { grid-column: span 3; border-top: 1px solid var(--line); }
+  .stat:nth-child(4) { border-left: none; }
+  .stat .label { font-size: 10px; white-space: nowrap; }
 }
 
 /* Tables */
@@ -338,7 +341,11 @@ body.loading::before { content: ""; position: fixed; top: 0; left: 0; z-index: 2
 
 /* Phones: fields stack, the header scrolls away, and wide tables scroll
    within themselves. */
-nav .short { display: none; }
+nav .short, .stat .short { display: none; }
+@media (max-width: 380px) {
+  .stat .long { display: none; }
+  .stat .short { display: inline; }
+}
 @media (max-width: 640px) {
   /* Shorter names, so that the brand and the links still fit. */
   .top { position: static; padding: 10px 14px; gap: 8px 12px; }
