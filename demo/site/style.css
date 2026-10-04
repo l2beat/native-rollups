@@ -114,7 +114,11 @@ code, .mono { font-family: var(--mono); font-size: 0.88em; }
   position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
   padding: 10px 28px; background: var(--header-bg); backdrop-filter: blur(6px); border-bottom: 1px solid var(--line);
 }
-.brand { font-weight: 700; font-size: 17px; color: var(--ink); }
+.brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; font-size: 17px; color: var(--ink); }
+.brand .muted { margin-left: -3px; }
+.mark { width: 22px; height: 22px; flex: none; }
+.mark-edge { fill: var(--panel); stroke: var(--ink); stroke-width: 2.2; }
+.mark-core { fill: var(--accent); }
 .brand:hover { text-decoration: none; }
 nav { display: flex; gap: 16px; flex-wrap: wrap; font-size: 14px; }
 nav a { color: var(--ink-soft); }
