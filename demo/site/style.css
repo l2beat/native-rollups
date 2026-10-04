@@ -330,6 +330,9 @@ footer { text-align: center; color: var(--muted); font-size: 14px; padding: 30px
 /* Home: latest blocks and transactions side by side, as on Etherscan */
 .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+/* The two lists end level: rows stretch to fill the shorter panel. */
+.columns .panel { display: flex; flex-direction: column; }
+.columns .item { flex: 1; align-content: center; }
 .panel-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--soft); font-size: 14px; }
 /* minmax(0, …) keeps each row's columns the same width whatever their content. */
 .item { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.5fr) minmax(0, 0.9fr); gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--line); font-size: 13.5px; line-height: 1.7; }

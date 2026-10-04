@@ -384,7 +384,7 @@ async function home() {
     <div class="columns">
       <div class="panel"><div class="panel-head"><b>Latest L2 blocks</b><a href="#/blocks">View all blocks →</a></div>
         ${(() => {
-          const waiting = waitingBlocks().slice(0, 3), posted = blocks.slice(0, 5 - waiting.length);
+          const waiting = waitingBlocks().slice(0, 3), posted = blocks.slice(0, 6 - waiting.length);
           // The blocks between the two, which the panel has no room for.
           const from = posted.length && posted[0].number + 1, to = waiting.length && waiting[waiting.length - 1].number - 1;
           const between = from && to >= from ? `<div class="item-more">${to > from ? `#${num(from)} to #${num(to)}` : `#${num(from)}`} also preconfirmed</div>` : "";
