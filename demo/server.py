@@ -8,6 +8,7 @@ chain itself instead of trusting the records.
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -358,11 +359,31 @@ class Handler(SimpleHTTPRequestHandler):
         return self.headers.get("cf-connecting-ip") or self.client_address[0]
 
     def end_headers(self):
-        # The site's files and the book change only when the demo is updated,
-        # so caches in front of the server may keep them for a few minutes.
+        # The page is checked on every visit, and names its script and styles
+        # by their content, which caches may then keep for good. The book and
+        # the site's other files change only when the demo is updated, so
+        # caches in front of the server may keep them for a few minutes.
         if self.command == "GET" and not self.path.startswith(("/api/", "/beacon/", "/rpc")):
-            self.send_header("cache-control", "public, max-age=300")
+            page = urllib.parse.urlsplit(self.path).path in ("/", "/index.html")
+            versioned = "?v=" in self.path
+            self.send_header("cache-control", "no-cache" if page else "public, max-age=31536000, immutable" if versioned else "public, max-age=300")
         super().end_headers()
+
+    def send_page(self) -> None:
+        """The site's page, with its script and styles named by a hash of their
+        content, so that a browser never runs an old script with a new page,
+        or a new one with an old page."""
+        site = os.path.join(DEMO, "site")
+        page = open(os.path.join(site, "index.html")).read()
+        for name in ("app.js", "style.css"):
+            digest = hashlib.sha256(open(os.path.join(site, name), "rb").read()).hexdigest()[:12]
+            page = page.replace(f'"{name}"', f'"{name}?v={digest}"')
+        body = page.encode()
+        self.send_response(200)
+        self.send_header("content-type", "text/html; charset=utf-8")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=os.path.join(DEMO, "site"), **kwargs)
@@ -411,6 +432,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.directory = os.path.join(ROOT, "book")
             self.path = self.path[len("/book"):]
             return super().do_GET()
+        if urllib.parse.urlsplit(self.path).path in ("/", "/index.html"):
+            return self.send_page()
         if self.path.startswith("/api/explorer/"):
             url = urllib.parse.urlsplit(self.path)
             path = url.path[len("/api/explorer/"):].removesuffix(".json")
