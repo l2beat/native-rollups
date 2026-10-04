@@ -81,7 +81,8 @@ const badge = (kind, text) => `<span class="badge ${kind}">${text || kind}</span
 const pct = (x) => `${(100 * x).toFixed(x < 0.1 ? 1 : 0)}%`;
 const ago = (t) => {
   const s = Math.max(0, Math.round(Date.now() / 1000 - t));
-  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}min ago` : `${Math.round(s / 3600)}h ago`;
+  // A no-break space, so "ago" never wraps away from its number.
+  return s < 60 ? `${s}s\u00a0ago` : s < 3600 ? `${Math.round(s / 60)}min\u00a0ago` : `${Math.round(s / 3600)}h\u00a0ago`;
 };
 // The median, which a restart's gap does not skew.
 const median = (xs) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] : null);
