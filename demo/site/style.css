@@ -191,7 +191,6 @@ svg.merkle .mt-subtree { fill: var(--accent-bg); stroke: var(--accent); }
 svg.merkle .mt-sib.empty rect, svg.merkle .mt-subtree.empty { fill: var(--surface); stroke: var(--edge); stroke-dasharray: 3 3; }
 svg.merkle .mt-sib.empty text { fill: var(--muted); }
 svg.merkle .strong { font-weight: 600; fill: var(--ink); }
-svg.merkle .pv-label { font: 11px -apple-system, BlinkMacSystemFont, sans-serif; fill: var(--muted); }
 svg.merkle .mt-bad rect { fill: var(--bad-bg); stroke: var(--bad); }
 svg.merkle .mt-bad-text { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; fill: var(--bad); }
 svg.merkle .mt-cell rect { fill: var(--surface); stroke: var(--line); }
