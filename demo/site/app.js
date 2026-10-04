@@ -56,7 +56,6 @@ async function refresh() {
     state.rollupHead = n ? parseInt(n, 16) : null;
     state.bond = bond ? BigInt(bond).toString() : null;
   }
-  renderStatus();
   const route = parseRoute();
   if (["home", "blocks", "txs", "l1list", "messages", "message", "address"].includes(route.page)) render(true);
 }
@@ -300,22 +299,6 @@ function update(app, html, key) {
   [...app.querySelectorAll("details")].forEach((d, i) => i < open.length && (d.open = open[i]));
 }
 
-function renderStatus() {
-  const items = [];
-  if (state.l1Head != null) items.push(`<span class="status-item"><span class="dot"></span>L1 block ${num(state.l1Head)}</span>`);
-  const preconfirmed = state.session && state.session.head && state.session.head.preconfirmed;
-  if (preconfirmed) items.push(`<span class="status-item">L2 block ${num(preconfirmed)} preconfirmed</span>`);
-  if (state.rollupHead != null) items.push(`<span class="status-item">L2 block ${num(state.rollupHead)} on L1</span>`);
-  if (state.index && state.rollupHead != null) {
-    const n = state.index.totals.blocks;
-    items.push(n >= state.rollupHead
-      ? `<a class="status-item ok" href="#/about" title="An independent node rebuilt every L2 block from L1 data alone">follower rebuilt all ${num(n)} from L1</a>`
-      : `<span class="status-item warn">follower rebuilt ${num(n)} of ${num(state.rollupHead)}</span>`);
-  }
-  if (state.session && state.index) items.push(`<a class="status-item" href="#/address/l1/${state.index.rollup}">rollup deployed ${ago(state.session.startedAt)}</a>`);
-  document.getElementById("status").innerHTML = items.join("");
-}
-
 // ---------------------------------------------------------------------------
 // Lists
 // ---------------------------------------------------------------------------
@@ -403,11 +386,6 @@ async function home() {
     ["Block time", interval ? `${Math.round(interval)}s` : ""],
   ];
   return `
-    <h1>A native rollup, explained as it runs</h1>
-    <p class="lead">A native rollup is an L2 whose blocks Ethereum checks with its own proof program, the one it will use
-      for its own blocks. This one runs on a local copy of frames-devnet-0, and everything here is rebuilt from L1 alone.</p>
-    <div class="legend">${badge("real")} runs as specified ${badge("mock")} stands in for an L1 feature that does not exist yet
-      · <a href="#/about">details</a></div>
     <div class="stats">${stats.map(([label, value]) => `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div></div>`).join("")}</div>
     <div class="columns">
       <div class="panel"><div class="panel-head"><b>Latest L2 blocks</b><a href="#/blocks">View all blocks →</a></div>
