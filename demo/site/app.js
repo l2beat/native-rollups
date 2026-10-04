@@ -367,15 +367,12 @@ async function home() {
   const recent = blocks.slice(0, 20);
   const { deposits, withdrawals, transactions: total } = ix.totals;
   const interval = median(recent.slice(1).map((b, i) => recent[i].timestamp - b.timestamp));
-  // From preconfirmation to L1, over the recent blocks.
-  const lag = median(((state.session && state.session.timings) || []).map((t) => t.posted - t.preconfirmed));
   const stats = [
-    ["L2 transactions", num(total), `${ix.totals.blocks ? (total / ix.totals.blocks).toFixed(1) : 0} per block`],
-    ["ETH on L2", escrow ? `${(Number(BigInt(escrow)) / 1e18).toLocaleString("en-US", { maximumFractionDigits: 2 })} <span class="unit">ETH</span>` : "",
-      "held in the rollup's escrow on L1"],
-    ["Deposits", num(deposits.count), `${eth(deposits.value)}, ${num(deposits.claimed)} claimed on L2`],
-    ["Withdrawals", num(withdrawals.count), `${eth(withdrawals.value)}, ${num(withdrawals.claimed)} claimed on L1`],
-    ["Block time", interval ? `${Math.round(interval)} s` : "", lag ? `preconfirmed at once, on L1 ${secs(lag)} later` : "the sequencer's fixed interval"],
+    ["L2 transactions", num(total)],
+    ["ETH on L2", escrow ? `${(Number(BigInt(escrow)) / 1e18).toLocaleString("en-US", { maximumFractionDigits: 2 })} <span class="unit">ETH</span>` : ""],
+    ["Deposits", num(deposits.count)],
+    ["Withdrawals", num(withdrawals.count)],
+    ["Block time", interval ? `${Math.round(interval)} s` : ""],
   ];
   return `
     <h1>A native rollup, explained as it runs</h1>
@@ -383,7 +380,7 @@ async function home() {
       for its own blocks. This one runs on a local copy of frames-devnet-0, and everything here is rebuilt from L1 alone.</p>
     <div class="legend">${badge("real")} runs as specified ${badge("mock")} stands in for an L1 feature that does not exist yet
       · <a href="#/about">details</a></div>
-    <div class="stats">${stats.map(([label, value, sub]) => `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`).join("")}</div>
+    <div class="stats">${stats.map(([label, value]) => `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div></div>`).join("")}</div>
     <div class="columns">
       <div class="panel"><div class="panel-head"><b>Latest L2 blocks</b><a href="#/blocks">View all blocks →</a></div>
         ${waitingBlocks().slice(0, 3).map((p) => `<div class="item"><div><div class="line">${l2BlockLink(p.number)}</div><div class="line muted">${ago(p.time)}</div></div>

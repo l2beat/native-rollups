@@ -158,12 +158,18 @@ h3 { font-size: 16px; margin: 20px 0 8px; }
 .callout p { margin: 4px 0; }
 
 /* Stats */
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 16px 0; }
-.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
-.stat .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.stat .value { font-size: 22px; font-weight: 700; white-space: nowrap; }
-.stat .value .unit { font-size: 15px; font-weight: 600; color: var(--muted); }
-.stat .sub { font-size: 12.5px; color: var(--muted); }
+/* The live numbers, in one strip. */
+.stats { display: grid; grid-template-columns: repeat(5, 1fr); margin: 16px 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.stat { padding: 8px 14px; border-left: 1px solid var(--line); }
+.stat:first-child { border-left: none; }
+.stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.stat .value { font-size: 18px; font-weight: 700; white-space: nowrap; }
+.stat .value .unit { font-size: 13px; font-weight: 600; color: var(--muted); }
+@media (max-width: 640px) {
+  .stats { grid-template-columns: 1fr 1fr; }
+  .stat { border-left: none; }
+  .stat:nth-child(even) { border-left: 1px solid var(--line); }
+}
 
 /* Tables */
 table { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
