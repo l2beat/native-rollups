@@ -384,11 +384,14 @@ async function home() {
     <div class="columns">
       <div class="panel"><div class="panel-head"><b>Latest L2 blocks</b><a href="#/blocks">View all blocks →</a></div>
         ${(() => {
-          const waiting = waitingBlocks().slice(0, 3);
+          const waiting = waitingBlocks().slice(0, 3), posted = blocks.slice(0, 5 - waiting.length);
+          // The blocks between the two, which the panel has no room for.
+          const from = posted.length && posted[0].number + 1, to = waiting.length && waiting[waiting.length - 1].number - 1;
+          const between = from && to >= from ? `<div class="item-more">${to > from ? `#${num(from)} to #${num(to)}` : `#${num(from)}`} also preconfirmed</div>` : "";
           return waiting.map((p) => `<div class="item"><div><div class="line">${l2BlockLink(p.number)}</div><div class="line muted">${ago(p.time)}</div></div>
               <div><div class="line">${num(p.transactions)} transactions</div><div class="line muted">preconfirmed by the sequencer</div></div>
               <div class="num"><div class="line muted">${num(p.gasUsed)} gas</div></div></div>`).join("")
-            + blocks.slice(0, 5 - waiting.length).map((b) => `<div class="item"><div><div class="line">${l2BlockLink(b.number)}</div><div class="line muted">${ago(b.timestamp)}</div></div>
+            + between + posted.map((b) => `<div class="item"><div><div class="line">${l2BlockLink(b.number)}</div><div class="line muted">${ago(b.timestamp)}</div></div>
               <div><div class="line">${num(b.transactions)} transactions</div><div class="line"><span class="muted">posted in</span> ${l1TxLink(b.l1Tx)}</div></div>
               <div class="num"><div class="line muted">${num(b.gasUsed)} gas</div><div class="line" title="Its share of a blob">${fill(b.payloadBytes)}</div></div></div>`).join("");
         })()}</div>
@@ -396,7 +399,7 @@ async function home() {
         ${txs.map((t) => `<div class="item"><div><div class="line">${l2TxLink(t.hash)}</div><div class="line muted">${ago(t.timestamp)}</div></div>
           <div><div class="line"><span class="muted">From</span> ${addr(t.from, "l2")}</div>
             <div class="line">${t.to ? `<span class="muted">To</span> ${addr(t.to, "l2")}` : t.frames ? `<span class="muted">${t.frames.length ?? t.frames} frames</span>` : '<span class="muted">contract creation</span>'}</div></div>
-          <div class="num"><div class="line">${t.preconfirmed ? '<span class="muted">preconfirmed</span>' : chip(t.kind)}</div><div class="line">${t.value ? eth(t.value) : ""}</div></div></div>`).join("")}</div>
+          <div class="num"><div class="line">${chip(t.kind)}</div><div class="line">${t.value ? eth(t.value) : ""}</div></div></div>`).join("")}</div>
     </div>
     ${story()}
     ${head ? `<h2>How block ${l2BlockLink(head.number)} reached L1</h2>${journey(head, rec)}

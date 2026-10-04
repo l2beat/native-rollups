@@ -134,6 +134,8 @@ FRAMES_HELPER_CODE = os.path.join(os.path.dirname(__file__), "..", "frames", "fr
 MESSAGE_TYPE = "(address,address,uint256,uint256,uint256,bytes,uint256)"
 L2_MESSAGE_SENT = keccak256(b"L2MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
 CLAIM_SELECTOR = keccak256(f"claimL1Message({MESSAGE_TYPE},bytes32[],address)".encode())[:4]
+SEND_MESSAGE_SELECTOR = keccak256(b"sendMessage(address,uint256,uint256,bytes)")[:4]
+CREATE2_FACTORY = bytes.fromhex("4e59b44847b379578588920ca78fbf26c0b4956c")
 PROVE_ROOT_SELECTOR = keccak256(b"proveL1MessageRoot(uint256,bytes,bytes[],bytes[])")[:4]
 BLOCK_HASH_SELECTOR = keccak256(b"blockHash()")[:4]
 MAX_TIMESTAMP_LAG_SELECTOR = keccak256(b"MAX_TIMESTAMP_LAG()")[:4]
@@ -326,6 +328,22 @@ class PoolTransaction:
 
 def calls_messenger(frame, selector: bytes) -> bool:
     return len(frame.to) > 0 and bytes(frame.to) == bytes(MESSENGER) and bytes(frame.data[:4]) == selector
+
+
+def kind(tx) -> str:
+    """What a transaction does, as the explorer's `l2_kind` names it once the
+    block is on L1."""
+    if any(calls_messenger(c, CLAIM_SELECTOR) for c in (tx.frames if isinstance(tx, FrameTransaction) else [tx])):
+        return "deposit claim"
+    if isinstance(tx, FrameTransaction):
+        return "frame transaction"
+    if calls_messenger(tx, SEND_MESSAGE_SELECTOR):
+        return "withdrawal"
+    if isinstance(tx, SetCodeTransaction):
+        return "delegation"
+    if not len(tx.to) or bytes(tx.to) == CREATE2_FACTORY:
+        return "deploy"
+    return "call" if len(tx.data) else "transfer"
 
 
 def claims(tx) -> list:
@@ -722,14 +740,14 @@ class Node:
         return [stored["post"] for stored in self.config["preconfirmed"][:limit]]
 
     def summary(self, btx) -> dict:
-        """A transaction's hash, sender, recipient and value, as a
+        """A transaction's hash, sender, recipient, value and kind, as a
         preconfirmation lists it."""
         tx = decode_transaction(btx)
         frames = isinstance(tx, FrameTransaction)
         return {
             "hash": hx(keccak256(raw_transaction(btx))), "from": hx(sender_of(tx)),
             "to": None if frames or not len(tx.to) else hx(tx.to), "value": 0 if frames else int(tx.value),
-            **({"frames": len(tx.frames)} if frames else {}),
+            **({"frames": len(tx.frames)} if frames else {}), "kind": kind(tx),
         }
 
     def number_of(self, block_hash: bytes) -> int | None:
