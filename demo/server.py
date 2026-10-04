@@ -263,6 +263,25 @@ class ExplorerData:
         return body
 
 
+class RateLimit:
+    """Requests per visitor to what reaches the devnet, a token bucket each:
+    `rate` a second, in bursts of `burst`. Behind Cloudflare, the visitor is
+    the address it forwards; locally, the client's."""
+
+    def __init__(self, rate: float, burst: int):
+        self.rate, self.burst, self.buckets, self.lock = rate, burst, {}, threading.Lock()
+
+    def allow(self, visitor: str) -> bool:
+        now = time.monotonic()
+        with self.lock:
+            tokens, then = self.buckets.get(visitor, (self.burst, now))
+            tokens = min(self.burst, tokens + (now - then) * self.rate)
+            if len(self.buckets) > 100_000:
+                self.buckets.clear()
+            self.buckets[visitor] = (tokens - 1, now) if tokens >= 1 else (tokens, now)
+            return tokens >= 1
+
+
 def allowed(request) -> bool:
     """Whether a JSON-RPC request is one the page makes. Its calls are view
     functions without arguments, so `eth_call` takes a target and a selector
@@ -281,6 +300,17 @@ def allowed(request) -> bool:
 class Handler(SimpleHTTPRequestHandler):
     # Seconds a connection may stay idle, so slow clients do not hold threads.
     timeout = 30
+    server_version, sys_version = "native-rollup-explorer", ""
+
+    def visitor(self) -> str:
+        return self.headers.get("cf-connecting-ip") or self.client_address[0]
+
+    def end_headers(self):
+        # The site's files and the book change only when the demo is updated,
+        # so caches in front of the server may keep them for a few minutes.
+        if self.command == "GET" and not self.path.startswith(("/api/", "/beacon/", "/rpc")):
+            self.send_header("cache-control", "public, max-age=300")
+        super().end_headers()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=os.path.join(DEMO, "site"), **kwargs)
@@ -313,6 +343,12 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(b'{"error": "the chain is not reachable"}', 502)
 
     def do_GET(self):
+        if '"scheme":"http"' in self.headers.get("cf-visitor", "").replace(" ", ""):
+            # A visitor through Cloudflare on plain HTTP: to HTTPS.
+            self.send_response(301)
+            self.send_header("location", f"https://{self.headers.get('host', '')}{self.path}")
+            self.end_headers()
+            return
         if self.path == "/book":
             self.send_response(301)
             self.send_header("location", "/book/")
@@ -345,6 +381,8 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/api/eth-price":
             return self.send_json(json.dumps({"usd": eth_price(self.server)}).encode())
         if self.path.startswith("/beacon/"):
+            if not self.server.limit.allow(self.visitor()):
+                return self.send_json(b'{"error": "too many requests"}', 429)
             path = self.path[len("/beacon"):]
             if not path.startswith(BEACON_PATHS):
                 return self.send_json(b'{"error": "not allowed"}', 403)
@@ -354,6 +392,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path != "/rpc":
             return self.send_json(b'{"error": "not found"}', 404)
+        if not self.server.limit.allow(self.visitor()):
+            return self.send_json(b'{"error": "too many requests"}', 429)
         length = self.headers.get("content-length", "")
         if not length.isdigit() or int(length) > MAX_REQUEST_BYTES:
             return self.send_json(b'{"error": "too large"}', 413)
@@ -396,6 +436,8 @@ def main() -> None:
     server = Server(("127.0.0.1", args.port), Handler)
     server.rpc, server.beacon = args.rpc, args.beacon
     server.explorer = ExplorerData(EXPLORER)
+    # A page makes about one L1 call a second, and a few at once on load.
+    server.limit = RateLimit(rate=5, burst=40)
     server.snippets = extract_snippets()
     server.price, server.price_time = None, 0.0
     server.sources = load_sources(args.sys_asm)

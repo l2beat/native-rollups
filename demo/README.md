@@ -53,3 +53,7 @@ $HOME/work/native-rollups/demo/data/*.log $HOME/work/native-rollups/demo/data/*.
 }
 EOF
 ```
+
+## Publishing
+
+The server only listens on 127.0.0.1. A [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) publishes it: `cloudflared` connects out to Cloudflare, so no port opens and the hostname resolves to Cloudflare's addresses, not the machine's. Only the server goes through the tunnel, and it rate-limits each visitor, by the address Cloudflare forwards, on the calls that reach the devnet, and sends plain-HTTP visitors to HTTPS.
