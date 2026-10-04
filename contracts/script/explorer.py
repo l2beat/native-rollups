@@ -558,6 +558,24 @@ def logs_of(tx: dict) -> list:
     return (tx.get("logs") or []) + [log for f in tx.get("frames") or [] for log in f.get("logs") or []]
 
 
+# keccak256("Transfer(address,address,uint256)"), which ERC-20 tokens log, and
+# so does EIP-7708 for ETH, from its own address.
+TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+ETH_TRANSFER_LOGS = "0xfffffffffffffffffffffffffffffffffffffffe"
+
+
+def token_transfers(tx: dict) -> list:
+    """A transaction's ERC-20 transfers: (log index, token, from, to,
+    value), read from the logs themselves, whatever the token names its
+    event's arguments. ERC-721 transfers index a fourth topic, the token."""
+    return [
+        (i, log["address"].lower(), "0x" + log["topics"][1][-40:], "0x" + log["topics"][2][-40:], int(log["data"], 16))
+        for i, log in enumerate(logs_of(tx))
+        if log["topics"][:1] == [TRANSFER] and len(log["topics"]) == 3 and len(log["data"]) == 66
+        and log["address"].lower() != ETH_TRANSFER_LOGS
+    ]
+
+
 def addresses(tx: dict) -> list:
     """The addresses a decoded transaction involves: its sender, target,
     frame targets and payer, the emitters of its events, and the accounts its
@@ -599,6 +617,13 @@ CREATE INDEX IF NOT EXISTS withdrawals_by_l2_tx ON withdrawals (l2_tx);
 CREATE INDEX IF NOT EXISTS withdrawals_by_l1_tx ON withdrawals (l1_tx);
 CREATE TABLE IF NOT EXISTS contracts (address TEXT PRIMARY KEY, entry TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS snapshot (id INTEGER PRIMARY KEY CHECK (id = 0), number INTEGER NOT NULL, l1_block INTEGER NOT NULL, data BLOB NOT NULL);
+-- ERC-20 transfers, by the log that tells them, so that a replayed block
+-- adds none twice. On L2 they are all of them; on L1, those of the
+-- transactions the explorer indexes.
+CREATE TABLE IF NOT EXISTS token_transfers (chain TEXT NOT NULL, tx TEXT NOT NULL, log INTEGER NOT NULL, token TEXT NOT NULL,
+  sender TEXT NOT NULL, recipient TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (chain, tx, log));
+CREATE INDEX IF NOT EXISTS token_transfers_by_sender ON token_transfers (chain, sender);
+CREATE INDEX IF NOT EXISTS token_transfers_by_recipient ON token_transfers (chain, recipient);
 """
 
 
@@ -678,10 +703,17 @@ class Explorer:
             kept = [e for e in self.doc(f"{chain}/events/{a}") or [] if e["hash"] != tx["hash"]]
             self.write(f"{chain}/events/{a}", (kept + events)[-EVENTS_KEPT:])
 
+    def add_transfers(self, chain: str, tx: dict) -> None:
+        self.db.executemany(
+            "INSERT OR IGNORE INTO token_transfers VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(chain, tx["hash"], i, token, sender, recipient, str(value)) for i, token, sender, recipient, value in token_transfers(tx)],
+        )
+
     def add_l1_tx(self, tx: dict, kind: str, **links) -> None:
         tx.update({"kind": kind, **links})
         self.write(f"l1/txs/{tx['hash']}", tx)
         self.add_events("l1", tx, tx["block"])
+        self.add_transfers("l1", tx)
         involved = addresses(tx)
         summary = {
             "hash": tx["hash"], "kind": kind, "block": tx["block"], "timestamp": tx["timestamp"],
@@ -767,6 +799,7 @@ class Explorer:
                     tx["withdrawal"] = a["index"]
                     self.merge_message("withdrawals", a["index"], **sent_message(a), l2Tx=tx["hash"], l2Block=block["number"])
             self.write(f"l2/txs/{tx['hash']}", tx)
+            self.add_transfers("l2", tx)
         # What the block's transaction table shows, so it needs no other file.
         block["transactions"] = [
             {k: tx.get(k) for k in ("hash", "kind", "from", "to", "value", "gasUsed", "bytes", "status", "fee", "deposit", "withdrawal")}

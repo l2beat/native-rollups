@@ -234,6 +234,19 @@ def explorer_query(db, path: str, query: dict):
                     found = rows(db, f"SELECT entry FROM {kind} WHERE {column} = ?", query[key])
                     out[kind[:-1]] = found[0] if found else out.get(kind[:-1])
         return out
+    if m := re.fullmatch(r"holdings/(l1|l2)/(0x[0-9a-f]{40})", path):
+        # On L2, an address's tokens: the sum of all their transfers. On L1,
+        # where the explorer sees only the rollup's transactions, the tokens
+        # these moved, whose balances the page reads from L1.
+        chain, a = m.groups()
+        if chain == "l1":
+            return [{"token": t} for (t,) in db.execute("SELECT DISTINCT token FROM token_transfers WHERE chain = 'l1'")]
+        balances = {}
+        for token, sender, recipient, value in db.execute(
+            "SELECT token, sender, recipient, value FROM token_transfers WHERE chain = 'l2' AND (sender = ? OR recipient = ?)", (a, a),
+        ):
+            balances[token] = balances.get(token, 0) + (int(value) if recipient == a else 0) - (int(value) if sender == a else 0)
+        return [{"token": t, "balance": str(b)} for t, b in balances.items() if b]
     if m := re.fullmatch(r"anchoring/([0-9]+)", path):
         found = rows(db, "SELECT summary FROM blocks WHERE anchor >= ? ORDER BY number LIMIT 1", int(m.group(1)))
         return found[0] if found else None
