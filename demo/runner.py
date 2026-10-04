@@ -49,6 +49,10 @@ DATA = os.path.join(ROOT, "demo", "data")
 PROVER = os.path.join(DATA, "prover.json")
 # npm packages whose artifacts spamoor deploys, for their sources.
 PACKAGES = os.path.join(DATA, "packages", "node_modules")
+# Spamoor's deposits go to one of 100 addresses, and its EIP-7702
+# delegations reuse 20 accounts, so that its traffic does not grow the L2
+# state: the node's work for each block grows with the whole state.
+DEPOSIT_RECIPIENTS = "0x" + "de90" + "0" * 34 + "{random:9}{random:9}"
 # The story events the session keeps.
 EVENTS_KEPT = 100
 # What the follower rebuilds from L1, which the explorer shows.
@@ -292,8 +296,9 @@ class Episode:
 
     def start_spamoor(self) -> None:
         """Starts spamoor: about one L2 transaction per scenario and L2
-        block, and a message a minute per scenario in each direction, a pace
-        the relayer and the claimer keep up with. Spamoor paces a whole
+        block, a deposit a minute per scenario, and an L2 to L1 message every
+        five minutes per scenario, a pace the relayer and the claimer keep up
+        with. Spamoor paces a whole
         process, so the L2 messages come from a process of their own, with
         its own funding wallet."""
         a = self.args
@@ -314,7 +319,7 @@ class Episode:
         l2 = [
             {"scenario": "erctx", "name": "ERC-20 transfers", "config": {"throughput": 1, "max_wallets": 3, "random_amount": True}},
             {"scenario": "uniswap-swaps", "name": "Uniswap swaps", "config": {"throughput": 1, "max_wallets": 3}},
-            {"scenario": "setcodetx", "name": "EIP-7702 delegations", "config": {"throughput": 1, "max_wallets": 2, "max_authorizations": 3}},
+            {"scenario": "setcodetx", "name": "EIP-7702 delegations", "config": {"throughput": 1, "max_wallets": 2, "max_authorizations": 3, "max_delegators": 20}},
             {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {"throughput": 1, "max_wallets": 3, "envelope": "base"}},
         ]
         l2_messages = [
@@ -322,7 +327,7 @@ class Episode:
             messages("messages-to-l1", L2_MESSENGER, c["receiverL1"], "0xc0ffee", MESSAGE_FEE // 10**9, RECEIVER_GAS_LIMIT),
         ]
         l1 = [
-            messages("deposits", c["rollup"], "{randomaddr}", "0x", 10_000_000),
+            messages("deposits", c["rollup"], DEPOSIT_RECIPIENTS, "0x", 10_000_000),
             messages("messages-to-l2", c["rollup"], c["receiverL2"], "0xc0ffee", MESSAGE_FEE // 10**9, RECEIVER_GAS_LIMIT),
         ]
         self.contracts["spamoorL2Messages"] = cast("wallet", "address", "--private-key", SPAMOOR_L2_MESSAGES_KEY)
@@ -333,7 +338,8 @@ class Episode:
         for name, rpc, key, slot, spammers in (
             ("l1", a.rpc, SPAMOOR_L1_KEY, "60s", l1),
             ("l2", self.l2_rpc, SPAMOOR_L2_KEY, f"{a.block_time}s", l2),
-            ("l2-messages", self.l2_rpc, SPAMOOR_L2_MESSAGES_KEY, "60s", l2_messages),
+            # Each L2 to L1 message keeps a slot in the messenger's storage.
+            ("l2-messages", self.l2_rpc, SPAMOOR_L2_MESSAGES_KEY, "300s", l2_messages),
         ):
             for spammer in spammers:
                 spammer["config"] = {"seed": f"{name}-{spammer['name']}", **fees, "max_pending": 3, **spammer["config"]}
@@ -602,7 +608,7 @@ class Episode:
             if self.spamoor and i % 25 == 0:
                 self.fund_spamoor()
             busy = ()
-            if i % 9 == 0:
+            if i % 30 == 0:
                 rich = max(USER_KEYS, key=self.spendable)
                 if self.spendable(rich) > ETH // 10:
                     self.withdraw(rich, self.spendable(rich) // 4 // 10**15 * 10**15)

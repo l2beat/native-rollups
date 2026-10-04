@@ -1233,8 +1233,11 @@ class Node:
         """`eth_getProof` against the state root of the latest block, or of
         the latest posted one for `safe` and `finalized`."""
         posted = tag in ("safe", "finalized")
-        state = self.posted_state if posted else self.chain.state
-        header = self.block_by_number(self.posted)["header"] if posted else self.head
+        with self.lock:
+            # A copy, so that building the tries below, which takes a while,
+            # does not hold up the sequencer.
+            state = copy_state(self.posted_state if posted else self.chain.state)
+            header = self.block_by_number(self.posted)["header"] if posted else self.head
 
         def secure_trie(entries: dict) -> HexaryTrie:
             trie = HexaryTrie({})
@@ -1316,8 +1319,11 @@ class Node:
             reply["error"] = {"code": -32601, "message": f"{method} is not supported"}
             return reply
         try:
-            with self.lock:
+            if method == "eth_getProof":  # locks only to copy the state
                 reply["result"] = methods[method](*request.get("params", []))
+            else:
+                with self.lock:
+                    reply["result"] = methods[method](*request.get("params", []))
         except RpcError as e:
             reply["error"] = {"code": e.code, "message": str(e)} | ({"data": e.data} if e.data else {})
         except Exception as e:
