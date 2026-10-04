@@ -23,7 +23,9 @@
   --track: #efece5;
   --accent-bg: #edf1ff;
   --l1: #34487a;
+  --l1-bg: #e3e8f4;
   --l2: #7b2fb5;
+  --l2-bg: #f1e4f7;
   --code-bg: #fdfcf9;
   --code-pre: #f7f5f0;
   --tk-comment: #7c7c80;
@@ -63,7 +65,9 @@
     --track: #2f2c28;
     --accent-bg: #1f2646;
     --l1: #a7b8ea;
+    --l1-bg: #222a42;
     --l2: #cfa0ec;
+    --l2-bg: #31213c;
     --code-bg: #1a1917;
     --code-pre: #1f1e1b;
     --tk-comment: #8b8a90;
@@ -196,9 +200,9 @@ table.txs .addr .muted, .targets .addr .muted, .item .addr .muted { display: non
 .prose { font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
 .tag-note { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); }
 .empty-hash { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); white-space: nowrap; }
-.net { font: 700 9.5px/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: 0.03em; margin-right: 4px; vertical-align: 1.5px; }
-.net.l1 { color: var(--l1); }
-.net.l2 { color: var(--l2); }
+.net { display: inline-block; font: 700 9.5px/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: 0.03em; padding: 2px 4px; border-radius: 4px; margin-right: 4px; vertical-align: 1.5px; }
+.net.l1 { background: var(--l1-bg); color: var(--l1); }
+.net.l2 { background: var(--l2-bg); color: var(--l2); }
 table.fields td.value.nested { width: auto; padding: 2px 0; }
 table.fields table.fields { border: none; background: transparent; }
 table.fields table.fields td:first-child { width: 190px; font-weight: 500; white-space: nowrap; }
