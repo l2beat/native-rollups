@@ -211,6 +211,8 @@ table.txs .addr .muted, .targets .addr .muted, .item .addr .muted { display: non
 .net { display: inline-block; font: 700 9.5px/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: 0.03em; padding: 2px 4px; border-radius: 4px; margin-right: 4px; vertical-align: 1.5px; }
 .net.l1 { background: var(--l1-bg); color: var(--l1); }
 .net.l2 { background: var(--l2-bg); color: var(--l2); }
+/* Between two chain tags, as small as they are. */
+.route-arrow { font: 12px/1 -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); margin-right: 4px; vertical-align: 1px; }
 table.fields td.value.nested { width: auto; padding: 2px 0; }
 table.fields table.fields { border: none; background: transparent; }
 table.fields table.fields td:first-child { width: 190px; font-weight: 500; white-space: nowrap; }
