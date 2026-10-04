@@ -544,10 +544,6 @@ async function messages(route) {
       ${pager(page, list.total, `messages/${kind}`)}${messageRows(kind, list.entries)}`];
   };
   return `<h1>Messages</h1>
-    <p class="lead">A message is sent on one chain and claimed on the other, where the claim delivers its ETH and calls its
-      recipient, which can read who sent it. Deposits and withdrawals are messages that carry ETH. All L2 ETH comes from
-      them: the L2 starts with no ETH outside a pre-minted supply held by the L2 messenger, which only L1 messages
-      release, so the L1 escrow backs every L2 ETH.</p>
     ${tabs("/messages", await Promise.all([
       panel("deposits", "", `The rollup contract adds each message to a Merkle tree. On L2, a claim proves it against the
         tree's root in an L1 block the L2 anchored, and the L2 messenger delivers it.`),
