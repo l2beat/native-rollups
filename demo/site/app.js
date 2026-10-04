@@ -148,8 +148,8 @@ function labels() {
   add(c.spamoorL2, "Spamoor", "");
   add(c.spamoorL2Messages, "Spamoor", "");
   add(c.apps, "App developer", "");
-  add(c.pingPongL1, "Ping pong", "");
-  add(c.pingPongL2, "Ping pong", "");
+  add(c.pingPongL1, "PingPong", "");
+  add(c.pingPongL2, "PingPong", "");
   add(c.l1Bridge, "ERC-20 bridge", "");
   add(c.l2Bridge, "ERC-20 bridge", "");
   add(c.demoToken, "Demo token", "");
@@ -563,18 +563,30 @@ async function messages(route) {
 
 function about() {
   const c = (state.session && state.session.contracts) || {};
+  const peers = "No owner. Each side accepts only the calls that its messenger delivers from the other.";
+  // [name, chain, address, what it allows and to whom, Real or Mock].
+  const rows = [
+    ["Rollup contract", "l1", c.rollup, "No owner. Only the sequencer adds blocks, or anyone once it has posted none for two hours. Anyone sends and claims messages, and anyone can slash a broken preconfirmation.", "real"],
+    ["L2 messenger", "l2", c.l2Messenger, "No owner: it is in the L2 genesis. Anyone sends messages to L1 and claims messages from L1.", "real"],
+    ["Operator", "l1", c.operator, "The sequencer: the only account that adds blocks, backing its preconfirmations with a bond that only it can withdraw, after a delay. It also deployed the contracts and set the key registry's entry.", ""],
+    ["Proof checker", "l1", c.verifier, "Accepts only signatures of the trusted prover key, where EIP-8288 would check L1's own proof.", "mock"],
+    ["Trusted prover key", "l1", c.prover, "Signs each block that the stateless program accepted, in place of a zkVM proof.", "mock"],
+    ["Key registry", "l1", c.registry, "Holds the one verification key hash, which the deployer set where a fork's system call would.", "mock"],
+    ["ERC-20 bridge", "l1", c.l1Bridge, peers, ""],
+    ["ERC-20 bridge", "l2", c.l2Bridge, peers, ""],
+    ["Demo token", "l1", c.demoToken, "No owner: its supply was minted once, at deployment.", ""],
+    ["Demo token", "l2", c.demoTokenL2, "Only the L2 bridge mints and burns it.", ""],
+    ["PingPong", "l1", c.pingPongL1, peers, ""],
+    ["PingPong", "l2", c.pingPongL2, peers, ""],
+  ].filter(([, , a]) => a);
   return document.getElementById("about").innerHTML + (c.rollup ? `
-    <h2>Check it yourself</h2>
-    <table><thead><tr><th>Contract or account</th><th>Chain</th><th>Address</th><th></th></tr></thead><tbody>
-      ${[
-        ["Rollup contract", "l1", c.rollup, "real"], ["L2 messenger", "l2", c.l2Messenger, "real"],
-        ["Proof checker", "l1", c.verifier, "mock"], ["Key registry", "l1", c.registry, "mock"],
-        ["Trusted prover key", "l1", c.prover, "mock"], ["Operator", "l1", c.operator, ""],
-        ...Object.entries(c.users || {}).flatMap(([name, a]) => [[name, "l1", a, ""], [name, "l2", a, ""]]),
-      ].map(([name, chain, a, kind]) => `<tr><td>${name}</td><td>${chain.toUpperCase()}</td>
-        <td><a class="mono" href="#/address/${chain}/${a.toLowerCase()}">${a}</a></td><td>${kind ? badge(kind) : ""}</td></tr>`).join("")}
+    <h2>Contracts and permissions</h2>
+    <table class="permissions"><thead><tr><th>Contract or key</th><th>Address</th><th>Who can do what</th></tr></thead><tbody>
+      ${rows.map(([name, chain, a, can, kind]) => `<tr><td class="nowrap">${name} ${net(chain)} ${kind ? badge(kind) : ""}</td>
+        <td><a class="mono" href="#/address/${chain}/${a.toLowerCase()}">${a}</a></td><td>${can}</td></tr>`).join("")}
     </tbody></table>
-    <p>Rebuild the chain from L1 yourself, with the follower this explorer runs on:</p>
+    <h2>Rebuild the chain yourself</h2>
+    <p>With the follower this explorer runs on:</p>
     <pre class="code">uv run --project &lt;execution-specs projects/zkevm + EIP-8141&gt; python contracts/script/l2_follower.py \\
     --l1-rpc &lt;L1 RPC&gt; --beacon &lt;beacon API&gt; --rollup ${c.rollup} \\
     --genesis demo/data/l2_state.json</pre>` : "");
@@ -1107,7 +1119,7 @@ const ROLES = {
   Relayer: ["", "Claims L1 to L2 messages to other addresses, such as contracts, when their fee covers the claim. The claim pays it the fee before it approves payment, so it started with no ETH. Anyone can do the same."],
   Claimer: ["", "Claims on L1 the L2 to L1 messages to other addresses, when their fee covers the L1 gas. Anyone can claim a message: the ETH goes to its recipient and the fee to the claimer."],
   Spamoor: ["", "The funding wallet of spamoor, ethPandaOps' transaction generator, which funds child wallets that send ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, EIP-8141 frame transactions and messages between the chains."],
-  "Ping pong": ["", "An example app with a contract on each chain. A ping sent to one is delivered to the other, which answers with a pong at once. Each accepts only the calls that its messenger delivers from the other, which it checks with the sender the messenger exposes while it calls."],
+  "PingPong": ["", "An example app with a contract on each chain. A ping sent to one is delivered to the other, which answers with a pong at once. Each accepts only the calls that its messenger delivers from the other, which it checks with the sender the messenger exposes while it calls."],
   "ERC-20 bridge": ["", "An example token bridge with a contract on each chain, as rollups run them. The L1 one holds deposited tokens and has the L2 one mint as many of the token's L2 version, which it deploys at the token's first deposit. Withdrawals burn them on L2, and the L1 one releases them. Each accepts only the calls that its messenger delivers from the other."],
   "Demo token": ["", "An ERC-20 for the demo's users to bridge: on L1 the token Alice and Bob start with, on L2 its bridged version, which only the L2 bridge mints and burns."],
   "App developer": ["", "The account that deployed the example apps, the ping pong and the ERC-20 bridge, on both chains."],
