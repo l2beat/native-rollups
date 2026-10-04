@@ -363,8 +363,15 @@ nav .short, .stat .short { display: none; }
   table.fields > tbody > tr > td.note { padding-top: 0; }
   main table:not(.fields) { display: block; overflow-x: auto; }
   .tabs { overflow-x: auto; white-space: nowrap; }
-  .journey { grid-template-columns: 1fr; gap: 14px; }
-  .journey li::before { display: none; }
+  /* A vertical timeline: each step's number beside its title and links,
+     its text below, and a line down to the next number. */
+  .journey { grid-template-columns: 1fr; gap: 0; }
+  .journey li { display: grid; grid-template-columns: 1fr auto; column-gap: 10px; align-items: baseline; padding: 2px 0 14px 38px; }
+  .journey li > div:not(.evidence) { grid-row: 1; grid-column: 1; }
+  .journey .evidence { grid-row: 1; grid-column: 2; margin-top: 0; text-align: right; }
+  .journey p { grid-row: 2; grid-column: 1 / -1; margin: 2px 0 0; }
+  .journey li::before { top: 30px; bottom: 2px; left: 12px; right: auto; width: 2px; height: auto; }
+  .journey li:last-child::before { display: none; }
 }
 
 /* A block across the L1/L2 boundary, scrolling sideways on narrow screens. */
