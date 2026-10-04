@@ -11,7 +11,8 @@ story, one step every few seconds: Alice and Bob deposit from L1, and once an
 L2 block anchors their deposits, each claims theirs with a frame transaction
 they sign, which pays for itself. The users pay each other through the
 L2 RPC, and Charlie, who never deposits, withdraws ETH received on L2 to L1
-and claims it there. Every step is recorded in `demo/data/session.json`,
+and claims it there. Alice and Bob also move a demo token through an example
+ERC-20 bridge, to L2 and back. Every step is recorded in `demo/data/session.json`,
 which `demo/server.py` serves to the site. When it starts, or if the L2 node
 stops, the runner resumes the last rollup if L1 still has it: the L2 node
 replays its blocks, the follower rebuilds the chain from L1, and the story
@@ -19,9 +20,10 @@ goes on. `--new` deploys a new rollup instead.
 
 Around the story, spamoor (github.com/ethpandaops/spamoor, `--spamoor`)
 generates activity: ERC-20 transfers, Uniswap swaps, EIP-7702 delegations
-and EIP-8141 frame transactions on L2, and messages in both directions, with
-ETH to random addresses or calls to a `MessageReceiver` on the other chain. Those recipients cannot claim, so relayers do: the L2
-node's relayer account on L2, and a claimer account on L1.
+and EIP-8141 frame transactions on L2, and messages in both directions: ETH
+to random addresses, and pings to an example ping pong on the other chain,
+which answers each with a pong. Those recipients cannot claim, so relayers
+do: the L2 node's relayer account on L2, and a claimer account on L1.
 
 Only uses the standard library: it runs the contract scripts in their uv
 environments, as the README of `contracts/frames/` describes.
@@ -75,6 +77,10 @@ CLAIMER_KEY = "0x27515f805127bebad2fb9b183508bdacb8c763da16f54e0678b16e8f28ef3ff
 SPAMOOR_L1_KEY = "0x7ff1a4c1d57e5e784d327c4c7651e952350bc271f156afb3d00d20f5ef924856"
 SPAMOOR_L2_KEY = "0x3a91003acaf4c21b3953d94fa4a6db694fa69e5242b2e37be05dd82761058899"
 SPAMOOR_L2_MESSAGES_KEY = "0xbb1d0f125b4fb2bb173c318cdead45468474ca71474e2247776b2b4c0fa2d3f5"
+# Deploys the example apps: a ping pong and an ERC-20 bridge.
+APPS_KEY = "0x850643a0224065ecce3882673c21f56bcf6eef86274cc21cadff15930b59fc8c"
+# The deterministic deployment proxy, on both chains.
+CREATE2_FACTORY = "0x4e59b44847b379578588920ca78fbf26c0b4956c"
 L2_MESSENGER = "0x8079000000000000000000000000000000000001"
 SEND_MESSAGE_ABI = json.dumps([{
     "type": "function", "name": "sendMessage", "stateMutability": "payable", "outputs": [],
@@ -83,6 +89,7 @@ SEND_MESSAGE_ABI = json.dumps([{
         {"name": "data", "type": "bytes"},
     ],
 }])
+PING_ABI = json.dumps([{"type": "function", "name": "ping", "stateMutability": "payable", "outputs": [], "inputs": []}])
 # keccak256("L2MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
 L2_MESSAGE_SENT = "0xe854ec33ea124f454be5a868ee40540f56f837bd6eae1cbd8d5add769ccc7ed6"
 # keccak256("L1MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
@@ -90,9 +97,10 @@ L1_MESSAGE_SENT = "0x1aaf2a3a1847e999050228d1cbe598e5d4c1522411ec1422281a18b4ad3
 # The fee of messages to addresses that cannot claim them, which covers a
 # relayer's claim in either direction.
 MESSAGE_FEE = 10**15
-# The gas limit of messages to a `MessageReceiver`, whose first call creates
-# a storage slot.
-RECEIVER_GAS_LIMIT = 200_000
+# A ping's value: half pays for the ping's claim, half for the pong's. Each
+# message's call gets 300k gas, which the claimer on L1 asks a bigger fee
+# for.
+PING_VALUE = 4 * MESSAGE_FEE
 # A bound on the gas of a claim on L1 besides its call, for the claimer's
 # fee check.
 L1_CLAIM_GAS = 400_000
@@ -130,6 +138,11 @@ def devnet_url(container: str, port: int) -> str | None:
         return None
     mapping = subprocess.run(["docker", "port", name, str(port)], capture_output=True, text=True).stdout.splitlines()
     return f"http://127.0.0.1:{mapping[0].rsplit(':', 1)[1]}" if mapping else None
+
+
+def create2_address(init_code: str) -> str:
+    """Where the CREATE2 factory deploys `init_code`, with a zero salt."""
+    return "0x" + cast("keccak", "0xff" + CREATE2_FACTORY[2:] + "00" * 32 + cast("keccak", init_code)[2:])[-40:]
 
 
 def json_rpc(url: str, method: str, *params):
@@ -207,13 +220,6 @@ class Episode:
             "relayer": address(RELAYER_KEY), "claimer": address(CLAIMER_KEY),
             "spamoorL1": address(SPAMOOR_L1_KEY), "spamoorL2": address(SPAMOOR_L2_KEY),
         }
-        # The L1 receiver of messages from L2. The L2 one comes once Alice
-        # has funds.
-        receiver = cast(
-            "send", "--rpc-url", a.rpc, "--private-key", CLAIMER_KEY, "--json", "--timeout", "120", "--create",
-            self.receiver_code(found["rollup"], False),
-        )
-        self.contracts["receiverL1"] = json.loads(receiver)["contractAddress"]
         self.session["contracts"] = self.contracts
         write_json(PROVER, {"rollup": found["rollup"], "key": self.prover_key})
         # The previous rollup's blocks.
@@ -255,10 +261,54 @@ class Episode:
         self.start_operator()
         threading.Thread(target=self.relay_withdrawals, daemon=True).start()
 
-    def receiver_code(self, messenger: str, on_l2: bool) -> str:
-        artifact = json.load(open(os.path.join(CONTRACTS, "out", "MessageReceiver.sol", "MessageReceiver.json")))
-        args = cast("abi-encode", "constructor(address,bool)", messenger, str(on_l2).lower())
-        return artifact["bytecode"]["object"] + args[2:]
+    def init_code(self, name: str, constructor: str, *args: str) -> str:
+        artifact = json.load(open(os.path.join(CONTRACTS, "out", f"{name}.sol", f"{name}.json")))
+        return artifact["bytecode"]["object"] + cast("abi-encode", constructor, *args)[2:]
+
+    def deploy_apps(self) -> None:
+        """Deploys the example apps, each a contract on both chains that only
+        accepts calls from its peer: a ping pong, and an ERC-20 bridge with an
+        L1 token for the users. The L1 contracts come from the apps' key, the
+        L2 ones through the CREATE2 factory, so each side names the other
+        before either exists. The L2 ones wait until the key's deposit to
+        itself gives it funds there."""
+        a, c = self.args, self.contracts
+        l2_code = lambda: (  # noqa: E731
+            self.init_code("PingPong", "constructor(address,bool,address)", L2_MESSENGER, "true", c["pingPongL1"]),
+            self.init_code("L2ERC20Bridge", "constructor(address,address)", L2_MESSENGER, c["l1Bridge"]),
+        )
+        if "l1Bridge" not in c:
+            apps = cast("wallet", "address", "--private-key", APPS_KEY)
+            nonce = int(cast("nonce", "--rpc-url", a.rpc, apps))
+            c["pingPongL1"], c["l1Bridge"] = (cast("compute-address", "--nonce", str(nonce + k), apps).split()[-1] for k in (0, 1))
+            c["pingPongL2"], c["l2Bridge"] = map(create2_address, l2_code())
+            deploy = lambda code: json.loads(cast(  # noqa: E731
+                "send", "--rpc-url", a.rpc, "--private-key", APPS_KEY, "--json", "--timeout", "120", "--create", code,
+            ))["contractAddress"]
+            deploy(self.init_code("PingPong", "constructor(address,bool,address)", c["rollup"], "false", c["pingPongL2"]))
+            deploy(self.init_code("L1ERC20Bridge", "constructor(address,address)", c["rollup"], c["l2Bridge"]))
+            holders = f"[{self.users['Alice']},{self.users['Bob']}]"
+            c["demoToken"] = deploy(self.init_code("DemoToken", "constructor(address[],uint256)", holders, str(1000 * ETH)))
+            c["apps"] = apps
+            cast("send", "--rpc-url", a.rpc, "--private-key", APPS_KEY, "--timeout", "120", c["rollup"],
+                 "sendMessage(address,uint256,uint256,bytes)", apps, "0", "0", "0x", "--value", str(ETH))
+            self.session["contracts"] = c
+        if not c.get("appsOnL2"):
+            if int(json_rpc(self.l2_rpc, "eth_getBalance", c["apps"], "latest"), 16) == 0:
+                return
+            for code in l2_code():
+                cast("send", "--rpc-url", self.l2_rpc, "--private-key", APPS_KEY, "--timeout", "60",
+                     CREATE2_FACTORY, "0x" + "00" * 32 + code[2:])
+            c["appsOnL2"] = True
+            self.event("apps", "The example apps, a ping pong and an ERC-20 bridge, are on both chains",
+                       contracts={k: c[k] for k in ("pingPongL1", "pingPongL2", "l1Bridge", "l2Bridge", "demoToken")})
+            # Spamoor plays ping pong from now on.
+            if self.spamoor:
+                for p in self.spamoor:
+                    p.terminate()
+                    p.wait(timeout=30)
+                self.spamoor = []
+                self.start_spamoor()
 
     def start_node(self) -> None:
         a = self.args
@@ -306,6 +356,17 @@ class Episode:
         a = self.args
         c = self.contracts
 
+        def pings(name: str, target: str) -> dict:
+            """Pings to the ping pong on the other chain, each answered by a
+            pong."""
+            tasks = {"execution": [{"type": "call", "data": {
+                "target": target, "call_abi": PING_ABI, "call_fn_name": "ping", "call_args": [],
+                "amount": PING_VALUE // 10**9, "gas_limit": 400_000,
+            }}]}
+            return {"scenario": "taskrunner", "name": name, "config": {
+                "seed": name, "throughput": 1, "max_pending": 2, "max_wallets": 2, "tasks_config": json.dumps(tasks),
+            }}
+
         def messages(name: str, target: str, to: str, data: str, gwei: int, gas_limit: int = 0) -> dict:
             """Messages to `to`, whose recipient cannot claim them, so they
             carry a fee for whoever does. `gwei` includes it."""
@@ -324,14 +385,11 @@ class Episode:
             {"scenario": "setcodetx", "name": "EIP-7702 delegations", "config": {"throughput": 1, "max_wallets": 2, "max_authorizations": 3, "max_delegators": 20}},
             {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {"throughput": 1, "max_wallets": 3, "envelope": "base"}},
         ]
-        l2_messages = [
-            messages("withdrawals", L2_MESSENGER, "{randomaddr}", "0x", 2 * MESSAGE_FEE // 10**9),
-            messages("messages-to-l1", L2_MESSENGER, c["receiverL1"], "0xc0ffee", MESSAGE_FEE // 10**9, RECEIVER_GAS_LIMIT),
-        ]
-        l1 = [
-            messages("deposits", c["rollup"], DEPOSIT_RECIPIENTS, "0x", 10_000_000),
-            messages("messages-to-l2", c["rollup"], c["receiverL2"], "0xc0ffee", MESSAGE_FEE // 10**9, RECEIVER_GAS_LIMIT),
-        ]
+        l2_messages = [messages("withdrawals", L2_MESSENGER, "{randomaddr}", "0x", 2 * MESSAGE_FEE // 10**9)]
+        l1 = [messages("deposits", c["rollup"], DEPOSIT_RECIPIENTS, "0x", 10_000_000)]
+        if c.get("appsOnL2"):
+            l2_messages.append(pings("pings-to-l1", c["pingPongL2"]))
+            l1.append(pings("pings-to-l2", c["pingPongL1"]))
         self.contracts["spamoorL2Messages"] = cast("wallet", "address", "--private-key", SPAMOOR_L2_MESSAGES_KEY)
         if int(json_rpc(self.l2_rpc, "eth_getBalance", self.contracts["spamoorL2Messages"], "latest"), 16) < 10 * ETH:
             nonce = json_rpc(self.l2_rpc, "eth_getTransactionCount", self.contracts["spamoorL2"], "pending")
@@ -472,25 +530,35 @@ class Episode:
         tx = self.send_l2(user, L2_MESSENGER, "sendMessage(address,uint256,uint256,bytes)", self.users[user], "0", "0", "0x", "--value", str(amount))
         self.event("withdrawal", f"{user} withdraws {amount / ETH:g} ETH to L1", l2Tx=tx)
 
-    def message(self, user: str, to_l2: bool) -> None:
-        """A call from `user` to the example app on the other chain, which
-        records the sender the messenger exposes. The app cannot claim, so
-        the message carries a fee for whoever does."""
-        side = "L1" if to_l2 else "L2"
-        data = "0x" + f"hello from {side}".encode().hex()
+    def demo_balance(self, user: str, on_l2: bool) -> int:
+        """`user`'s DEMO on L1, or of its L2 token on L2."""
+        c = self.contracts
+        if on_l2 and not c.get("demoTokenL2"):
+            token = cast("call", "--rpc-url", self.l2_rpc, c["l2Bridge"], "l2TokenOf(address)(address)", c["demoToken"])
+            if int(token, 16) == 0:
+                return 0
+            c["demoTokenL2"] = token
+        rpc, token = (self.l2_rpc, c["demoTokenL2"]) if on_l2 else (self.args.rpc, c["demoToken"])
+        return int(cast("call", "--rpc-url", rpc, token, "balanceOf(address)(uint256)", self.users[user]).split()[0])
+
+    def bridge(self, user: str, to_l2: bool, amount: int) -> None:
+        """Moves `user`'s DEMO through the ERC-20 bridge, to L2 or back to L1.
+        A bridge cannot claim, so its messages carry a fee for whoever does."""
+        c = self.contracts
         if to_l2:
-            receipt = json.loads(cast(
-                "send", "--rpc-url", self.args.rpc, "--private-key", USER_KEYS[user], "--json", "--timeout", "120",
-                self.contracts["rollup"], "sendMessage(address,uint256,uint256,bytes)", self.contracts["receiverL2"],
-                str(MESSAGE_FEE), str(RECEIVER_GAS_LIMIT), data, "--value", str(MESSAGE_FEE),
+            send = lambda *args: json.loads(cast(  # noqa: E731
+                "send", "--rpc-url", self.args.rpc, "--private-key", USER_KEYS[user], "--json", "--timeout", "120", *args,
             ))
+            send(c["demoToken"], "approve(address,uint256)", c["l1Bridge"], str(amount))
+            receipt = send(c["l1Bridge"], "deposit(address,address,uint256)", c["demoToken"], self.users[user], str(amount),
+                           "--value", str(MESSAGE_FEE))
             index = next(int(log["topics"][1], 16) for log in receipt["logs"] if log["topics"][0] == L1_MESSAGE_SENT)
-            self.event("message", f"{user} sends a message to an app on L2", to="l2", sender=user, index=index,
+            self.event("message", f"{user} bridges {amount / ETH:g} DEMO to L2", to="l2", sender=user, index=index,
                        l1={"txHash": receipt["transactionHash"], "block": int(receipt["blockNumber"], 16)})
         else:
-            tx = self.send_l2(user, L2_MESSENGER, "sendMessage(address,uint256,uint256,bytes)", self.contracts["receiverL1"],
-                              str(MESSAGE_FEE), str(RECEIVER_GAS_LIMIT), data, "--value", str(MESSAGE_FEE))
-            self.event("message", f"{user} sends a message to an app on L1", to="l1", sender=user, l2Tx=tx)
+            tx = self.send_l2(user, c["l2Bridge"], "withdraw(address,address,uint256)", c["demoTokenL2"], self.users[user],
+                              str(amount), "--value", str(MESSAGE_FEE))
+            self.event("message", f"{user} bridges {amount / ETH:g} DEMO back to L1", to="l1", sender=user, l2Tx=tx)
 
     def random_payment(self, exclude: tuple) -> None:
         """A payment between users, a small part of what its sender can spend."""
@@ -539,7 +607,7 @@ class Episode:
             "uv", "run", "--project", a.zkevm_specs, "python", "script/l2_claims.py",
             "--l1-rpc", a.rpc, "--rollup", self.contracts["rollup"], "--l2-rpc", self.l2_rpc, "--relayer", RELAYER_KEY,
             # Spamoor claims its first deposit itself, before it starts sending.
-            *[x for key in [*USER_KEYS.values(), *([] if self.spamoor else [SPAMOOR_L2_KEY])] for x in ("--wallet", key)],
+            *[x for key in [*USER_KEYS.values(), APPS_KEY, *([] if self.spamoor else [SPAMOOR_L2_KEY])] for x in ("--wallet", key)],
         ])
         names = {address.lower(): name for name, address in self.users.items()}
         story = {e["index"]: e["sender"] for e in self.session.get("events", []) if e["type"] == "message" and "index" in e}
@@ -549,7 +617,7 @@ class Episode:
                 if c.get("to") in names:
                     self.event("claim", f"{names[c['to']]} claims a {c['value'] / ETH:g} ETH deposit on L2", l2Tx=c["tx"], deposit=c["index"])
                 elif c.get("index") in story:
-                    self.event("claim", f"The relayer delivers {story[c['index']]}'s message on L2", l2Tx=c["tx"], deposit=c["index"])
+                    self.event("claim", f"The relayer delivers {story[c['index']]}'s DEMO on L2", l2Tx=c["tx"], deposit=c["index"])
 
     def claim_withdrawals(self) -> None:
         """Claims on L1 the withdrawals to the story's users, each with the
@@ -607,6 +675,10 @@ class Episode:
                 claims()
             except Exception as e:
                 self.event("error", "Claiming failed", message=str(e)[-400:])
+        try:
+            self.deploy_apps()
+        except Exception as e:
+            self.event("error", "Deploying the example apps failed", message=str(e)[-400:])
         if i == 0:
             self.deposit("Alice", "1ether")
             self.deposit("Bob", "0.5ether")
@@ -619,10 +691,6 @@ class Episode:
             pass  # the next block anchors the deposits, and the users claim them
         elif i == 2:
             self.pay("Alice", "Charlie", 3 * ETH // 10)
-            nonce = int(json_rpc(self.l2_rpc, "eth_getTransactionCount", self.users["Alice"], "pending"), 16)
-            self.contracts["receiverL2"] = cast("compute-address", "--nonce", str(nonce), self.users["Alice"]).split()[-1]
-            self.send_l2("Alice", "--create", self.receiver_code(L2_MESSENGER, True))
-            self.event("receiver", "Alice deploys the L2 receiver of messages from L1", address=self.contracts["receiverL2"])
         elif i == 3:
             self.withdraw("Charlie", 2 * ETH // 10)
             if self.args.spamoor:
@@ -633,12 +701,18 @@ class Episode:
             if self.spamoor and i % 25 == 0:
                 self.fund_spamoor()
             busy = ()
-            # A call to the app on the other chain, each way every 20 steps.
-            if i % 20 == 5:
-                self.message("Alice", True)
-            if i % 20 == 15:
-                self.message("Bob", False)
-                busy = ("Bob",)
+            # DEMO through the bridge, each way every 20 steps: to L2, and
+            # half of what the richest holder there has back to L1.
+            if self.contracts.get("appsOnL2") and i % 20 == 5:
+                holders = [u for u in ("Alice", "Bob") if self.demo_balance(u, False) >= 100 * ETH]
+                if holders:
+                    self.bridge(random.choice(holders), True, 100 * ETH)
+            if self.contracts.get("appsOnL2") and i % 20 == 15:
+                holder = max(("Alice", "Bob"), key=lambda u: self.demo_balance(u, True))
+                amount = self.demo_balance(holder, True) // 2 // ETH * ETH
+                if amount:
+                    self.bridge(holder, False, amount)
+                    busy = (holder,)
             if i % 30 == 0:
                 rich = max(USER_KEYS, key=self.spendable)
                 if self.spendable(rich) > ETH // 10:
