@@ -2298,10 +2298,17 @@ function scrollToTarget() {
   const at = parseRoute().at;
   const target = at && document.querySelector(`[data-at="${CSS.escape(at)}"]`);
   if (!target) return window.scrollTo(0, 0);
-  window.scrollTo(0, target.getBoundingClientRect().top + window.scrollY - document.querySelector(".top").offsetHeight - 12);
+  const header = document.querySelector(".top");
+  const covered = getComputedStyle(header).position === "sticky" ? header.offsetHeight : 0;
+  window.scrollTo(0, target.getBoundingClientRect().top + window.scrollY - covered - 12);
   target.classList.add("target");
   setTimeout(() => target.classList.remove("target"), 2000);
 }
+// A placeholder that fits the search box, which phones make narrow.
+const narrow = window.matchMedia("(max-width: 640px)");
+const placeholder = () => (document.querySelector("#search input").placeholder = narrow.matches ? "Block, tx or address" : "Block number, transaction hash or address");
+narrow.addEventListener("change", placeholder);
+placeholder();
 window.addEventListener("hashchange", () => render().then(scrollToTarget));
 refresh().then(render).then(scrollToTarget);
 setInterval(refresh, 4000);

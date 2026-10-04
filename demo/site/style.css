@@ -300,8 +300,10 @@ details.code > pre.code { margin: 0; border-radius: 0 0 10px 10px; background: v
 footer { text-align: center; color: var(--muted); font-size: 14px; padding: 30px; border-top: 1px solid var(--line); }
 
 @media (max-width: 860px) {
-  #search { margin-left: 0; width: 100%; }
+  /* Two rows: the brand beside the search, then every link on one line. */
+  #search { order: 2; flex: 1; min-width: 0; margin-left: 0; }
   #search input { width: 100%; max-width: none; }
+  nav { order: 3; flex-basis: 100%; flex-wrap: nowrap; white-space: nowrap; }
   .journey { grid-template-columns: repeat(3, 1fr); gap: 16px 18px; }
   table.fields td:first-child { width: auto; }
   .hide-narrow { display: none; }
@@ -336,8 +338,15 @@ body.loading::before { content: ""; position: fixed; top: 0; left: 0; z-index: 2
 
 /* Phones: fields stack, the header scrolls away, and wide tables scroll
    within themselves. */
+nav .short { display: none; }
 @media (max-width: 640px) {
-  .top { position: static; padding: 10px 14px; gap: 10px 16px; }
+  /* Shorter names, so that the brand and the links still fit. */
+  .top { position: static; padding: 10px 14px; gap: 8px 12px; }
+  .brand { font-size: 16px; }
+  .brand .muted { display: none; }
+  nav { gap: 14px; }
+  nav .long { display: none; }
+  nav .short { display: inline; }
   main { padding: 0 14px 40px; }
   table.fields, table.fields > tbody, table.fields > tbody > tr, table.fields > tbody > tr > td { display: block; }
   table.fields > tbody > tr > td, table.fields td.value { width: auto; border-bottom: none; }
