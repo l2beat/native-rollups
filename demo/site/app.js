@@ -830,13 +830,12 @@ async function messagePage(route) {
     ${stepper(steps)}
     ${fields([
       ["Value", m.value !== undefined ? eth(m.value) : "", ""],
-      ...(hasData(data) ? [["Method", callOf(m.method, data), "The function its call runs on the recipient."]] : []),
       ["Fee", m.fee ? eth(m.fee) : "none", "For whoever claims it. Its recipient claims it for free."],
       ...(Number(m.gasLimit) ? [["Gas limit", num(m.gasLimit), "The gas its call gets, whoever claims it."]] : []),
       ["From", addr(m.from, from), ""],
       ["To", addr(m.to, to), ""],
-      ...(hasData(data) ? [["Data", hash(data, true), "Delivered as the call's data."]] : []),
-    ])}`;
+    ])}
+    ${hasData(data) ? `<h2>Call</h2><p class="section-lead">What the claim calls on the recipient.</p>${inputData(data, m.call, { chain: to, fn: m.call && m.call.function })}` : ""}`;
 }
 
 async function blockPage(route) {
@@ -1005,6 +1004,82 @@ const ROLES = {
   "Expiry verifier (EIP-8141)": ["", "EIP-8141's contract that a frame can call to give a transaction an expiry. The L2 has it because its rules include EIP-8141."],
 };
 
+// An ERC-20's name, symbol, decimals and supply, and `holder`'s balance: on
+// L1 now, on L2 as of its latest block on L1, as L2 pages show it. Null if
+// the address is not a token.
+async function tokenInfo(chain, token, holder) {
+  const key = `token/${chain}/${token.toLowerCase()}/${holder || ""}`;
+  if (!(key in state.cache)) state.cache[key] = await getJSON(`/api/token/${chain}/${token.toLowerCase()}${holder ? `?holder=${holder}` : ""}`);
+  return state.cache[key];
+}
+const units = (value, t) => {
+  const v = BigInt(value), d = 10n ** BigInt(t.decimals);
+  const frac = (v % d).toString().padStart(t.decimals, "0").slice(0, 4).replace(/0+$/, "");
+  return `${(v / d).toLocaleString("en-US")}${frac ? `.${frac}` : ""} ${esc(t.symbol)}`;
+};
+const ZERO_ADDRESS = "0x" + "0".repeat(40);
+// EIP-7708's logs of ETH transfers, which look like ERC-20 transfers.
+const ETH_TRANSFER_LOGS = "0xfffffffffffffffffffffffffffffffffffffffe";
+
+// A transaction's ERC-20 transfers, from the tokens' Transfer events: what a
+// bridge locks or releases, what is minted or burned, and other moves.
+async function tokenRow(tx, chain) {
+  const transfers = logsOf(tx).filter((l) => l.event && l.event.name === "Transfer" && l.topics.length === 3 && l.address.toLowerCase() !== ETH_TRANSFER_LOGS);
+  if (!transfers.length) return null;
+  const tokens = {};
+  await Promise.all([...new Set(transfers.map((l) => l.address.toLowerCase()))].map(async (t) => (tokens[t] = await tokenInfo(chain, t))));
+  const c = (state.session && state.session.contracts) || {};
+  const bridges = [c.l1Bridge, c.l2Bridge].filter(Boolean).map((b) => b.toLowerCase());
+  const lines = transfers.map((l) => {
+    const t = tokens[l.address.toLowerCase()];
+    if (!t) return "";
+    const [from, to] = [l.event.args.from.toLowerCase(), l.event.args.to.toLowerCase()];
+    const amount = `<a class="nowrap" href="#/address/${chain}/${l.address.toLowerCase()}">${units(l.event.args.value, t)}</a>`;
+    if (from === ZERO_ADDRESS) return `Minted ${amount} to ${addr(to, chain)}`;
+    if (to === ZERO_ADDRESS) return `Burned ${amount} of ${addr(from, chain)}`;
+    if (bridges.includes(to)) return `Locked ${amount} of ${addr(from, chain)} in ${addr(to, chain)}`;
+    if (bridges.includes(from)) return `Released ${amount} from ${addr(from, chain)} to ${addr(to, chain)}`;
+    return `Moved ${amount} from ${addr(from, chain)} to ${addr(to, chain)}`;
+  }).filter(Boolean);
+  return lines.length ? ["Tokens", lines.join("<br>"), "ERC-20 transfers, from the tokens' Transfer events."] : null;
+}
+
+// What an address holds of the demo's token, and for a token, its supply.
+// The bridge's two sides show what backs what: the DEMO the L1 one holds
+// locked backs the DEMO the L2 one minted.
+async function tokenFields(a, chain, contract) {
+  const c = (state.session && state.session.contracts) || {};
+  const is = (x) => x && a === x.toLowerCase();
+  const rows = [];
+  const [self, l1, l2] = await Promise.all([
+    contract ? tokenInfo(chain, a) : null,
+    c.demoToken && tokenInfo("l1", c.demoToken, c.l1Bridge),
+    c.demoTokenL2 && tokenInfo("l2", c.demoTokenL2),
+  ]);
+  const locked = l1 && BigInt(l1.balance), minted = l2 ? BigInt(l2.totalSupply) : 0n;
+  const backing = l1 && (locked === minted ? "exactly" : `and ${units(locked - minted, l1)} in messages not delivered yet`);
+  if (self) {
+    rows.push(["Token", `${esc(self.name)}, ${esc(self.symbol)}, ${self.decimals} decimals`, ""]);
+    rows.push(["Total supply", units(self.totalSupply, self), is(c.demoTokenL2) ? "Minted by the L2 bridge for deposits, burned for withdrawals." : ""]);
+  }
+  if (l1 && (is(c.l1Bridge) || is(c.demoToken))) {
+    rows.push([is(c.l1Bridge) ? "Locked tokens" : "Locked in the bridge", `${units(locked, l1)}${is(c.demoToken) ? ` <span class="muted">in</span> ${addr(c.l1Bridge, "l1")}` : ""}`,
+      `What deposits locked and withdrawals have not released. It backs the ${l2 ? units(minted, l2) : "none yet"} on L2, ${backing}.`]);
+  }
+  if (l1 && (is(c.l2Bridge) || is(c.demoTokenL2))) {
+    rows.push([is(c.l2Bridge) ? "Bridged tokens" : "Backed by", `${is(c.l2Bridge) && l2 ? `${addr(c.demoTokenL2, "l2")} <span class="muted">minted</span> ${units(minted, l2)}, ` : ""}${units(locked, l1)} <span class="muted">locked in</span> ${addr(c.l1Bridge, "l1")}`,
+      `The L1 bridge holds what backs the L2 token: the minted amount ${backing}.`]);
+  }
+  if (is(c.demoTokenL2)) rows.push(["L1 token", addr(c.demoToken, "l1"), "The token the L2 one stands for, one to one."]);
+  // The demo's token, held by anyone else.
+  const known = chain === "l1" ? c.demoToken : c.demoTokenL2;
+  if (known && !self && !is(c.l1Bridge)) {
+    const held = await tokenInfo(chain, known, a);
+    if (held && BigInt(held.balance) > 0n) rows.push(["Tokens", `<a href="#/address/${chain}/${known.toLowerCase()}">${units(held.balance, held)}</a>`, ""]);
+  }
+  return rows;
+}
+
 async function call(to, selector) {
   return rpc("eth_call", [{ to, data: selector }, "latest"]);
 }
@@ -1102,7 +1177,7 @@ async function addressPage(route) {
     <p class="mono">${a}</p>
     ${role ? `<div class="callout ${role[0] === "mock" ? "mock" : ""}"><p>${role[1]}</p></div>` : ""}
     ${other}
-    ${fields([...rows, ...live])}
+    ${fields([...rows, ...await tokenFields(a, chain, chain === "l1" ? !!l1Code : !!(acc && acc.codeSize)), ...live])}
     ${tabs(base, [
       ["", "Transactions", count, history],
       code && ["contract", "Contract", undefined, code],
@@ -1757,6 +1832,7 @@ async function l2TxPage(route) {
   const frame = tx.type === 6;
   const logs = logsOf(tx);
   const fees = feeRows(tx, "l2");
+  const tokens = await tokenRow(tx, "l2");
   const kinds = await kindsOf(tx, "l2");
   const position = block ? block.transactions.findIndex((t) => t.hash === tx.hash) : -1;
   const key = !frame && tx.to && tx.call && snippetKey(tx.to, tx.call.function);
@@ -1780,6 +1856,7 @@ async function l2TxPage(route) {
       ["Timestamp", block ? `${ago(block.timestamp)} <span class="muted">(${new Date(block.timestamp * 1000).toLocaleString()})</span>` : "", ""],
       ["Transaction action", `<span class="prose">${(L2_SUMMARIES[tx.kind] || (() => ""))(tx)}${w && tx.kind !== "withdrawal"
         ? ` ${tx.kind === "deposit claim" ? "Delivering it" : "The call"} sent ${msgLink("withdrawal", w.index)} to L1.` : ""}</span>`, ""],
+      ...(tokens ? [tokens] : []),
       [frame ? "Sender" : "From", addr(tx.from, "l2") + kindTag(kinds[tx.from]), frame ? "The account the transaction acts for." : ""],
       frame ? ["To", frameTargets(tx, "l2", kinds), "A frame transaction has no single recipient: each frame calls its own target, as the entry point, or as the sender in SENDER frames."]
         : ["To", tx.to ? addr(tx.to, "l2") + kindTag(kinds[tx.to]) : "contract creation", ""],
@@ -1904,6 +1981,7 @@ async function l1TxPage(route) {
   if (tx.kind === "advance") linked.push(["L2 block", l2BlockLink(tx.l2Block), "The L2 block this transaction adds."]);
   const logs = tx.logs || [];
   const fees = feeRows(tx, "l1");
+  const tokens = await tokenRow(tx, "l1");
   const base = `/l1/tx/${tx.hash}`;
   const tab = route.tab;
   const overview = `${fields([
@@ -1912,6 +1990,7 @@ async function l1TxPage(route) {
       ["Block", `${num(tx.block)} <span class="muted">built by ${esc(tx.builder)}</span>`, frame && tx.blobVersionedHashes.length ? "Only Nethermind and Reth accept blob-carrying frame transactions on this devnet." : ""],
       ["Timestamp", `${ago(tx.timestamp)} <span class="muted">(${new Date(tx.timestamp * 1000).toLocaleString()})</span>`, ""],
       ["Transaction action", `<span class="prose">${summary}</span>`, ""],
+      ...(tokens ? [tokens] : []),
       [frame ? "Sender" : "From", addr(tx.from, "l1") + kindTag(kinds[tx.from]), ""],
       frame ? ["To", frameTargets(tx, "l1", kinds), "A frame transaction has no single recipient: each frame calls its own target, as the entry point, or as the sender in SENDER frames."]
         : ["To", addr(tx.to, "l1") + kindTag(kinds[tx.to]), ""],

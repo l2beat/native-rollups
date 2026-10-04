@@ -516,11 +516,13 @@ def l1_transaction(tx: dict, receipt: dict, block: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def data_method(data: str) -> str | None:
-    """The function a message's call runs: its name, or its selector."""
+def message_call(data: str) -> dict:
+    """The call a message runs: its decoded call, if the explorer knows the
+    function, and its method, the function's name or its selector."""
     if data == "0x":
-        return None
-    return (decode_call(bytes.fromhex(data[2:])) or {}).get("function") or data[:10]
+        return {"method": None, "call": None}
+    call = decode_call(bytes.fromhex(data[2:]))
+    return {"method": call["function"] if call else data[:10], "call": call}
 
 
 def method(tx: dict) -> str | None:
@@ -677,7 +679,7 @@ class Explorer:
                     a = event["args"]
                     self.merge_message(
                         "deposits", a["index"], **{"from": a["sender"]}, to=a["to"], value=a["value"], fee=a["fee"],
-                        gasLimit=a["gasLimit"], data=a["data"], method=data_method(a["data"]), l1Tx=tx["hash"], l1Block=tx["block"],
+                        gasLimit=a["gasLimit"], data=a["data"], **message_call(a["data"]), l1Tx=tx["hash"], l1Block=tx["block"],
                     )
         if kind == "withdrawal claim":
             self.merge_message("withdrawals", tx["call"]["args"]["m"]["index"], l1Tx=tx["hash"], l1Block=tx["block"])
@@ -751,7 +753,7 @@ class Explorer:
                     tx["withdrawal"] = a["index"]
                     self.merge_message(
                         "withdrawals", a["index"], **{"from": a["sender"]}, to=a["to"], value=a["value"], fee=a["fee"],
-                        gasLimit=a["gasLimit"], data=a["data"], method=data_method(a["data"]), l2Tx=tx["hash"], l2Block=block["number"],
+                        gasLimit=a["gasLimit"], data=a["data"], **message_call(a["data"]), l2Tx=tx["hash"], l2Block=block["number"],
                     )
             self.write(f"l2/txs/{tx['hash']}", tx)
         # What the block's transaction table shows, so it needs no other file.

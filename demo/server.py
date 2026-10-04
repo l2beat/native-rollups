@@ -41,6 +41,11 @@ READ_METHODS = {
     "eth_blockNumber", "eth_call", "eth_getBalance", "eth_getBlockByNumber", "eth_getCode", "eth_getTransactionCount",
 }
 MAX_REQUEST_BYTES = 4096
+# The ERC-20 reads of token pages: name(), symbol(), decimals(), totalSupply()
+# and balanceOf(address).
+TOKEN_SELECTORS = {"name": "0x06fdde03", "symbol": "0x95d89b41", "decimals": "0x313ce567", "totalSupply": "0x18160ddd"}
+BALANCE_OF = "0x70a08231"
+ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
 BEACON_PATHS = ("/eth/v1/beacon/blobs/", "/eth/v1/beacon/genesis", "/eth/v1/config/spec")
 # ETH's price in USD, for the explorer's mainnet fee estimates.
 PRICE_URL = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
@@ -287,6 +292,35 @@ class RateLimit:
             return tokens >= 1
 
 
+def eth_call(url: str, to: str, data: str, tag: str) -> str | None:
+    """A call's return data, or None if it fails."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [{"to": to, "data": data}, tag]}).encode()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=body, headers={"content-type": "application/json"}), timeout=20) as r:
+            out = json.loads(r.read()).get("result")
+    except (OSError, ValueError):
+        return None
+    return out if isinstance(out, str) and len(out) > 2 else None
+
+
+def token(server, chain: str, address: str, holder: str | None) -> dict | None:
+    """An ERC-20's name, symbol, decimals and supply, and `holder`'s balance:
+    on L1 now, on L2 as of its latest block on L1, as the explorer shows L2.
+    None if the address is not a token."""
+    url, tag = (server.rpc, "latest") if chain == "l1" else (server.l2_rpc, "safe")
+    key = (chain, address.lower())
+    if key not in server.tokens:
+        out = {k: eth_call(url, address, selector, tag) for k, selector in TOKEN_SELECTORS.items() if k != "totalSupply"}
+        if not all(out.values()):
+            return None
+        text = lambda h: bytes.fromhex(h[2 + 128:2 + 128 + 2 * int(h[66:130], 16)]).decode(errors="replace")  # noqa: E731
+        server.tokens[key] = {"name": text(out["name"]), "symbol": text(out["symbol"]), "decimals": int(out["decimals"], 16)}
+    supply = eth_call(url, address, TOKEN_SELECTORS["totalSupply"], tag)
+    balance = holder and eth_call(url, address, BALANCE_OF + "0" * 24 + holder[2:].lower(), tag)
+    return {**server.tokens[key], "totalSupply": str(int(supply, 16)) if supply else None,
+            **({"balance": str(int(balance, 16)) if balance else "0"} if holder else {})}
+
+
 def allowed(request) -> bool:
     """Whether a JSON-RPC request is one the page makes. Its calls are view
     functions without arguments, so `eth_call` takes a target and a selector
@@ -385,6 +419,16 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(open(path, "rb").read() if os.path.exists(path) else b"null")
         if self.path == "/api/eth-price":
             return self.send_json(json.dumps({"usd": eth_price(self.server)}).encode())
+        if self.path.startswith("/api/token/"):
+            url = urllib.parse.urlsplit(self.path)
+            parts = url.path.split("/")[3:]
+            holder = urllib.parse.parse_qs(url.query).get("holder", [None])[0]
+            if len(parts) != 2 or parts[0] not in ("l1", "l2") or not ADDRESS.fullmatch(parts[1]) or (holder and not ADDRESS.fullmatch(holder)):
+                return self.send_json(b'{"error": "not found"}', 404)
+            if not self.server.limit.allow(self.visitor()):
+                return self.send_json(b'{"error": "too many requests"}', 429)
+            found = token(self.server, parts[0], parts[1], holder)
+            return self.send_json(json.dumps(found).encode(), 200 if found else 404)
         if self.path.startswith("/beacon/"):
             if not self.server.limit.allow(self.visitor()):
                 return self.send_json(b'{"error": "too many requests"}', 429)
@@ -429,6 +473,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8088)
     parser.add_argument("--rpc", help="an L1 RPC, by default the devnet's Reth")
     parser.add_argument("--beacon", help="a beacon API, by default the devnet's first Lighthouse")
+    parser.add_argument("--l2-rpc", default="http://127.0.0.1:8547", help="the L2 node's RPC, for the tokens of L2 pages")
     parser.add_argument("--sys-asm", default=os.path.expanduser("~/work/sys-asm"), help="for the EIP-8357 registry's source")
     parser.add_argument("--l2beat", default=os.path.expanduser("~/work/l2beat"), help="for L2BEAT's flattener")
     args = parser.parse_args()
@@ -439,7 +484,8 @@ def main() -> None:
     if not args.rpc or not args.beacon:
         sys.exit("the devnet is not running: start it, or pass --rpc and --beacon")
     server = Server(("127.0.0.1", args.port), Handler)
-    server.rpc, server.beacon = args.rpc, args.beacon
+    server.rpc, server.beacon, server.l2_rpc = args.rpc, args.beacon, args.l2_rpc
+    server.tokens = {}  # token metadata, which does not change
     server.explorer = ExplorerData(EXPLORER)
     # A page makes about one L1 call a second, and a few at once on load.
     server.limit = RateLimit(rate=5, burst=40)

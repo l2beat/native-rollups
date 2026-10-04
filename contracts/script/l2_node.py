@@ -1077,10 +1077,10 @@ class Node:
 
     # Calls
 
-    def simulate(self, call: dict, gas: int):
-        """Runs a call on the head state as a transaction without a
-        signature, fee or nonce check."""
-        block_state = BlockState(pre_state=self.chain.state)
+    def simulate(self, call: dict, gas: int, posted: bool = False):
+        """Runs a call on the head state, or on the latest posted block's for
+        `posted`, as a transaction without a signature, fee or nonce check."""
+        block_state = BlockState(pre_state=self.posted_state if posted else self.chain.state)
         h = self.head
         env = self.environment(block_state, max(int(time.time()), int(h.timestamp) + 1), h.parent_beacon_block_root, h.prev_randao, self.next_base_fee())
         sender = address(call.get("from") or "0x" + "00" * 20)
@@ -1110,7 +1110,7 @@ class Node:
         return process_top_level(env, tx_env)
 
     def call(self, call: dict, tag=None) -> str:
-        out = self.simulate(call, int(call.get("gas") or hex(GasCosts.TX_MAX_GAS_LIMIT), 16))
+        out = self.simulate(call, int(call.get("gas") or hex(GasCosts.TX_MAX_GAS_LIMIT), 16), posted=tag in ("safe", "finalized"))
         if out.error is not None:
             raise RpcError(3, f"execution reverted: {out.error!r}", hx(out.return_data))
         return hx(out.return_data)
