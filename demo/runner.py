@@ -633,7 +633,7 @@ class Episode:
                 c = json.loads(line)
                 if c.get("to") in names:
                     self.event("claim", f"{names[c['to']]} claims a {c['value'] / ETH:g} ETH deposit on L2", l2Tx=c["tx"], deposit=c["index"])
-                elif c.get("index") in story:
+                elif c.get("index") in story and "tx" in c:  # not one it skipped
                     self.event("claim", f"The relayer delivers {story[c['index']]}'s message on L2", l2Tx=c["tx"], deposit=c["index"])
 
     def claim_withdrawals(self) -> None:
