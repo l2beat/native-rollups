@@ -283,16 +283,14 @@ class Episode:
             nonce = int(cast("nonce", "--rpc-url", a.rpc, apps))
             c["pingPongL1"], c["l1Bridge"] = (cast("compute-address", "--nonce", str(nonce + k), apps).split()[-1] for k in (0, 1))
             c["pingPongL2"], c["l2Bridge"] = map(create2_address, l2_code())
-            deploy = lambda code: json.loads(cast(  # noqa: E731
-                "send", "--rpc-url", a.rpc, "--private-key", APPS_KEY, "--json", "--timeout", "120", "--create", code,
-            ))["contractAddress"]
+            deploy = lambda code: self.send_l1(APPS_KEY, "--create", code)["contractAddress"]  # noqa: E731
             deploy(self.init_code("PingPong", "constructor(address,bool,address)", c["rollup"], "false", c["pingPongL2"]))
             deploy(self.init_code("L1ERC20Bridge", "constructor(address,address)", c["rollup"], c["l2Bridge"]))
             holders = f"[{self.users['Alice']},{self.users['Bob']}]"
             c["demoToken"] = deploy(self.init_code("DemoToken", "constructor(address[],uint256)", holders, str(1000 * ETH)))
             c["apps"] = apps
-            cast("send", "--rpc-url", a.rpc, "--private-key", APPS_KEY, "--timeout", "120", c["rollup"],
-                 "sendMessage(address,uint256,uint256,bytes)", apps, "0", "0", "0x", "--value", str(ETH))
+            self.send_l1(APPS_KEY, c["rollup"], "sendMessage(address,uint256,uint256,bytes)", apps, "0", "0", "0x",
+                         "--value", str(ETH))
             self.session["contracts"] = c
         if not c.get("appsOnL2"):
             if int(json_rpc(self.l2_rpc, "eth_getBalance", c["apps"], "latest"), 16) == 0:
@@ -494,10 +492,9 @@ class Episode:
         key = key or USER_KEYS[user]
         address = cast("wallet", "address", "--private-key", key)
         to = to or address
-        receipt = json.loads(cast(
-            "send", "--rpc-url", self.args.rpc, "--private-key", key, "--json", "--timeout", "120",
-            self.contracts["rollup"], "sendMessage(address,uint256,uint256,bytes)", to, str(fee), "0", "0x", "--value", amount,
-        ))
+        receipt = self.send_l1(
+            key, self.contracts["rollup"], "sendMessage(address,uint256,uint256,bytes)", to, str(fee), "0", "0x", "--value", amount,
+        )
         self.event(
             "deposit", f"{user[0].upper() + user[1:]} deposits {amount.replace('ether', ' ETH')} from L1",
             amount=amount, **{"from": address}, to=to,
@@ -516,6 +513,26 @@ class Episode:
 
     def spendable(self, user: str) -> int:
         return max(0, int(json_rpc(self.l2_rpc, "eth_getBalance", self.users[user], "latest"), 16) - RESERVE)
+
+    def send_l1(self, key: str, *args: str) -> dict:
+        """Sends a transaction from `key` to every L1 client and returns its
+        receipt. The devnet's clients do not share their pending transactions,
+        so one only a single client holds waits for a block that client builds."""
+        raw = cast("mktx", "--rpc-url", self.args.rpc, "--private-key", key, *args)
+        sent = []
+        for url in self.args.submit_rpc:
+            try:
+                sent.append(json_rpc(url, "eth_sendRawTransaction", raw))
+            except (OSError, RuntimeError) as e:
+                print(f"{url} refused an L1 transaction: {e}", flush=True)
+        if not sent:
+            raise RuntimeError("no L1 client took the transaction")
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            if receipt := json_rpc(self.args.rpc, "eth_getTransactionReceipt", sent[0]):
+                return receipt
+            time.sleep(2)
+        raise RuntimeError(f"{sent[0]} was not included on L1 in 120 s")
 
     def send_l2(self, user: str, *args: str) -> str:
         """Sends a transaction from `user` through the L2 RPC, for the next
@@ -547,9 +564,7 @@ class Episode:
         A bridge cannot claim, so its messages carry a fee for whoever does."""
         c = self.contracts
         if to_l2:
-            send = lambda *args: json.loads(cast(  # noqa: E731
-                "send", "--rpc-url", self.args.rpc, "--private-key", USER_KEYS[user], "--json", "--timeout", "120", *args,
-            ))
+            send = lambda *args: self.send_l1(USER_KEYS[user], *args)  # noqa: E731
             send(c["demoToken"], "approve(address,uint256)", c["l1Bridge"], str(amount))
             receipt = send(c["l1Bridge"], "deposit(address,address,uint256)", c["demoToken"], self.users[user], str(amount),
                            "--value", str(MESSAGE_FEE))
@@ -566,10 +581,7 @@ class Episode:
         answers it with a pong."""
         c = self.contracts
         if from_l1:
-            receipt = json.loads(cast(
-                "send", "--rpc-url", self.args.rpc, "--private-key", USER_KEYS[user], "--json", "--timeout", "120",
-                c["pingPongL1"], "ping()", "--value", str(PING_VALUE),
-            ))
+            receipt = self.send_l1(USER_KEYS[user], c["pingPongL1"], "ping()", "--value", str(PING_VALUE))
             index = next(int(log["topics"][1], 16) for log in receipt["logs"] if log["topics"][0] == L1_MESSAGE_SENT)
             self.event("message", f"{user} sends a ping to L2", to="l2", sender=user, index=index,
                        l1={"txHash": receipt["transactionHash"], "block": int(receipt["blockNumber"], 16)})
@@ -605,8 +617,8 @@ class Episode:
             return
         run([
             "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "claim-l2-message",
-            "--rpc", a.rpc, "--rollup", self.contracts["rollup"], "--key", key,
-            "--index", str(index), "--l2-rpc", self.l2_rpc, "--record", self.record + f".{claimant}",
+            "--rpc", a.rpc, *[x for url in a.submit_rpc for x in ("--submit-rpc", url)], "--rollup", self.contracts["rollup"],
+            "--key", key, "--index", str(index), "--l2-rpc", self.l2_rpc, "--record", self.record + f".{claimant}",
         ])
         self.claimed.add(index)
         record = json.load(open(self.record + f".{claimant}"))
@@ -750,9 +762,9 @@ class Episode:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rpc", help="an L1 RPC for reads and ordinary transactions, by default the devnet's Reth")
+    parser.add_argument("--rpc", help="an L1 RPC for reads, by default the devnet's Reth")
     parser.add_argument("--submit-rpc", nargs="+",
-                        help="RPCs that accept blob-carrying frame transactions, by default the devnet's Nethermind and Reth")
+                        help="the L1 RPCs every transaction is sent to, by default the devnet's Nethermind and Reth")
     parser.add_argument("--beacon", help="a beacon API that serves blobs, by default the devnet's first Lighthouse")
     parser.add_argument("--zkevm-specs", default=os.path.expanduser("~/work/execution-specs-zkevm-frames"))
     parser.add_argument("--frames-specs", default=os.path.expanduser("~/work/execution-specs-frames"))

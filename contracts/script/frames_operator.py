@@ -311,11 +311,17 @@ def send_post(args: argparse.Namespace, bundle: dict, nonce: int) -> str:
     )
     for m in bundle["l2Messages"]:
         print(f"sends L2 message {m['index']}: {m['value']} wei from {m['sender']} to {m['to']} on L1", flush=True)
-    # To every client given, any of which may include it.
+    return submit(args, wrapped)
+
+
+def submit(args: argparse.Namespace, raw: bytes) -> str:
+    """Sends a signed transaction to every client given, any of which may
+    include it: the devnet's clients do not share their pending transactions,
+    so one only a single client holds waits for a block that client builds."""
     sent = []
-    for url in args.submit_rpc or [rpc]:
+    for url in args.submit_rpc or [args.rpc]:
         try:
-            sent.append(send_raw_transaction(url, wrapped))
+            sent.append(send_raw_transaction(url, raw))
         except SystemExit as e:
             print(f"{url} refused it: {e}", flush=True)
     if not sent:
@@ -488,16 +494,15 @@ def claim_l2_message(args: argparse.Namespace) -> None:
         "storageProof": proof["storageProof"][0]["proof"],
     }
     before = int(cast("balance", "--rpc-url", rpc, m["to"]))
-    receipt = json.loads(
-        cast(
-            "send", "--rpc-url", rpc, "--private-key", args.key, "--json", args.rollup, CLAIM_L2_MESSAGE_SIGNATURE,
-            f"({m['sender']},{m['to']},{m['value']},{m['fee']},{m['gasLimit']},{m['data']},{m['index']})",
-            str(p["blockNumber"]),
-            "[" + ",".join(p["accountProof"]) + "]",
-            "[" + ",".join(p["storageProof"]) + "]",
-            claimer,
-        )
+    raw = cast(
+        "mktx", "--rpc-url", rpc, "--private-key", args.key, args.rollup, CLAIM_L2_MESSAGE_SIGNATURE,
+        f"({m['sender']},{m['to']},{m['value']},{m['fee']},{m['gasLimit']},{m['data']},{m['index']})",
+        str(p["blockNumber"]),
+        "[" + ",".join(p["accountProof"]) + "]",
+        "[" + ",".join(p["storageProof"]) + "]",
+        claimer,
     )
+    receipt = wait_for_receipt(rpc, submit(args, bytes.fromhex(raw[2:])), blocks=10)
     print(
         f"L2 message {m['index']} proven against L2 block {p['blockNumber']} "
         f"({len(p['accountProof'])} + {len(p['storageProof'])} proof nodes): "
@@ -555,6 +560,7 @@ def main() -> None:
     adv.add_argument("--record", help="write what happened to this JSON file")
     claim = sub.add_parser("claim-l2-message")
     claim.add_argument("--rpc", required=True)
+    claim.add_argument("--submit-rpc", action="append", help="a client to send the claim to, by default --rpc")
     claim.add_argument("--rollup", required=True)
     claim.add_argument("--key", required=True, help="the L1 account sending the claim")
     claim.add_argument("--index", type=int, required=True)
