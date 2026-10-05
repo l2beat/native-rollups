@@ -379,6 +379,9 @@ class Handler(SimpleHTTPRequestHandler):
         for name in ("app.js", "style.css"):
             digest = hashlib.sha256(open(os.path.join(site, name), "rb").read()).hexdigest()[:12]
             page = page.replace(f'"{name}"', f'"{name}?v={digest}"')
+        # Link previews need the image's full address, on the host asked for.
+        https = '"scheme":"https"' in self.headers.get("cf-visitor", "").replace(" ", "")
+        page = page.replace('content="og.png"', f'content="{"https" if https else "http"}://{self.headers.get("host", "")}/og.png"')
         body = page.encode()
         self.send_response(200)
         self.send_header("content-type", "text/html; charset=utf-8")
