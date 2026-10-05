@@ -63,9 +63,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import rlp as pyrlp
 from eth_abi import decode as abi_decode
-from trie import HexaryTrie
 
 from execution_testing import Alloc, Environment
 from execution_testing import Account as TestAccount
@@ -81,7 +79,7 @@ from ethereum_types.numeric import U64, U256, Uint
 
 from ethereum.crypto.hash import keccak256
 from ethereum.exceptions import EthereumException
-from ethereum.merkle_patricia_trie import copy_trie, root, trie_get, trie_set
+from ethereum.merkle_patricia_trie import EMPTY_TRIE_ROOT, copy_trie, root, trie_get, trie_set
 from ethereum.state import Account, Address
 from ethereum.state_mpt import State, apply_changes_to_state, set_account, set_storage, store_code
 from ethereum.forks.amsterdam import fork, vm
@@ -99,7 +97,7 @@ from ethereum.forks.amsterdam.stateless_host import (
     serialize_stateless_input,
 )
 from ethereum.forks.amsterdam import stateless_host_exec_witness as host_witness
-from ethereum.forks.amsterdam.incremental_mpt import IncrementalMPT, MutableBranchNode, MutableExtensionNode, Witness, mpt_root
+from ethereum.forks.amsterdam.incremental_mpt import IncrementalMPT, MutableBranchNode, MutableExtensionNode, Witness, mpt_get, mpt_root
 from ethereum.forks.amsterdam.stateless import ExecutionWitness
 from ethereum.forks.amsterdam.transactions import (
     AccessListTransaction,
@@ -1294,45 +1292,44 @@ class Node:
 
     def proof(self, addr: str, slots: list, tag=None) -> dict:
         """`eth_getProof` against the state root of the latest block, or of
-        the latest posted one for `safe` and `finalized`."""
+        the latest posted one for `safe` and `finalized`, with the number of
+        the block it proves against."""
         posted = tag in ("safe", "finalized")
         with self.lock:
             # A copy, so that building the tries below, which takes a while,
             # does not hold up the sequencer.
             state = copy_state(self.posted_state if posted else self.chain.state)
             header = self.block_by_number(self.posted)["header"] if posted else self.head
+        # execution-specs' incremental tries of the whole state, which build in
+        # about a second where py-trie's took more than ten.
+        storage = host_witness._build_pre_state_storage_mpts(state._storage_tries)
+        accounts = host_witness._build_pre_state_account_mpt(state._main_trie, storage)
+        assert mpt_root(accounts) == header.state_root, "state root"
 
-        def secure_trie(entries: dict) -> HexaryTrie:
-            trie = HexaryTrie({})
-            for key, value in entries.items():
-                trie[keccak256(key)] = value
-            return trie
+        def path(mpt: IncrementalMPT, key) -> list:
+            """The nodes from the root towards `key`, which a lookup records."""
+            mpt.witness = Witness()
+            mpt_get(mpt, key)
+            return [hx(node) for node in mpt.witness.accessed_nodes.values()]
 
-        storage_tries, accounts = {}, {}
-        for a, account in state._main_trie._data.items():
-            stored = state._storage_tries.get(a)
-            storage = secure_trie({bytes(k): pyrlp.encode(int(v)) for k, v in (stored._data.items() if stored else []) if int(v)})
-            storage_tries[bytes(a)] = storage
-            accounts[bytes(a)] = pyrlp.encode([int(account.nonce), int(account.balance), storage.root_hash, bytes(account.code_hash)])
-        trie = secure_trie(accounts)
-        assert trie.root_hash == bytes(header.state_root), "state root"
-        target = bytes(address(addr))
-        account = state.get_account_optional(address(addr))
-        storage = storage_tries.get(target, HexaryTrie({}))
+        target = address(addr)
+        account = state.get_account_optional(target)
+        own = storage.get(target)
+        keys = [Bytes32(int(slot, 16).to_bytes(32, "big")) for slot in slots]
         return {
             "address": addr,
-            "accountProof": [hx(pyrlp.encode(n)) for n in trie.get_proof(keccak256(target))],
+            "accountProof": path(accounts, target),
             "balance": hex(int(account.balance) if account else 0),
             "codeHash": hx(account.code_hash) if account else hx(keccak256(b"")),
             "nonce": hex(int(account.nonce) if account else 0),
-            "storageHash": hx(storage.root_hash),
+            "storageHash": hx(mpt_root(own) if own else EMPTY_TRIE_ROOT),
             "storageProof": [
-                {
-                    "key": slot, "value": hex(int(state.get_storage(address(addr), Bytes32(int(slot, 16).to_bytes(32, "big"))))),
-                    "proof": [hx(pyrlp.encode(n)) for n in storage.get_proof(keccak256(int(slot, 16).to_bytes(32, "big")))],
-                }
-                for slot in slots
+                {"key": slot, "value": hex(int(state.get_storage(target, key))), "proof": path(own, key) if own else []}
+                for slot, key in zip(slots, keys)
             ],
+            # Not in eth_getProof: the block whose state root the proof is
+            # against, which a claim on L1 names.
+            "blockNumber": hex(int(header.number)),
         }
 
     def fee_history(self, count, newest, percentiles=None) -> dict:

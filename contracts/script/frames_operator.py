@@ -457,18 +457,12 @@ def record(path: str, entry: dict) -> None:
 
 def claim_l2_message(args: argparse.Namespace) -> None:
     rpc = args.rpc
-    # The node's latest posted block, which the rollup contract keeps among
-    # its recent state roots even once it has newer blocks, and the proof
-    # against it: the node proves against its latest posted block, so both
-    # must come from the same one.
+    # The proof against the node's latest posted block, which the rollup
+    # contract keeps among its recent state roots even once it has newer
+    # blocks. The node names the block, since more may be posted meanwhile.
     slot = int.from_bytes(keccak256(SENT_SLOT.to_bytes(32, "big")), "big") + args.index
-    for _ in range(5):
-        latest = l2_rpc(args.l2_rpc, "eth_getBlockByNumber", "safe", False)
-        proof = l2_rpc(args.l2_rpc, "eth_getProof", L2_MESSENGER, [f"0x{slot:064x}"], "safe")
-        if l2_rpc(args.l2_rpc, "eth_getBlockByNumber", "safe", False)["hash"] == latest["hash"]:
-            break
-    else:
-        raise SystemExit("the node kept marking blocks posted while proving")
+    proof = l2_rpc(args.l2_rpc, "eth_getProof", L2_MESSENGER, [f"0x{slot:064x}"], "safe")
+    latest = l2_rpc(args.l2_rpc, "eth_getBlockByNumber", proof["blockNumber"], False)
     root = cast("call", "--rpc-url", rpc, args.rollup, "stateRootAt(uint256)(bytes32)", str(int(latest["number"], 16)))
     if root != latest["stateRoot"]:
         raise SystemExit(f"the rollup's state root at L2 block {int(latest['number'], 16)} is {root}, the node's {latest['stateRoot']}")
