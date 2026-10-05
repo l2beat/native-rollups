@@ -338,7 +338,8 @@ def token(server, chain: str, address: str, holder: str | None) -> dict | None:
 def allowed(request) -> bool:
     """Whether a JSON-RPC request is one the page makes. Its calls are view
     functions without arguments, so `eth_call` takes a target and a selector
-    only, which keeps arbitrary code off the L1 node."""
+    only, which keeps arbitrary code off the L1 node, or the 32 zero bytes
+    that ask the EIP-8357 registry for its current entry."""
     if not isinstance(request, dict) or request.get("method") not in READ_METHODS:
         return False
     if request["method"] != "eth_call":
@@ -346,7 +347,7 @@ def allowed(request) -> bool:
     params = request.get("params")
     return (
         isinstance(params, list) and len(params) == 2 and params[1] == "latest" and isinstance(params[0], dict)
-        and set(params[0]) == {"to", "data"} and re.fullmatch(r"0x[0-9a-fA-F]{8}", str(params[0]["data"])) is not None
+        and set(params[0]) == {"to", "data"} and re.fullmatch(r"0x([0-9a-fA-F]{8}|0{64})", str(params[0]["data"])) is not None
     )
 
 

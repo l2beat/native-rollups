@@ -278,6 +278,10 @@ async function render(live = false) {
   try {
     const html = await (pages[route.page] || (() => `<h1>Not found</h1>`))(route);
     if (seq === renders) update(app, html, location.hash);
+  } catch (e) {
+    // A read failed, such as the L1 node's: say so, rather than load forever.
+    console.error(e);
+    if (seq === renders && !live) update(app, `<p class="note">This page could not load its data. Reload to try again.</p>`, location.hash);
   } finally {
     clearTimeout(loading);
     if (seq === renders) document.body.classList.remove("loading");
