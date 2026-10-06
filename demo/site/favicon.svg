@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- A block inside a block: an L2 that runs on L1's own rules, in the
+       site's ink and accent. Edges sit on even coordinates, so the
+       16-pixel icon stays sharp. -->
+  <style>
+    .edge { fill: #fbfaf7; stroke: #1d1d1f; }
+    .core { fill: #3b5bdb; }
+    @media (prefers-color-scheme: dark) {
+      .edge { fill: #1d1c1a; stroke: #ecebe7; }
+      .core { fill: #8ea4ff; }
+    }
+  </style>
+  <rect class="edge" x="3" y="3" width="26" height="26" rx="7" stroke-width="2"/>
+  <rect class="core" x="10" y="10" width="12" height="12" rx="3"/>
+</svg>

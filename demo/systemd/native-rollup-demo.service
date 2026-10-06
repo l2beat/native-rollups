@@ -1,0 +1,17 @@
+# The rollup, with its L2 node, sequencer, follower and spamoor, as
+# demo/runner.py runs them. A systemd user service: see demo/README.md.
+[Unit]
+Description=Native rollup demo
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/work/native-rollups
+Environment=PATH=%h/.local/bin:%h/.foundry/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 demo/runner.py
+Restart=always
+RestartSec=15
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target
