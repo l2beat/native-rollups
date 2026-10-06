@@ -138,6 +138,7 @@ SEND_MESSAGE_SELECTOR = keccak256(b"sendMessage(address,uint256,uint256,bytes)")
 CREATE2_FACTORY = bytes.fromhex("4e59b44847b379578588920ca78fbf26c0b4956c")
 PROVE_ROOT_SELECTOR = keccak256(b"proveL1MessageRoot(uint256,bytes,bytes[],bytes[])")[:4]
 BLOCK_HASH_SELECTOR = keccak256(b"blockHash()")[:4]
+BLOCK_NUMBER_SELECTOR = keccak256(b"blockNumber()")[:4]
 MAX_TIMESTAMP_LAG_SELECTOR = keccak256(b"MAX_TIMESTAMP_LAG()")[:4]
 # A posted block's anchor must be one of the last 256 L1 blocks, which
 # BLOCKHASH reaches.
@@ -371,6 +372,11 @@ def claims(tx) -> list:
     ]
 
 
+def block_number(stored: dict) -> int:
+    """The number of a block the state file stores."""
+    return int(rlp.decode_to(Header, bytes.fromhex(stored["header"][2:])).number)
+
+
 @dataclass
 class Pending:
     """A block executed on the chain's latest block, before it joins the
@@ -400,7 +406,17 @@ class Node:
         # The head's state as execution-specs' incremental tries, kept across
         # blocks: the account trie and each account's storage trie.
         self.tries: tuple[IncrementalMPT, dict[Address, IncrementalMPT]] | None = None
-        snapshot = self.load_snapshot() if self.config.get("snapshot") else 0
+        snapshots = self.config.setdefault("snapshots", [])
+        if "snapshot" in self.config:  # the single snapshot of earlier versions
+            path = self.config.pop("snapshot")
+            snapshots.append({"path": path, "number": int.from_bytes(rlp.decode(open(path, "rb").read())[0], "big")})
+        # What the rollup contract has, less than the node posted if L1 lost
+        # blocks, as when the machine running it resets.
+        on_l1 = self.rollup_block_number()
+        posted = max([s["number"] for s in snapshots] + [block_number(b) for b in self.config["blocks"]], default=0)
+        if on_l1 is not None and on_l1 < posted:
+            self.unpost(on_l1, posted)
+        snapshot = self.load_snapshot(snapshots[-1]) if snapshots else 0
         if not snapshot:
             self.index(self.chain.blocks[0], None)
         for stored in self.config["blocks"]:
@@ -423,10 +439,37 @@ class Node:
                 pass
         print(f"L2 node at block {int(self.head.number)}, block {self.posted} posted", flush=True)
 
-    def load_snapshot(self) -> int:
-        """Starts from the last snapshot of the posted chain, and returns its
-        block number."""
-        number, state, headers, messages = rlp.decode(open(self.config["snapshot"], "rb").read())
+    def rollup_block_number(self) -> int | None:
+        """The L2 block the rollup contract has last, if L1 answers."""
+        try:
+            return int(json_rpc(self.l1_rpc, "eth_call", {"to": self.rollup, "data": hx(BLOCK_NUMBER_SELECTOR)}, "latest"), 16)
+        except Exception:
+            traceback.print_exc()
+            return None
+
+    def unpost(self, number: int, posted: int) -> None:
+        """Forgets the posted blocks after `number`, which L1 no longer has,
+        the preconfirmed blocks built on them and the snapshots that hold
+        them, and returns their transactions to the pool. The
+        preconfirmations stay, as evidence."""
+        snapshots = [s for s in self.config["snapshots"] if s["number"] <= number]
+        if self.config["snapshots"] and not snapshots:
+            raise SystemExit(f"L1 lost L2 blocks before the node's snapshots, down to block {number}")
+        for s in self.config["snapshots"]:
+            if s not in snapshots and os.path.exists(s["path"]):
+                os.remove(s["path"])
+        lost = [b for b in self.config["blocks"] if block_number(b) > number] + self.config.get("preconfirmed", [])
+        self.config["repool"] = self.config.get("repool", []) + [raw for stored in lost for raw in stored["transactions"]]
+        self.config["blocks"] = [b for b in self.config["blocks"] if block_number(b) <= number]
+        self.config["preconfirmed"] = []
+        self.config["snapshots"] = snapshots
+        self.save()
+        print(f"L1 no longer has L2 blocks {number + 1} to {posted}, which it had: their transactions go back to the pool", flush=True)
+
+    def load_snapshot(self, snapshot: dict) -> int:
+        """Starts from a snapshot of the posted chain, and returns its block
+        number."""
+        number, state, headers, messages = rlp.decode(open(snapshot["path"], "rb").read())
         self.chain.state = load_state(state)
         self.chain.blocks = [Block(header=rlp.decode_to(Header, h), transactions=(), ommers=(), withdrawals=()) for h in headers]
         self.first = int(self.chain.blocks[0].header.number)
@@ -445,14 +488,18 @@ class Node:
         n = self.posted
         headers = [rlp.encode(self.block_by_number(k)["header"]) for k in range(max(self.first, n - 254), n + 1)]
         messages = [m for m in self.messages if int(m["blockNumber"], 16) <= n]
-        path = self.state_file + ".snapshot"
+        path = f"{self.state_file}.snapshot.{n}"
         with open(path + ".tmp", "wb") as f:
             f.write(rlp.encode([Uint(n), dump_state(self.posted_state), headers, json.dumps(messages).encode()]))
         os.replace(path + ".tmp", path)
-        self.config["snapshot"] = path
-        self.config["blocks"] = [
-            b for b in self.config["blocks"] if int(rlp.decode_to(Header, bytes.fromhex(b["header"][2:])).number) > n
-        ]
+        # The one before too, which the node starts from if L1 loses the
+        # blocks after it, with the blocks after it.
+        snapshots = [*self.config["snapshots"], {"path": path, "number": n}][-2:]
+        for s in self.config["snapshots"]:
+            if s not in snapshots and os.path.exists(s["path"]):
+                os.remove(s["path"])
+        self.config["snapshots"] = snapshots
+        self.config["blocks"] = [b for b in self.config["blocks"] if block_number(b) > snapshots[0]["number"]]
         self.config["preconfirmations"] = {k: v for k, v in self.config["preconfirmations"].items() if int(k) > n}
         self.save()
         drop = len(self.blocks) - KEEP_BLOCKS
@@ -909,6 +956,9 @@ class Node:
                 head = bytes.fromhex(json_rpc(self.l1_rpc, "eth_call", {"to": self.rollup, "data": hx(BLOCK_HASH_SELECTOR)}, "latest")[2:])
                 with self.lock:
                     number = self.number_of(head)
+                    if number is not None and number < self.posted:
+                        print(f"L1 no longer has L2 blocks {number + 1} to {self.posted}, which it had", flush=True)
+                        os._exit(1)  # for the runner to start the node again from what L1 has
                     if number is not None:
                         self.mark_posted(number)
                         self.drop_expired()

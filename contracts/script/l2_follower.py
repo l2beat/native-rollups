@@ -47,6 +47,10 @@ import l2_node
 from ssz_roots import container4, payload_root, public_input_root, versioned_hashes_root
 
 BLOCK_ADDED = keccak256(b"BlockAdded(uint64,bytes32)")
+# How far before a snapshot's L1 block the explorer indexes L1 again when the
+# follower starts from it, past any L1 blocks a reset of the machine running
+# L1 may have changed: three epochs, more than finality lags.
+L1_REINDEX_BLOCKS = 96
 # NativeRollup.EMPTY_LIST_ROOT: the SSZ root of no withdrawals.
 EMPTY_LIST_ROOT = bytes.fromhex("f5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b")
 L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
@@ -124,17 +128,31 @@ def follow(args: argparse.Namespace) -> None:
 
     explorer = ex.Explorer(args.explorer, args.rollup, str(l2_node.L2_MESSENGER), flatten) if args.explorer else None
     verified, from_block, records = 0, 0, []
-    snapshot = explorer.snapshot() if explorer else None
-    if snapshot:
-        # The chain at a recent block, which the explorer's data reaches, so
-        # only the blocks after it are rebuilt again.
-        verified, from_block, data = snapshot
-        state, headers = rlp.decode(data)
-        chain.state = l2_node.load_state(state)
-        chain.blocks = [Block(header=rlp.decode_to(Header, h), transactions=(), ommers=(), withdrawals=()) for h in headers]
-        print(f"resumed from the snapshot at L2 block {verified}", flush=True)
+    if explorer:
+        # The chain at the latest snapshot that L1 still has, so only the
+        # blocks after it are rebuilt again.
+        snapshot = explorer.snapshot(rollup_block_number(args))
+        if snapshot:
+            verified, from_block, data = snapshot
+            state, headers = rlp.decode(data)
+            chain.state = l2_node.load_state(state)
+            chain.blocks = [Block(header=rlp.decode_to(Header, h), transactions=(), ommers=(), withdrawals=()) for h in headers]
+            print(f"resumed from the snapshot at L2 block {verified}", flush=True)
+        latest = explorer.latest_block()
+        if latest and not still_on_l1(args, latest):
+            # L1 lost blocks, as when the machine running it resets: the
+            # explorer forgets what came after the snapshot, which L1 may no
+            # longer have, and indexing again writes back what it does have.
+            from_block = max(0, from_block - L1_REINDEX_BLOCKS)
+            print(f"L1 no longer has L2 block {latest['number']} where it had it: indexing again from L1 block {from_block}", flush=True)
+            explorer.rewind(verified, from_block, chain.state)
+            explorer.commit()
     while True:
         try:
+            if explorer and rollup_block_number(args) < verified:
+                # L1 lost blocks the follower has: it starts again from a
+                # snapshot L1 has, when the runner restarts it.
+                raise SystemExit(f"the rollup contract no longer has L2 block {verified}")
             logs = rpc(args.l1_rpc, "eth_getLogs", json.dumps({
                 "address": args.rollup, "fromBlock": hex(from_block), "toBlock": "latest",
                 "topics": ["0x" + BLOCK_ADDED.hex()],
@@ -146,7 +164,12 @@ def follow(args: argparse.Namespace) -> None:
             time.sleep(args.interval)
             continue
         for log in logs:
-            if int(log["topics"][1], 16) <= verified:
+            number = int(log["topics"][1], 16)
+            if number <= verified:
+                # The transaction that added it, which the explorer forgot with
+                # the L1 blocks it indexes again.
+                if explorer and not explorer.has_l1_tx(log["transactionHash"]):
+                    explorer.add_l1_tx(l1_tx(args, log["transactionHash"]), "advance", l2Block=number)
                 continue
             entry, details = rebuild(args, chain, gas_limit, log)
             verified, from_block = entry["number"], entry["l1Block"]
@@ -173,6 +196,18 @@ def follow(args: argparse.Namespace) -> None:
     state_root = cast("call", "--rpc-url", args.l1_rpc, args.rollup, "stateRoot()(bytes32)")
     assert "0x" + bytes(chain.blocks[-1].header.state_root).hex() == state_root
     print(f"followed {len(verified)} L2 blocks from L1 data, state root {state_root} matches the rollup contract")
+
+
+def rollup_block_number(args: argparse.Namespace) -> int:
+    """The L2 block the rollup contract has last."""
+    return int(cast("call", "--rpc-url", args.l1_rpc, args.rollup, "blockNumber()(uint64)").split()[0])
+
+
+def still_on_l1(args: argparse.Namespace, block: dict) -> bool:
+    """Whether L1 still has an indexed L2 block where it had it, and so the
+    L1 blocks before."""
+    receipt = rpc(args.l1_rpc, "eth_getTransactionReceipt", block["l1Tx"])
+    return receipt is not None and int(receipt["blockNumber"], 16) == block["l1Block"] and rollup_block_number(args) >= block["number"]
 
 
 def l1_tx(args: argparse.Namespace, tx_hash: str) -> dict:
