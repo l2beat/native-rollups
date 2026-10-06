@@ -514,17 +514,30 @@ class Episode:
     def spendable(self, user: str) -> int:
         return max(0, int(json_rpc(self.l2_rpc, "eth_getBalance", self.users[user], "latest"), 16) - RESERVE)
 
+    def peer_l1_clients(self) -> None:
+        """Connects each L1 client to the others. Their discovery never does
+        on this devnet, since Reth's node record has no fork ID, and a client
+        forgets its peers when it restarts. Adding a connected peer again
+        changes nothing."""
+        urls = self.args.submit_rpc
+        enodes = {url: json_rpc(url, "admin_nodeInfo")["enode"] for url in urls}
+        for url in urls:
+            for other in urls:
+                if other != url:
+                    json_rpc(url, "admin_addPeer", enodes[other])
+
     def send_l1(self, key: str, *args: str) -> dict:
         """Sends a transaction from `key` to every L1 client and returns its
-        receipt. The devnet's clients do not share their pending transactions,
-        so one only a single client holds waits for a block that client builds."""
+        receipt, so that it does not wait for a block one client builds if the
+        clients are not peered."""
         raw = cast("mktx", "--rpc-url", self.args.rpc, "--private-key", key, *args)
         sent = []
         for url in self.args.submit_rpc:
             try:
                 sent.append(json_rpc(url, "eth_sendRawTransaction", raw))
             except (OSError, RuntimeError) as e:
-                print(f"{url} refused an L1 transaction: {e}", flush=True)
+                if "already known" not in str(e):  # unless a peer passed it on
+                    print(f"{url} refused an L1 transaction: {e}", flush=True)
         if not sent:
             raise RuntimeError("no L1 client took the transaction")
         deadline = time.time() + 120
@@ -698,6 +711,10 @@ class Episode:
                     p.wait(timeout=30)
             self.spamoor = []
             self.start_spamoor()
+        try:
+            self.peer_l1_clients()
+        except (OSError, RuntimeError) as e:
+            print(f"could not peer the L1 clients: {e}", flush=True)
         # Claiming can fail, as can any transaction, but the block must go on.
         for claims in (self.claim_withdrawals, self.claim_deposits):
             try:
