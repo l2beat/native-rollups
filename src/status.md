@@ -31,7 +31,7 @@
 | Mandatory execution proofs | One L1 block proof that covers the L2 proofs | Optional proofs ([EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)) proposed for Hegotá; mandatory in K\* under the current strawmap ordering |
 | [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions | The transaction envelope for EIP-8288 dependencies | Scheduled for Hegotá |
 | Compact `NewPayloadRequestHeader` | Validation without full payloads, and the contract's root computation | Removed from the optional-proof flow ([consensus-specs#5076](https://github.com/ethereum/consensus-specs/issues/5076)), assumed to return with mandatory proofs |
-| [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) Block-in-Blobs | L2 block data in blobs | Proposed for Hegotá |
+| [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) Block-in-Blobs | L2 block data in blobs | Declined for Hegotá on 21 September 2026 |
 | [EIP-7928](https://eips.ethereum.org/EIPS/eip-7928) block-level access lists | Part of every proven payload | Scheduled for Glamsterdam |
 | [EIP-7997](https://eips.ethereum.org/EIPS/eip-7997) deterministic factory | Deploying the EIP-8357 registry | Scheduled for Glamsterdam |
 | [EIP-7805](https://eips.ethereum.org/EIPS/eip-7805) FOCIL | [Forced transactions](./forced_transactions.md) through L2 inclusion lists, once the L1 stateless validation program supports it | Scheduled for Hegotá |
