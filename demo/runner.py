@@ -197,7 +197,7 @@ class Episode:
         self.prover_key = prover["private_key"]
         deployer = cast("wallet", "address", "--private-key", OPERATOR_KEY)
         nonce = int(cast("nonce", "--rpc-url", a.rpc, deployer))
-        rollup = cast("compute-address", "--nonce", str(nonce + 3), deployer).split()[-1]
+        rollup = cast("compute-address", "--nonce", str(nonce + 1), deployer).split()[-1]
         genesis = json.loads(run([
             "uv", "run", "--project", a.zkevm_specs, "python", "script/l2_node.py",
             "genesis", "--state", self.state, "--l1-rollup", rollup,

@@ -94,7 +94,7 @@ const EMPTY_HASHES = {
 };
 // Values that stand in for something the demo cannot have yet.
 const MOCKED = {
-  // keccak256("frames-devnet mock EVM verification key"), in contracts/script/DeployFrames.s.sol
+  // keccak256("frames-devnet mock EVM verification key"), in the L1 genesis of contracts/frames/kurtosis.yaml
   "0xf0cc70b85867f9592b138c7425d60e0bed9b7034cac36a485dd8a06ba68c88f1": "a placeholder EVM verification key hash",
 };
 // What a value is, when the explorer knows: the hash of nothing, or a mock.
@@ -136,7 +136,7 @@ function labels() {
   add(c.rollup, "Rollup contract", "real");
   add(c.l2Messenger, "L2 messenger", "real");
   add(c.verifier, "Proof checker", "mock");
-  add(c.registry, "Key registry", "mock");
+  add(c.registry, "Key registry", "real");
   add(c.prover, "Trusted prover key", "mock");
   add(c.operator, "Operator", "");
   add(c.framesHelper, "Frames helper", "");
@@ -578,10 +578,10 @@ function about() {
   const rows = [
     ["Rollup contract", "l1", c.rollup, "No owner. Only the sequencer adds blocks, or anyone once it has posted none for two hours. Anyone sends and claims messages, and anyone can slash a broken preconfirmation.", "real"],
     ["L2 messenger", "l2", c.l2Messenger, "No owner: it is in the L2 genesis. Anyone sends messages to L1 and claims messages from L1.", "real"],
-    ["Operator", "l1", c.operator, "The sequencer: the only account that adds blocks, backing its preconfirmations with a bond that only it can withdraw, after a delay. It also deployed the contracts and set the key registry's entry.", ""],
+    ["Operator", "l1", c.operator, "The sequencer: the only account that adds blocks, backing its preconfirmations with a bond that only it can withdraw, after a delay. It also deployed the contracts.", ""],
     ["Proof checker", "l1", c.verifier, "Accepts only signatures of the trusted prover key, where EIP-8288 would check L1's own proof.", "mock"],
     ["Trusted prover key", "l1", c.prover, "Signs each block that the stateless program accepted, in place of a zkVM proof.", "mock"],
-    ["Key registry", "l1", c.registry, "Holds the one verification key hash, which the deployer set where a fork's system call would.", "mock"],
+    ["Key registry", "l1", c.registry, "No owner. Its entry is in the L1 genesis, as the fork that activates EIP-8357 would register it, and only a later fork could change it.", "real"],
     ["ERC-20 bridge", "l1", c.l1Bridge, peers, ""],
     ["ERC-20 bridge", "l2", c.l2Bridge, peers, ""],
     ["Demo token", "l1", c.demoToken, "No owner: its supply was minted once, at deployment.", ""],
@@ -1122,7 +1122,7 @@ const ROLES = {
   "Rollup contract": ["real", "The native rollup's contract on L1. It adds each L2 block whose proof is for exactly that block, stores the L2 chain's head and its last 8,191 state roots, keeps the tree of L1 to L2 messages, holds the ETH deposits escrow, and pays withdrawals. With the preconfirmations customization, it takes blocks only from its sequencer, and holds the sequencer's bond."],
   "L2 messenger": ["real", "An L2 contract in the genesis that holds the pre-minted supply of L2 ETH. It releases ETH for deposits, which it proves against L1's message tree, and records withdrawals for L1. Its balance is the ETH that deposits have not released yet."],
   "Proof checker": ["mock", "Stands in for EIP-8288. A frame of each L1 transaction that adds a block calls it, and it checks that the trusted prover signed the dependency. With EIP-8288, Ethereum's own proof would cover the dependency instead."],
-  "Key registry": ["mock", "Stands in for the EIP-8357 registry of EVM verification keys. An admin registered the key, where a fork would."],
+  "Key registry": ["real", "The EIP-8357 registry of EVM verification keys, at its address. Its entry is in the L1 genesis, as the fork that activates EIP-8357 would register it, since the devnet's clients do not implement that fork. The key hash is a placeholder, since the proofs are signatures."],
   "Trusted prover key": ["mock", "The key that signs the blocks Ethereum's validation program accepted, in place of a zk proof. It never sends transactions."],
   "Operator": ["", "The rollup's sequencer, the only account that posts L2 blocks to L1. Its L2 node builds them from the transactions users send, and holds no user keys. It preconfirms each block when it builds it, against a bond in the rollup contract, and posts it later."],
   "Frames helper": ["", "Lets the rollup contract use EIP-8141's FRAMEPARAM and FRAMEDATACOPY instructions, which Solidity cannot emit yet. The rollup contract deploys it and calls it to read the proof frame. Written in assembly with geas."],
@@ -1429,7 +1429,7 @@ function sourceView(title, content, assembly, open) {
 function sourceSection(a, name, bytecode, chain, verified) {
   const main = state.sources && mainSource(a);
   const notes = {
-    "sys-asm/src/verification_key_registry/main.eas": "The EIP-8357 registry, from ethereum/sys-asm. The deployed runtime is this program with the admin's address in place of the system address, since no fork on this devnet performs the system call.",
+    "sys-asm/src/verification_key_registry/main.eas": "The EIP-8357 registry, from ethereum/sys-asm, deployed unchanged.",
     "contracts/frames/frame_introspection.eas": "Built with geas into the runtime the rollup contract deploys.",
   };
   let html = "";

@@ -1,9 +1,8 @@
 # Native rollup on frames-devnet-0
 
-Runs the `NativeRollup` contract on a chain with [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions but without EIP-8288 or EIP-8357, such as [frames-devnet-0](https://notes.ethereum.org/@ethpandaops/frames-devnet-0). Three pieces stand in for what the chain lacks:
+Runs the `NativeRollup` contract on a local copy of [frames-devnet-0](https://notes.ethereum.org/@ethpandaops/frames-devnet-0), a chain with [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions but without EIP-8288 or EIP-8357. Its genesis holds the EIP-8357 registry at its address, with the entry the fork that activates EIP-8357 would register, since the clients do not implement that fork. Two pieces stand in for what the chain lacks:
 
 - `MockDependencyVerifier`: a `DEFAULT` frame calls it with the EIP-8288 dependency triple followed by a proof, here a signature by a trusted prover. `FramesNativeRollup` requires that frame to target the verifier and to have succeeded, and reads the triple from its data.
-- The EIP-8357 registry runtime, with its system address replaced by an admin key that registers one EVM verification key hash.
 - `frame_introspection.eas`: exposes `TXPARAM`, `FRAMEPARAM` and `FRAMEDATACOPY` to Solidity, which does not support the frame instructions yet.
 
 The L2 blocks are real. `script/l2_node.py` is an L2 node that runs the chain with execution-specs under the L1 stateless validation program's rules, from a genesis holding the system contracts the Specification requires. It keeps the state in memory and serves a JSON-RPC with a mempool. The rollup runs the book's [preconfirmations](../../src/preconfirmations.md) customization, `FramesSequencedRollup`: only its sequencer posts blocks, against a bond. The operator asks the node for each block, anchored to an L1 block a few slots behind the head. The node validates every block with `run_stateless_guest` and signs the dependency only if the program accepts it: a trusted signer instead of a zkVM proof, attesting to the real statement. It adds the block to its chain at once, preconfirmed with the sequencer's signature, and the operator posts it later.
@@ -21,15 +20,15 @@ kurtosis run github.com/ethpandaops/ethereum-package@6dd3f2613d1f9d1a9274864083c
     --enclave frames --args-file frames/kurtosis.yaml
 ```
 
-Frame transactions work from epoch 1, when the EIP-8141 fork activates. `advance` transactions carry blobs, and of the frames-devnet-0 clients only Nethermind and Reth accept blob-carrying frame transactions, in the EIP-7594 network form, so the network runs these two. geth rejects that form and accepts the transaction without its blobs, which then makes the payloads it builds invalid until the transaction leaves its pool. ethrex does not support them yet.
+Frame transactions work from epoch 1, when the EIP-8141 fork activates. The registry's entry is the hash of `frames-devnet mock EVM verification key`, a placeholder for the mock proofs, with schema ID `0x1501`, Amsterdam revision 1. `advance` transactions carry blobs, and of the frames-devnet-0 clients only Nethermind and Reth accept blob-carrying frame transactions, in the EIP-7594 network form, so the network runs these two. geth rejects that form and accepts the transaction without its blobs, which then makes the payloads it builds invalid until the transaction leaves its pool. ethrex does not support them yet.
 
 ## Deploy and advance
 
-The L2 genesis comes from the node and stores the rollup contract's address in the messenger, while the rollup contract stores the genesis hash, so the genesis is built for the address the deployer's fourth transaction will create. Foundry's simulation does not charge EIP-8037 state gas, so deployments use the node's gas estimates:
+The L2 genesis comes from the node and stores the rollup contract's address in the messenger, while the rollup contract stores the genesis hash, so the genesis is built for the address the deployer's second transaction will create. Foundry's simulation does not charge EIP-8037 state gas, so deployments use the node's gas estimates:
 
 ```shell
 forge build
-ROLLUP=$(cast compute-address <deployer> --nonce $(( $(cast nonce <deployer> --rpc-url <rpc>) + 3 )) | awk '{print $NF}')
+ROLLUP=$(cast compute-address <deployer> --nonce $(( $(cast nonce <deployer> --rpc-url <rpc>) + 1 )) | awk '{print $NF}')
 uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_node.py genesis --state <l2-state> --l1-rollup $ROLLUP
 
 PRIVATE_KEY=<key> PROVER=<address> GENESIS_HASH=<hash> GENESIS_STATE_ROOT=<root> ROLLUP=$ROLLUP SEQUENCER=<address> \
