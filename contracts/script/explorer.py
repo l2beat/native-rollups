@@ -616,7 +616,9 @@ CREATE TABLE IF NOT EXISTS withdrawals (idx INTEGER PRIMARY KEY, l2_tx TEXT, l1_
 CREATE INDEX IF NOT EXISTS withdrawals_by_l2_tx ON withdrawals (l2_tx);
 CREATE INDEX IF NOT EXISTS withdrawals_by_l1_tx ON withdrawals (l1_tx);
 CREATE TABLE IF NOT EXISTS contracts (address TEXT PRIMARY KEY, entry TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS snapshot (id INTEGER PRIMARY KEY CHECK (id = 0), number INTEGER NOT NULL, l1_block INTEGER NOT NULL, data BLOB NOT NULL);
+-- The follower's latest two snapshots: the chain at an L2 block, and the L1
+-- block that has it.
+CREATE TABLE IF NOT EXISTS snapshots (number INTEGER PRIMARY KEY, l1_block INTEGER NOT NULL, data BLOB NOT NULL);
 -- ERC-20 transfers, by the log that tells them, so that a replayed block
 -- adds none twice. On L2 they are all of them; on L1, those of the
 -- transactions the explorer indexes.
@@ -640,6 +642,10 @@ class Explorer:
                     os.remove(path + suffix)
             self.db = self.connect()
         self.db.executescript(SCHEMA)
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE name = 'snapshot'").fetchone():
+            # The single snapshot of earlier versions.
+            self.db.execute("INSERT OR IGNORE INTO snapshots SELECT number, l1_block, data FROM snapshot")
+            self.db.execute("DROP TABLE snapshot")
         self.db.execute("BEGIN")
         self.set_meta(rollup=rollup.lower(), messenger=messenger.lower())
         # Flattens a source file to one contract's flat source, or None.
@@ -675,12 +681,72 @@ class Explorer:
     def write(self, path: str, value) -> None:
         self.db.execute("INSERT OR REPLACE INTO docs VALUES (?, ?)", (path, json.dumps(value)))
 
-    def snapshot(self) -> tuple | None:
-        """The L2 block, L1 block and data of the follower's last snapshot."""
-        return self.db.execute("SELECT number, l1_block, data FROM snapshot WHERE id = 0").fetchone()
+    def snapshot(self, at_most: int) -> tuple | None:
+        """The L2 block, L1 block and data of the follower's latest snapshot at
+        or before L2 block `at_most`."""
+        return self.db.execute(
+            "SELECT number, l1_block, data FROM snapshots WHERE number <= ? ORDER BY number DESC LIMIT 1", (at_most,)
+        ).fetchone()
 
     def save_snapshot(self, number: int, l1_block: int, data: bytes) -> None:
-        self.db.execute("INSERT OR REPLACE INTO snapshot VALUES (0, ?, ?, ?)", (number, l1_block, data))
+        """Adds a snapshot, keeping the one before it, which the follower
+        starts from if L1 loses the blocks after it."""
+        self.db.execute("INSERT OR REPLACE INTO snapshots VALUES (?, ?, ?)", (number, l1_block, data))
+        self.db.execute("DELETE FROM snapshots WHERE number NOT IN (SELECT number FROM snapshots ORDER BY number DESC LIMIT 2)")
+
+    def rewind(self, number: int, l1_block: int, state) -> None:
+        """Forgets the L2 blocks after `number` and the L1 transactions from
+        L1 block `l1_block` on, which L1 may no longer have, as when the
+        machine running it resets, for the follower to index again what it
+        does have. The accounts those blocks touched go back to `state`, their
+        state after block `number`."""
+        gone = {
+            "l2": {h for (h,) in self.db.execute("SELECT hash FROM l2_txs WHERE block > ?", (number,))},
+            "l1": {h for (h,) in self.db.execute("SELECT hash FROM l1_txs WHERE block >= ?", (l1_block,))},
+        }
+        for chain, hashes in gone.items():
+            for h in hashes:
+                self.db.execute("DELETE FROM docs WHERE path = ?", (f"{chain}/txs/{h}",))
+                self.db.execute("DELETE FROM token_transfers WHERE chain = ? AND tx = ?", (chain, h))
+        for address, entry in self.db.execute("SELECT address, entry FROM contracts").fetchall():
+            if json.loads(entry)["tx"] in gone["l2"]:
+                self.db.execute("DELETE FROM contracts WHERE address = ?", (address,))
+                self.db.execute("DELETE FROM docs WHERE path = ?", (f"l2/sources/{address}",))
+        for h in gone["l1"]:
+            self.db.execute("DELETE FROM l1_tx_addresses WHERE hash = ?", (h,))
+        self.db.execute("DELETE FROM l1_txs WHERE block >= ?", (l1_block,))
+        self.db.execute("DELETE FROM l2_txs WHERE block > ?", (number,))
+        for (n,) in self.db.execute("SELECT number FROM blocks WHERE number > ?", (number,)).fetchall():
+            self.db.execute("DELETE FROM docs WHERE path = ?", (f"l2/blocks/{n}",))
+        self.db.execute("DELETE FROM blocks WHERE number > ?", (number,))
+        # Each message forgets the side whose transaction is forgotten: its
+        # delivery, which may come again, or its sending, with what it tells
+        # about the message, which indexing it again tells again.
+        for table, sent_on in (("deposits", "l1"), ("withdrawals", "l2")):
+            for idx, entry in self.db.execute(f"SELECT idx, entry FROM {table}").fetchall():
+                entry = json.loads(entry)
+                lost = [c for c in ("l1", "l2") if entry.get(f"{c}Tx") in gone[c]]
+                if not lost:
+                    continue
+                if sent_on in lost:
+                    entry = {k: entry[k] for c in ("l1", "l2") if c not in lost for k in (f"{c}Tx", f"{c}Block") if k in entry}
+                else:
+                    entry = {k: v for k, v in entry.items() if k not in (f"{lost[0]}Tx", f"{lost[0]}Block", "index")}
+                self.db.execute(f"DELETE FROM {table} WHERE idx = ?", (idx,))
+                if any(k.endswith("Tx") for k in entry):
+                    self.merge_message(table, idx, **entry)
+        for path, events in self.db.execute("SELECT path, json FROM docs WHERE path LIKE 'l1/events/%' OR path LIKE 'l2/events/%'").fetchall():
+            l1 = path.startswith("l1/")
+            kept = [e for e in json.loads(events) if (e["block"] < l1_block if l1 else e["block"] <= number)]
+            self.write(path, kept)
+        for path, account in self.db.execute("SELECT path, json FROM docs WHERE path LIKE 'l2/accounts/%'").fetchall():
+            account = json.loads(account)
+            if account["block"] > number:
+                a = account["address"]
+                txs = [t for t in account["txs"] if t["block"] <= number]
+                self.write(path, {"address": a, "block": number, "txs": txs, "events": self.doc(f"l2/events/{a}") or [],
+                                  **self.account_state(state, a)})
+        self.set_meta(messagesFrom=min(self.meta("messagesFrom") or 0, l1_block))
 
     def merge_message(self, table: str, index: int, **fields) -> None:
         """Adds what one side of a message, L1 to L2 or L2 to L1, tells about
@@ -730,6 +796,14 @@ class Explorer:
         if kind == "withdrawal claim":
             self.merge_message("withdrawals", tx["call"]["args"]["m"]["index"], l1Tx=tx["hash"], l1Block=tx["block"])
 
+    def latest_block(self) -> dict | None:
+        """The summary of the latest L2 block indexed."""
+        row = self.db.execute("SELECT summary FROM blocks ORDER BY number DESC LIMIT 1").fetchone()
+        return json.loads(row[0]) if row else None
+
+    def has_l1_tx(self, tx_hash: str) -> bool:
+        return self.db.execute("SELECT 1 FROM l1_txs WHERE hash = ?", (tx_hash,)).fetchone() is not None
+
     def write_source(self, contract: dict) -> None:
         """The source a created contract was compiled from, flattened as
         L2BEAT flattens the contracts it tracks, or as is if that fails."""
@@ -756,23 +830,27 @@ class Explorer:
         for a, txs in touched.items():
             hashes = {t["hash"] for t in txs}
             earlier = [t for t in (self.doc(f"l2/accounts/{a}") or {}).get("txs", []) if t["hash"] not in hashes]
-            account = state.get_account_optional(Address(bytes.fromhex(a[2:])))
-            entry = {
+            self.write(f"l2/accounts/{a}", {
                 "address": a, "block": block["number"], "txs": (earlier + txs)[-200:],
-                "events": self.doc(f"l2/events/{a}") or [], "exists": account is not None,
+                "events": self.doc(f"l2/events/{a}") or [], **self.account_state(state, a),
+            })
+
+    def account_state(self, state, a: str) -> dict:
+        """What an account page shows of an L2 account's state."""
+        account = state.get_account_optional(Address(bytes.fromhex(a[2:])))
+        entry = {"exists": account is not None}
+        if account is not None:
+            code = b"" if account.code_hash == EMPTY_CODE_HASH else state.get_code(account.code_hash)
+            entry.update({"balance": str(int(account.balance)), "nonce": int(account.nonce), "codeSize": len(code), "codeHash": hx(account.code_hash)})
+            if 0 < len(code) <= 32768:
+                entry["code"] = hx(code)
+        if a == self.meta("messenger"):
+            slot = lambda n: int(state.get_storage(Address(bytes.fromhex(a[2:])), n.to_bytes(32, "big")))  # noqa: E731
+            entry["state"] = {
+                "l1Rollup": "0x%040x" % slot(0), "sentMessages": slot(2),
+                "provenAnchorTimestamp": slot(3), "provenL1MessageRoot": "0x%064x" % slot(4),
             }
-            if account is not None:
-                code = b"" if account.code_hash == EMPTY_CODE_HASH else state.get_code(account.code_hash)
-                entry.update({"balance": str(int(account.balance)), "nonce": int(account.nonce), "codeSize": len(code), "codeHash": hx(account.code_hash)})
-                if 0 < len(code) <= 32768:
-                    entry["code"] = hx(code)
-            if a == self.meta("messenger"):
-                slot = lambda n: int(state.get_storage(Address(bytes.fromhex(a[2:])), n.to_bytes(32, "big")))  # noqa: E731
-                entry["state"] = {
-                    "l1Rollup": "0x%040x" % slot(0), "sentMessages": slot(2),
-                    "provenAnchorTimestamp": slot(3), "provenL1MessageRoot": "0x%064x" % slot(4),
-                }
-            self.write(f"l2/accounts/{a}", entry)
+        return entry
 
     def add_l2_block(self, block: dict, transactions: list) -> None:
         kinds = {}
