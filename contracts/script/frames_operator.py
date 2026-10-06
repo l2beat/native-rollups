@@ -316,14 +316,15 @@ def send_post(args: argparse.Namespace, bundle: dict, nonce: int) -> str:
 
 def submit(args: argparse.Namespace, raw: bytes) -> str:
     """Sends a signed transaction to every client given, any of which may
-    include it: the devnet's clients do not share their pending transactions,
-    so one only a single client holds waits for a block that client builds."""
+    include it, so that it does not wait for a block one client builds if the
+    clients are not peered."""
     sent = []
     for url in args.submit_rpc or [args.rpc]:
         try:
             sent.append(send_raw_transaction(url, raw))
         except SystemExit as e:
-            print(f"{url} refused it: {e}", flush=True)
+            if "already known" not in str(e):  # unless a peer passed it on
+                print(f"{url} refused it: {e}", flush=True)
     if not sent:
         raise SystemExit("no client took the transaction")
     return sent[0]
