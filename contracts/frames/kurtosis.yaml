@@ -1,23 +1,20 @@
-# A local network with the frames-devnet-0 settings and clients: Gloas from
-# genesis and the EIP-8141 execution fork at epoch 1. Blob-carrying frame
-# transactions only enter Nethermind's and Reth's pools, in the EIP-7594
-# network form. Run with:
-#   kurtosis run github.com/ethpandaops/ethereum-package --enclave frames --args-file frames/kurtosis.yaml
+# A local network with the frames-devnet-0 settings: Gloas from genesis and
+# the EIP-8141 execution fork at epoch 1, plus the EIP-8357 registry. It runs the two frames-devnet-0
+# clients whose pools take blob-carrying frame transactions, in the EIP-7594
+# network form: Nethermind and Reth. Run with:
+#   kurtosis run github.com/ethpandaops/ethereum-package@6dd3f2613d1f9d1a9274864083c692726146c9db \
+#       --enclave frames --args-file frames/kurtosis.yaml
 participants:
-  - el_type: geth
-    el_image: ethpandaops/geth:frames-devnet-0
-    cl_type: lighthouse
-    cl_image: ethpandaops/lighthouse:unstable
   - el_type: nethermind
     el_image: ethpandaops/nethermind:frames-devnet-0
     cl_type: lighthouse
     cl_image: ethpandaops/lighthouse:unstable
   - el_type: reth
     el_image: ethpandaops/reth:frames-devnet-0
-    cl_type: lighthouse
-    cl_image: ethpandaops/lighthouse:unstable
-  - el_type: ethrex
-    el_image: ethpandaops/ethrex:frames-devnet-0
+    # Proofs at past blocks, for deposit claims, which prove the message
+    # tree at the L1 block an L2 block anchors to, up to 256 blocks back.
+    el_extra_params:
+      - --rpc.eth-proof-window=256
     cl_type: lighthouse
     cl_image: ethpandaops/lighthouse:unstable
 
@@ -27,3 +24,24 @@ network_params:
   frames_enabled: true
   gas_limit: 200000000
   genesis_gaslimit: 200000000
+  # The EIP-8357 registry, at its address with its runtime and nonce, holding
+  # the entry its activation fork's system call would register, since the
+  # clients do not implement EIP-8357: slot 0, the current hash, is
+  # keccak256("frames-devnet mock EVM verification key"), a placeholder for
+  # the mock proofs, and its schema ID slot,
+  # keccak256(hash || uint256(1)), holds 0x1501, Amsterdam revision 1.
+  additional_preloaded_contracts:
+    "0x00005e9c1447c1a05a642ec9eb76d9c125468357":
+      balance: "0ETH"
+      nonce: 1
+      code: "0x3460a1573373fffffffffffffffffffffffffffffffffffffffe14604a576020360360a1575f3580602c57545b801560a1575f52600160205260405f2054801560a15760205260405ff35b602036146085576040360360a1575f35801560a157805f52600160205260405f20805460a157602035801560a1578060101c60a15790555f55005b5f35801560a157805f52600160205260405f20541560a1575f55005b5f5ffd"
+      storage:
+        "0x0000000000000000000000000000000000000000000000000000000000000000": "0xf0cc70b85867f9592b138c7425d60e0bed9b7034cac36a485dd8a06ba68c88f1"
+        "0x1c14500bf14303a833f4f8a6d6fc3bb934a967267a6c80a69b78c96f3cd50f91": "0x0000000000000000000000000000000000000000000000000000000000001501"
+
+# Fixed host ports, so that a container keeps its address when it restarts.
+port_publisher:
+  el:
+    enabled: true
+  cl:
+    enabled: true

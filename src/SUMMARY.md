@@ -16,6 +16,7 @@
 - [Gas token deposits](./gas_token_deposits.md)
 - [L2 fee market](./l2_fee_market.md)
 - [Forced transactions](./forced_transactions.md)
+- [Preconfirmations](./preconfirmations.md)
 - [L1 vs L2 differences](./l1_vs_l2_diff.md)
 
 # Beyond minimal native rollups

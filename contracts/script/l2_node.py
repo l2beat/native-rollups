@@ -11,14 +11,22 @@ EIP-8141).
 The genesis holds the system contracts the Specification requires, the
 `L2Messenger` predeploy with the pre-minted gas token supply, and the frame
 introspection helper the messenger reads the state gas left with. No account
-is funded: all L2 ETH comes from deposits. The operator asks for each block
-with `nr_buildBlock`. The node builds it on the rollup's head, validates it
-with `run_stateless_guest`, and signs the EIP-8288 dependency only for
-blocks the program accepts, as a stand-in for a zkVM proof of that program.
-It follows the rollup contract on L1 and adds the block to its chain once
-the contract has it, so the RPC serves the chain the contract has.
+is funded: all L2 ETH comes from deposits.
 
-Blocks take the mempool's transactions, and the node holds no keys. Users
+The node sequences a rollup with the book's preconfirmations customization
+(`SequencedNativeRollup`). The operator asks for each block with
+`nr_preconfirm`: the node builds it on its latest block, validates it with
+`run_stateless_guest`, and signs the EIP-8288 dependency only for blocks the
+program accepts, as a stand-in for a zkVM proof of that program. It adds the
+block to its chain at once, with the sequencer's preconfirmation, a
+signature over the block's number, hash and anchor, and keeps what posting
+it takes until the operator asks for it with `nr_waitingPosts`. It follows the
+rollup contract on L1 and marks blocks posted once the contract has them:
+the RPC's `latest` block is preconfirmed, and its `safe` block posted, the
+one L2 to L1 messages are proven against.
+
+Blocks take the mempool's transactions, and the node holds no keys: the
+operator sends the sequencer's and the prover's with each request. Users
 claim their deposits like any transaction, with frame transactions they sign
 themselves, which `l2_claims.py` builds from L1 data and this RPC. The node
 admits a frame transaction only if it is valid on its head state. A claim
@@ -37,8 +45,9 @@ Run with the environment of that execution-specs merge:
     uv run --project <execution-specs> python script/l2_node.py genesis --state <file> --l1-rollup <address>
     uv run --project <execution-specs> python script/l2_node.py serve --state <file> --l1-rpc <url> --rollup <address>
 
-The state file keeps the genesis configuration and the blocks the rollup
-contract has, which `serve` replays when it starts.
+The state file keeps the genesis configuration, the blocks the rollup
+contract has, those preconfirmed after them, which `serve` replays when it
+starts, and every preconfirmation.
 """
 
 import argparse
@@ -54,9 +63,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import rlp as pyrlp
 from eth_abi import decode as abi_decode
-from trie import HexaryTrie
 
 from execution_testing import Alloc, Environment
 from execution_testing import Account as TestAccount
@@ -67,12 +74,12 @@ from execution_testing.forks import Bogota
 from execution_testing.specs.blockchain import BlockchainTest
 
 from ethereum_rlp import rlp
-from ethereum_types.bytes import Bytes, Bytes0, Bytes32
+from ethereum_types.bytes import Bytes, Bytes0, Bytes20, Bytes32
 from ethereum_types.numeric import U64, U256, Uint
 
 from ethereum.crypto.hash import keccak256
 from ethereum.exceptions import EthereumException
-from ethereum.merkle_patricia_trie import root, trie_get, trie_set
+from ethereum.merkle_patricia_trie import EMPTY_TRIE_ROOT, copy_trie, root, trie_get, trie_set
 from ethereum.state import Account, Address
 from ethereum.state_mpt import State, apply_changes_to_state, set_account, set_storage, store_code
 from ethereum.forks.amsterdam import fork, vm
@@ -89,7 +96,9 @@ from ethereum.forks.amsterdam.stateless_host import (
     deserialize_stateless_output,
     serialize_stateless_input,
 )
-from ethereum.forks.amsterdam.stateless_host_exec_witness import build_execution_witness
+from ethereum.forks.amsterdam import stateless_host_exec_witness as host_witness
+from ethereum.forks.amsterdam.incremental_mpt import IncrementalMPT, MutableBranchNode, MutableExtensionNode, Witness, mpt_get, mpt_root
+from ethereum.forks.amsterdam.stateless import ExecutionWitness
 from ethereum.forks.amsterdam.transactions import (
     AccessListTransaction,
     BlobTransaction,
@@ -125,8 +134,22 @@ FRAMES_HELPER_CODE = os.path.join(os.path.dirname(__file__), "..", "frames", "fr
 MESSAGE_TYPE = "(address,address,uint256,uint256,uint256,bytes,uint256)"
 L2_MESSAGE_SENT = keccak256(b"L2MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
 CLAIM_SELECTOR = keccak256(f"claimL1Message({MESSAGE_TYPE},bytes32[],address)".encode())[:4]
+SEND_MESSAGE_SELECTOR = keccak256(b"sendMessage(address,uint256,uint256,bytes)")[:4]
+CREATE2_FACTORY = bytes.fromhex("4e59b44847b379578588920ca78fbf26c0b4956c")
 PROVE_ROOT_SELECTOR = keccak256(b"proveL1MessageRoot(uint256,bytes,bytes[],bytes[])")[:4]
 BLOCK_HASH_SELECTOR = keccak256(b"blockHash()")[:4]
+MAX_TIMESTAMP_LAG_SELECTOR = keccak256(b"MAX_TIMESTAMP_LAG()")[:4]
+# A posted block's anchor must be one of the last 256 L1 blocks, which
+# BLOCKHASH reaches.
+BLOCKHASH_WINDOW = 256
+# How long before L1 would refuse a preconfirmed block the node gives up on
+# it, leaving room for a post on its way.
+EXPIRY_MARGIN_BLOCKS = 4
+EXPIRY_MARGIN_SECONDS = 60
+# How often the node snapshots the posted chain, in posted blocks, and how
+# many recent blocks the RPC keeps in memory.
+SNAPSHOT_INTERVAL = 300
+KEEP_BLOCKS = 2048
 # The priority fee the RPC suggests. Blocks include any transaction that
 # pays the base fee.
 PRIORITY_FEE = 10**6
@@ -183,6 +206,39 @@ def sender_of(tx) -> Address:
 # ---------------------------------------------------------------------------
 # Genesis
 # ---------------------------------------------------------------------------
+
+
+def copy_state(state: State) -> State:
+    """A copy of `state` that changes to `state` do not reach. Tries only
+    hold frozen values, so copies share them."""
+    return State(
+        _main_trie=copy_trie(state._main_trie),
+        _storage_tries={a: copy_trie(t) for a, t in state._storage_tries.items()},
+        _code_store=dict(state._code_store),
+    )
+
+
+def dump_state(state: State) -> bytes:
+    """The accounts, storage and code of `state`, as RLP."""
+    accounts = [[a, x.nonce, x.balance, x.code_hash] for a, x in state._main_trie._data.items() if x is not None]
+    storage = [[a, [[k, v] for k, v in t._data.items()]] for a, t in state._storage_tries.items()]
+    return rlp.encode([accounts, storage, list(state._code_store.values())])
+
+
+def load_state(data: bytes) -> State:
+    """The state `dump_state` stored, rebuilt with execution-specs' own
+    functions."""
+    accounts, storage, code = rlp.decode(data)
+    state = State()
+    for c in code:
+        store_code(state, Bytes(c))
+    for a, nonce, balance, code_hash in accounts:
+        account = Account(Uint.from_be_bytes(nonce), U256.from_be_bytes(balance), Bytes32(code_hash))
+        set_account(state, Bytes20(a), account)
+    for a, slots in storage:
+        for k, v in slots:
+            set_storage(state, Bytes20(a), Bytes32(k), U256.from_be_bytes(v))
+    return state
 
 
 def genesis_fixture(config: dict) -> dict:
@@ -270,8 +326,38 @@ class PoolTransaction:
     claims: tuple  # the L1 messages it claims
 
 
+def settle(node) -> None:
+    """Marks the trie nodes a block changed as clean once the root has cached
+    their hashes. They are the ones on changed paths, so this walks only
+    those, and the next block's witness records them as pre-state nodes."""
+    if node is None or not getattr(node, "_dirty", False):
+        return
+    node._dirty = False
+    if isinstance(node, MutableBranchNode):
+        for child in node.children:
+            settle(child)
+    elif isinstance(node, MutableExtensionNode):
+        settle(node.child)
+
+
 def calls_messenger(frame, selector: bytes) -> bool:
     return len(frame.to) > 0 and bytes(frame.to) == bytes(MESSENGER) and bytes(frame.data[:4]) == selector
+
+
+def kind(tx) -> str:
+    """What a transaction does, as the explorer's `l2_kind` names it once the
+    block is on L1."""
+    if any(calls_messenger(c, CLAIM_SELECTOR) for c in (tx.frames if isinstance(tx, FrameTransaction) else [tx])):
+        return "deposit claim"
+    if isinstance(tx, FrameTransaction):
+        return "frame transaction"
+    if calls_messenger(tx, SEND_MESSAGE_SELECTOR):
+        return "withdrawal"
+    if isinstance(tx, SetCodeTransaction):
+        return "delegation"
+    if not len(tx.to) or bytes(tx.to) == CREATE2_FACTORY:
+        return "deploy"
+    return "call" if len(tx.data) else "transfer"
 
 
 def claims(tx) -> list:
@@ -287,8 +373,8 @@ def claims(tx) -> list:
 
 @dataclass
 class Pending:
-    """A block built for the operator, which joins the chain once the
-    rollup contract has it."""
+    """A block executed on the chain's latest block, before it joins the
+    chain."""
 
     block: Block
     hash: bytes
@@ -305,16 +391,92 @@ class Node:
         self.lock = threading.RLock()
         self.pool: dict[bytes, PoolTransaction] = {}
         self.arrivals = 0
-        self.pending: Pending | None = None
-        self.blocks: list[dict] = []  # every block, for the RPC
+        self.blocks: list[dict] = []  # recent blocks, for the RPC, from block `first`
+        self.first = 0
         self.transactions: dict[bytes, tuple] = {}  # hash -> (block number, index)
-        self.index(self.chain.blocks[0], None)
+        self.messages: list[dict] = []  # the logs of every L2 to L1 message
+        self.logs_from = 0  # the first block whose logs the RPC has
+        self.diffs: dict[int, object] = {}  # state changes of blocks not posted yet
+        # The head's state as execution-specs' incremental tries, kept across
+        # blocks: the account trie and each account's storage trie.
+        self.tries: tuple[IncrementalMPT, dict[Address, IncrementalMPT]] | None = None
+        snapshot = self.load_snapshot() if self.config.get("snapshot") else 0
+        if not snapshot:
+            self.index(self.chain.blocks[0], None)
         for stored in self.config["blocks"]:
-            self.commit(self.replay(stored), store=False)
-        # A block built before the node stopped, which L1 may have since.
-        if self.config.get("pending"):
-            self.pending = self.replay(self.config["pending"])
-        print(f"L2 node at block {int(self.head.number)}", flush=True)
+            if int(rlp.decode_to(Header, bytes.fromhex(stored["header"][2:])).number) > snapshot:
+                self.commit(self.replay(stored))
+        # The state of the latest block the rollup contract has.
+        self.posted = int(self.head.number)
+        self.posted_state = copy_state(self.chain.state)
+        self.diffs.clear()
+        # Blocks preconfirmed before the node stopped, which L1 may have since.
+        for stored in self.config.setdefault("preconfirmed", []):
+            self.commit(self.replay(stored))
+        self.config.setdefault("preconfirmations", {})
+        self.max_timestamp_lag = None  # the rollup contract's, once read
+        # Transactions of preconfirmed blocks the node dropped, valid or not.
+        for raw in self.config.pop("repool", []):
+            try:
+                self.send_raw_transaction(raw)
+            except RpcError:
+                pass
+        print(f"L2 node at block {int(self.head.number)}, block {self.posted} posted", flush=True)
+
+    def load_snapshot(self) -> int:
+        """Starts from the last snapshot of the posted chain, and returns its
+        block number."""
+        number, state, headers, messages = rlp.decode(open(self.config["snapshot"], "rb").read())
+        self.chain.state = load_state(state)
+        self.chain.blocks = [Block(header=rlp.decode_to(Header, h), transactions=(), ommers=(), withdrawals=()) for h in headers]
+        self.first = int(self.chain.blocks[0].header.number)
+        for block in self.chain.blocks:
+            self.index(block, None)
+        self.messages = json.loads(messages)
+        self.logs_from = int.from_bytes(number, "big") + 1
+        return self.logs_from - 1
+
+    def snapshot(self) -> None:
+        """Stores the posted chain, which the node then starts from instead of
+        replaying every block: its state, the headers BLOCKHASH reaches, and
+        the L2 to L1 messages, which can be claimed at any time. Then drops
+        what the snapshot holds from the state file, and the oldest blocks
+        from the RPC's memory."""
+        n = self.posted
+        headers = [rlp.encode(self.block_by_number(k)["header"]) for k in range(max(self.first, n - 254), n + 1)]
+        messages = [m for m in self.messages if int(m["blockNumber"], 16) <= n]
+        path = self.state_file + ".snapshot"
+        with open(path + ".tmp", "wb") as f:
+            f.write(rlp.encode([Uint(n), dump_state(self.posted_state), headers, json.dumps(messages).encode()]))
+        os.replace(path + ".tmp", path)
+        self.config["snapshot"] = path
+        self.config["blocks"] = [
+            b for b in self.config["blocks"] if int(rlp.decode_to(Header, bytes.fromhex(b["header"][2:])).number) > n
+        ]
+        self.config["preconfirmations"] = {k: v for k, v in self.config["preconfirmations"].items() if int(k) > n}
+        self.save()
+        drop = len(self.blocks) - KEEP_BLOCKS
+        if drop > 0:
+            for block in self.blocks[:drop]:
+                for entry in block["transactions"]:
+                    self.transactions.pop(entry["hash"], None)
+            del self.blocks[:drop]
+            self.first += drop
+            self.logs_from = max(self.logs_from, self.first)
+        print(f"snapshot of the posted chain at L2 block {n}", flush=True)
+
+    def block_by_number(self, number: int) -> dict | None:
+        i = number - self.first
+        return self.blocks[i] if 0 <= i < len(self.blocks) else None
+
+    def tag_number(self, tag) -> int:
+        if tag in ("safe", "finalized"):
+            return self.posted
+        if tag in ("latest", "pending", None):
+            return int(self.head.number)
+        if tag == "earliest":
+            return 0
+        return int(tag, 16)
 
     def replay(self, stored: dict) -> Pending:
         """Re-executes a stored block on the head."""
@@ -331,12 +493,9 @@ class Node:
         assert len(included) == len(block.transactions), "a stored block no longer executes"
         return Pending(block, keccak256(rlp.encode(h)), block_state, output, [])
 
-    def save(self, pending: Block | None) -> None:
-        """Stores the blocks the rollup has and the one built for it, which
-        the node replays when it starts."""
-        self.config["pending"] = pending and {
-            "header": hx(rlp.encode(pending.header)), "transactions": [hx(raw_transaction(tx)) for tx in pending.transactions],
-        }
+    def save(self) -> None:
+        """Stores the posted and preconfirmed blocks, which the node replays
+        when it starts, and the preconfirmations."""
         with open(self.state_file + ".tmp", "w") as f:
             json.dump(self.config, f, indent=1)
         os.replace(self.state_file + ".tmp", self.state_file)
@@ -408,26 +567,17 @@ class Node:
 
     # Blocks
 
-    def sync(self, head_hash: bytes) -> None:
-        """Adds the pending block if the rollup has it, and checks that the
-        chain is at the rollup's head."""
-        if self.pending is not None:
-            if self.pending.hash == head_hash:
-                self.commit(self.pending)
-            self.pending = None
-        if keccak256(rlp.encode(self.head)) != head_hash:
-            self.catch_up()
-        if keccak256(rlp.encode(self.head)) != head_hash:
-            raise RpcError(-32000, f"L2 node at {hx(keccak256(rlp.encode(self.head)))}, rollup at {hx(head_hash)}")
-
-    def build(self, p: dict) -> dict:
-        """Builds the next block on the rollup's head and returns what the
-        operator needs to add it: the block's parameters, blobs and mock
+    def preconfirm(self, p: dict) -> dict:
+        """Builds the next block on the latest one, validates it, and adds it
+        to the chain with the sequencer's preconfirmation. Keeps what the
+        operator needs to post it: the block's parameters, blobs and mock
         proof."""
         started = time.time()
-        self.sync(bytes.fromhex(p["headHash"][2:]))
         parent = self.head
-        timestamp = max(int(time.time()), int(parent.timestamp) + 1)
+        # The sequencer's slot, or now.
+        timestamp = p.get("timestamp") or max(int(time.time()), int(parent.timestamp) + 1)
+        if timestamp <= int(parent.timestamp):
+            raise RpcError(-32000, f"timestamp {timestamp} is not after the latest block's")
         anchor = bytes.fromhex(p["anchorHash"][2:])
         prev_randao = keccak256(anchor)
         base_fee = self.next_base_fee()
@@ -444,8 +594,7 @@ class Node:
         output, included, rejected = self.execute(env, [], [block_transaction(t.raw) for t in candidates])
         self.drop_rejected(block_state, rejected)
 
-        diff = extract_block_diff(block_state)
-        state_root = self.chain.state.compute_state_root(diff)
+        witness, state_root = self.witness(block_state)
         h = header({
             "parent_hash": keccak256(rlp.encode(parent)), "ommers_hash": fork.EMPTY_OMMER_HASH,
             "coinbase": FEE_RECIPIENT, "state_root": state_root, "transactions_root": root(output.transactions_trie),
@@ -460,13 +609,6 @@ class Node:
         block = Block(header=h, transactions=tuple(included), ommers=(), withdrawals=())
 
         # Validate the block with the L1 stateless validation program.
-        witness = build_execution_witness(
-            block_state,
-            expected_post_state_root=state_root,
-            pre_state_accounts_data=self.chain.state._main_trie,
-            pre_state_storages_data=self.chain.state._storage_tries,
-            blockchain_headers=[rlp.encode(b.header) for b in self.chain.blocks],
-        )
         input_bytes = serialize_stateless_input(build_stateless_input(
             block,
             execution_witness=witness,
@@ -533,21 +675,33 @@ class Node:
 
         block_hash = keccak256(rlp.encode(h))
         assert block_hash == fields["blockHash"]
-        self.pending = Pending(block, block_hash, block_state, output, [keccak256(t) for t in by_raw if block_transaction(t) in included])
-        self.save(block)
+        self.commit(Pending(block, block_hash, block_state, output, [keccak256(t) for t in by_raw if block_transaction(t) in included]))
+
+        # The preconfirmation, as SequencedNativeRollup.preconfirmationDigest
+        # expects.
+        number = fields["blockNumber"]
+        digest = keccak256(
+            p["l1ChainId"].to_bytes(32, "big") + bytes(12) + bytes.fromhex(p["rollup"][2:]) + number.to_bytes(32, "big")
+            + block_hash + p["anchorNumber"].to_bytes(32, "big")
+        )
+        preconfirmation = {
+            "number": number, "blockHash": hx(block_hash), "anchorBlockNumber": p["anchorNumber"],
+            "signature": cast("wallet", "sign", "--no-hash", "--private-key", p["sequencerKey"], hx(digest)),
+            "time": int(time.time()),
+        }
         l2_messages = [self.l2_message(log) for log in output.block_logs if log.address == MESSENGER and log.topics[0] == L2_MESSAGE_SENT]
         print(
-            f"built L2 block {fields['blockNumber']}: {len(included)} transactions, "
-            f"in {time.time() - started:.1f} s",
+            f"preconfirmed L2 block {number}: {len(included)} transactions, in {time.time() - started:.1f} s",
             flush=True,
         )
-        return {
-            "number": fields["blockNumber"],
+        post = {
+            "number": number,
             "blockHash": hx(fields["blockHash"]),
             "stateRoot": hx(fields["stateRoot"]),
             "timestamp": fields["timestamp"],
             "gasUsed": fields["gasUsed"],
             "transactions": len(payload.transactions),
+            "txs": [self.summary(btx) for btx in included],
             "anchor": {"number": p["anchorNumber"], "hash": p["anchorHash"]},
             "validation": {"successful": bool(result.successful_validation), "chainId": L2_CHAIN_ID, "schemaId": p["schemaId"]},
             "newPayloadRequestRoot": hx(np_root),
@@ -576,7 +730,37 @@ class Node:
             "versionedHashes": [hx(v) for v in versioned_hashes],
             "triple": hx(triple),
             "proof": proof,
+            "preconfirmation": preconfirmation,
         }
+        self.config["preconfirmed"].append({
+            "header": hx(rlp.encode(h)), "transactions": [hx(raw_transaction(tx)) for tx in block.transactions], "post": post,
+        })
+        self.config["preconfirmations"][str(number)] = preconfirmation
+        self.save()
+        return {k: v for k, v in post.items() if k not in ("blobs", "versionedHashes")}
+
+    def waiting_posts(self, head_hash: str, limit: int) -> list:
+        """What posting the preconfirmed blocks after the rollup's head takes,
+        in order, at most `limit` of them."""
+        number = self.number_of(bytes.fromhex(head_hash[2:]))
+        if number is None:
+            raise RpcError(-32000, f"the rollup's head {head_hash} is not in the node's chain")
+        self.mark_posted(number)
+        return [stored["post"] for stored in self.config["preconfirmed"][:limit]]
+
+    def summary(self, btx) -> dict:
+        """A transaction's hash, sender, recipient, value and kind, as a
+        preconfirmation lists it."""
+        tx = decode_transaction(btx)
+        frames = isinstance(tx, FrameTransaction)
+        return {
+            "hash": hx(keccak256(raw_transaction(btx))), "from": hx(sender_of(tx)),
+            "to": None if frames or not len(tx.to) else hx(tx.to), "value": 0 if frames else int(tx.value),
+            **({"frames": len(tx.frames)} if frames else {}), "kind": kind(tx),
+        }
+
+    def number_of(self, block_hash: bytes) -> int | None:
+        return next((int(b["header"].number) for b in reversed(self.blocks) if b["hash"] == block_hash), None)
 
     def drop_rejected(self, block_state: BlockState, rejected: list) -> None:
         """Keeps rejected transactions that may become valid, such as those
@@ -592,27 +776,71 @@ class Node:
                 print(f"dropped {hx(h)}: {error!r}", flush=True)
                 del self.pool[h]
 
-    def commit(self, pending: Pending, store: bool = True) -> None:
-        apply_changes_to_state(self.chain.state, extract_block_diff(pending.block_state))
+    def witness(self, block_state: BlockState) -> tuple[ExecutionWitness, bytes]:
+        """The block's execution witness and post-state root, built as
+        execution-specs' `build_execution_witness` builds them, but on tries
+        the node keeps across blocks: rebuilding them from the whole state
+        made each block cost more as the state grew."""
+        accounts, storage = self.tries or (None, None)
+        if accounts is None or mpt_root(accounts) != self.head.state_root:
+            # The first block, or the last one built was not added.
+            storage = host_witness._build_pre_state_storage_mpts(self.chain.state._storage_tries)
+            accounts = host_witness._build_pre_state_account_mpt(self.chain.state._main_trie, storage)
+            self.tries = accounts, storage
+        for trie in [accounts, *storage.values()]:
+            trie.witness = Witness()
+
+        # As `build_execution_witness`: record the pre-state nodes the block
+        # reads or writes, then write.
+        host_witness._capture_pre_state_storage_nodes(storage, host_witness._collect_storage_accesses(block_state))
+        host_witness._apply_storage_writes(storage, block_state.storage_writes)
+        dirty = host_witness._get_all_dirty_accounts(block_state)
+        host_witness._capture_pre_state_account_nodes(accounts, block_state.account_reads, dirty)
+        host_witness._apply_account_writes(accounts, storage, block_state, dirty)
+        state_root = mpt_root(accounts)
+        nodes = host_witness._collect_accessed_nodes(accounts, storage)
+        settle(accounts.root_node)
+        for address in block_state.storage_writes:
+            settle(storage[address].root_node)
+
+        ancestors = host_witness.get_witness_ancestors(self.chain.blocks, block_state.oldest_ancestor_offset)
+        return ExecutionWitness(
+            state=tuple(sorted(nodes.values())),
+            codes=tuple(host_witness.get_witness_codes(block_state.code_reads, block_state.pre_state)),
+            headers=tuple(rlp.encode(b.header) for b in ancestors),
+        ), state_root
+
+    def commit(self, pending: Pending) -> None:
+        diff = extract_block_diff(pending.block_state)
+        apply_changes_to_state(self.chain.state, diff)
         self.chain.blocks.append(pending.block)
         self.chain.blocks = self.chain.blocks[-255:]
-        self.added(pending.block, pending.output, pending.pool_hashes, store)
+        self.diffs[int(pending.block.header.number)] = diff
+        self.added(pending.block, pending.output, pending.pool_hashes)
 
-    def added(self, block: Block, output: vm.BlockOutput, pool_hashes: list, store: bool) -> None:
-        """Indexes a block the chain added, and stores it."""
+    def added(self, block: Block, output: vm.BlockOutput, pool_hashes: list) -> None:
+        """Indexes a block the chain added, and drops its transactions from
+        the pool."""
         self.index(block, output)
         for h in pool_hashes:
             self.pool.pop(h, None)
         for h, t in list(self.pool.items()):
             if t.nonce < self.nonce(t.sender):
                 del self.pool[h]
-        if store:
-            self.config["blocks"].append({
-                "header": hx(rlp.encode(block.header)),
-                "transactions": [hx(raw_transaction(tx)) for tx in block.transactions],
-            })
-            self.save(None)
-            print(f"L2 block {int(block.header.number)} is on L1", flush=True)
+
+    def mark_posted(self, number: int) -> None:
+        """Moves the preconfirmed blocks up to `number`, which the rollup
+        contract has, to the posted ones."""
+        while self.posted < number:
+            stored = self.config["preconfirmed"].pop(0)
+            self.posted += 1
+            assert int(rlp.decode_to(Header, bytes.fromhex(stored["header"][2:])).number) == self.posted
+            self.config["blocks"].append({"header": stored["header"], "transactions": stored["transactions"]})
+            apply_changes_to_state(self.posted_state, self.diffs.pop(self.posted))
+            self.save()
+            print(f"L2 block {self.posted} is on L1", flush=True)
+            if self.posted % SNAPSHOT_INTERVAL == 0:
+                self.snapshot()
 
     def catch_up(self) -> None:
         """Derives from L1 the blocks the rollup contract has and the node
@@ -627,22 +855,68 @@ class Node:
         logs = json_rpc(self.l1_rpc, "eth_getLogs", {
             "address": self.rollup, "fromBlock": "0x0", "toBlock": "latest", "topics": [hx(l2_follower.BLOCK_ADDED)],
         })
+        derived = False
         for log in sorted(logs, key=lambda log: int(log["topics"][1], 16)):
             if int(log["topics"][1], 16) == int(self.head.number) + 1:
+                derived = True
                 _, details = l2_follower.rebuild(source, self.chain, L2_GAS_LIMIT, log)
-                self.added(self.chain.blocks[-1], details["output"], [], True)
+                block = self.chain.blocks[-1]
+                self.added(block, details["output"], [])
+                self.config["blocks"].append({
+                    "header": hx(rlp.encode(block.header)), "transactions": [hx(raw_transaction(tx)) for tx in block.transactions],
+                })
+                self.posted = int(block.header.number)
+                self.save()
+                print(f"L2 block {self.posted} is on L1, derived from it", flush=True)
+        if derived:
+            self.posted_state = copy_state(self.chain.state)
+
+    def drop_expired(self) -> None:
+        """Drops the preconfirmed blocks once L1 is about to refuse the oldest
+        of them, and with it those built on it: its anchor must be one of the
+        last 256 L1 blocks, and its timestamp at most `MAX_TIMESTAMP_LAG`
+        behind L1's, so after an outage it can no longer be posted."""
+        if not self.config["preconfirmed"]:
+            return
+        if self.max_timestamp_lag is None:
+            lag = json_rpc(self.l1_rpc, "eth_call", {"to": self.rollup, "data": hx(MAX_TIMESTAMP_LAG_SELECTOR)}, "latest")
+            self.max_timestamp_lag = int(lag, 16)
+        params = self.config["preconfirmed"][0]["post"]["params"]
+        l1 = json_rpc(self.l1_rpc, "eth_getBlockByNumber", "latest", False)
+        if params["anchorBlockNumber"] + BLOCKHASH_WINDOW - EXPIRY_MARGIN_BLOCKS <= int(l1["number"], 16):
+            reason = f"its anchor, L1 block {params['anchorBlockNumber']}, leaves BLOCKHASH's window"
+        elif params["timestamp"] + self.max_timestamp_lag - EXPIRY_MARGIN_SECONDS <= int(l1["timestamp"], 16):
+            reason = f"its timestamp falls {self.max_timestamp_lag} seconds behind L1's"
+        else:
+            return
+        print(f"L2 block {self.posted + 1} can no longer reach L1: {reason}", flush=True)
+        self.drop_preconfirmed()
+
+    def drop_preconfirmed(self) -> None:
+        """Drops the preconfirmed blocks and exits, for the runner to restart
+        the node from the posted ones. The preconfirmations stay, as
+        evidence, and the blocks' transactions go back to the pool."""
+        self.config["repool"] = [raw for stored in self.config["preconfirmed"] for raw in stored["transactions"]]
+        self.config["preconfirmed"] = []
+        self.save()
+        os._exit(1)
 
     def follow(self) -> None:
-        """Adds the pending block as soon as the rollup contract has it."""
+        """Marks blocks posted as soon as the rollup contract has them, and
+        derives from L1 those it has that the node never had."""
         while True:
             try:
                 head = bytes.fromhex(json_rpc(self.l1_rpc, "eth_call", {"to": self.rollup, "data": hx(BLOCK_HASH_SELECTOR)}, "latest")[2:])
                 with self.lock:
-                    if self.pending is not None and self.pending.hash == head:
-                        self.commit(self.pending)
-                        self.pending = None
-                    elif keccak256(rlp.encode(self.head)) != head:
+                    number = self.number_of(head)
+                    if number is not None:
+                        self.mark_posted(number)
+                        self.drop_expired()
+                    elif not self.config["preconfirmed"]:
                         self.catch_up()
+                    else:
+                        print(f"the rollup's head {hx(head)} is not in the node's chain", flush=True)
+                        self.drop_preconfirmed()
             except Exception:
                 traceback.print_exc()
             time.sleep(2)
@@ -684,6 +958,9 @@ class Node:
                 "raw": raw, "tx": tx, "hash": tx_hash, "from": sender, "receipt": receipt, "frame": frame,
                 "gasUsed": int(receipt.cumulative_gas_used) - previous, "logs": rpc_logs, "contractAddress": created,
             })
+            self.messages += [
+                log for log in rpc_logs if log["address"] == hx(MESSENGER) and log["topics"][:1] == [hx(L2_MESSAGE_SENT)]
+            ]
             previous = int(receipt.cumulative_gas_used)
             self.transactions[tx_hash] = (int(h.number), i)
         self.blocks.append({"header": h, "hash": block_hash, "transactions": entries})
@@ -794,19 +1071,14 @@ class Node:
         }
 
     def block_at(self, tag) -> dict | None:
-        if tag in ("latest", "pending", "safe", "finalized", None):
-            return self.blocks[-1]
-        if tag == "earliest":
-            return self.blocks[0]
-        number = int(tag, 16)
-        return self.blocks[number] if number < len(self.blocks) else None
+        return self.block_by_number(self.tag_number(tag))
 
     # Calls
 
-    def simulate(self, call: dict, gas: int):
-        """Runs a call on the head state as a transaction without a
-        signature, fee or nonce check."""
-        block_state = BlockState(pre_state=self.chain.state)
+    def simulate(self, call: dict, gas: int, posted: bool = False):
+        """Runs a call on the head state, or on the latest posted block's for
+        `posted`, as a transaction without a signature, fee or nonce check."""
+        block_state = BlockState(pre_state=self.posted_state if posted else self.chain.state)
         h = self.head
         env = self.environment(block_state, max(int(time.time()), int(h.timestamp) + 1), h.parent_beacon_block_root, h.prev_randao, self.next_base_fee())
         sender = address(call.get("from") or "0x" + "00" * 20)
@@ -836,7 +1108,7 @@ class Node:
         return process_top_level(env, tx_env)
 
     def call(self, call: dict, tag=None) -> str:
-        out = self.simulate(call, int(call.get("gas") or hex(GasCosts.TX_MAX_GAS_LIMIT), 16))
+        out = self.simulate(call, int(call.get("gas") or hex(GasCosts.TX_MAX_GAS_LIMIT), 16), posted=tag in ("safe", "finalized"))
         if out.error is not None:
             raise RpcError(3, f"execution reverted: {out.error!r}", hx(out.return_data))
         return hx(out.return_data)
@@ -962,7 +1234,7 @@ class Node:
         key = bytes.fromhex(h[2:])
         if key in self.transactions:
             number, index = self.transactions[key]
-            block = self.blocks[number]
+            block = self.block_by_number(number)
             return self.rpc_transaction(block["transactions"][index], block, index)
         if key in self.pool:
             t = self.pool[key]
@@ -974,7 +1246,7 @@ class Node:
         if key not in self.transactions:
             return None
         number, index = self.transactions[key]
-        return self.rpc_receipt(self.blocks[number], index)
+        return self.rpc_receipt(self.block_by_number(number), index)
 
     def block_receipts(self, tag) -> list | None:
         if isinstance(tag, dict):  # {"blockHash": ...} or {"blockNumber": ...}
@@ -986,25 +1258,24 @@ class Node:
         return None if block is None else [self.rpc_receipt(block, i) for i in range(len(block["transactions"]))]
 
     def logs(self, criteria: dict) -> list:
-        first = self.block_at(criteria.get("fromBlock", "latest"))
-        last = self.block_at(criteria.get("toBlock", "latest")) or self.blocks[-1]
-        if first is None:
-            return []
+        first = self.tag_number(criteria.get("fromBlock", "latest"))
+        last = min(self.tag_number(criteria.get("toBlock", "latest")), int(self.head.number))
         addresses = criteria.get("address")
         addresses = {a.lower() for a in ([addresses] if isinstance(addresses, str) else addresses or [])}
         topics = criteria.get("topics") or []
-        out = []
-        for block in self.blocks[int(first["header"].number) : int(last["header"].number) + 1]:
-            for entry in block["transactions"]:
-                for log in entry["logs"]:
-                    if addresses and log["address"] not in addresses:
-                        continue
-                    if all(
-                        t is None or (log["topics"][i] if i < len(log["topics"]) else None) in ([t] if isinstance(t, str) else t)
-                        for i, t in enumerate(topics)
-                    ):
-                        out.append(log)
-        return out
+        start = max(first, self.logs_from)
+        recent = self.blocks[max(0, start - self.first) : max(0, last - self.first + 1)]
+        candidates = [log for block in recent for entry in block["transactions"] for log in entry["logs"]]
+        if first < self.logs_from:
+            # Of older blocks, the node only keeps the L2 to L1 messages.
+            candidates = [m for m in self.messages if first <= int(m["blockNumber"], 16) < min(self.logs_from, last + 1)] + candidates
+        return [
+            log for log in candidates
+            if (not addresses or log["address"] in addresses) and all(
+                t is None or (log["topics"][i] if i < len(log["topics"]) else None) in ([t] if isinstance(t, str) else t)
+                for i, t in enumerate(topics)
+            )
+        ]
 
     # State
 
@@ -1020,46 +1291,51 @@ class Node:
         return "0x" + self.storage(address(addr), int(slot, 16)).to_bytes(32, "big").hex()
 
     def proof(self, addr: str, slots: list, tag=None) -> dict:
-        """`eth_getProof` against the head's state root."""
-        state = self.chain.state
+        """`eth_getProof` against the state root of the latest block, or of
+        the latest posted one for `safe` and `finalized`, with the number of
+        the block it proves against."""
+        posted = tag in ("safe", "finalized")
+        with self.lock:
+            # A copy, so that building the tries below, which takes a while,
+            # does not hold up the sequencer.
+            state = copy_state(self.posted_state if posted else self.chain.state)
+            header = self.block_by_number(self.posted)["header"] if posted else self.head
+        # execution-specs' incremental tries of the whole state, which build in
+        # about a second where py-trie's took more than ten.
+        storage = host_witness._build_pre_state_storage_mpts(state._storage_tries)
+        accounts = host_witness._build_pre_state_account_mpt(state._main_trie, storage)
+        assert mpt_root(accounts) == header.state_root, "state root"
 
-        def secure_trie(entries: dict) -> HexaryTrie:
-            trie = HexaryTrie({})
-            for key, value in entries.items():
-                trie[keccak256(key)] = value
-            return trie
+        def path(mpt: IncrementalMPT, key) -> list:
+            """The nodes from the root towards `key`, which a lookup records."""
+            mpt.witness = Witness()
+            mpt_get(mpt, key)
+            return [hx(node) for node in mpt.witness.accessed_nodes.values()]
 
-        storage_tries, accounts = {}, {}
-        for a, account in state._main_trie._data.items():
-            stored = state._storage_tries.get(a)
-            storage = secure_trie({bytes(k): pyrlp.encode(int(v)) for k, v in (stored._data.items() if stored else []) if int(v)})
-            storage_tries[bytes(a)] = storage
-            accounts[bytes(a)] = pyrlp.encode([int(account.nonce), int(account.balance), storage.root_hash, bytes(account.code_hash)])
-        trie = secure_trie(accounts)
-        assert trie.root_hash == bytes(self.head.state_root), "state root"
-        target = bytes(address(addr))
-        account = state.get_account_optional(address(addr))
-        storage = storage_tries.get(target, HexaryTrie({}))
+        target = address(addr)
+        account = state.get_account_optional(target)
+        own = storage.get(target)
+        keys = [Bytes32(int(slot, 16).to_bytes(32, "big")) for slot in slots]
         return {
             "address": addr,
-            "accountProof": [hx(pyrlp.encode(n)) for n in trie.get_proof(keccak256(target))],
+            "accountProof": path(accounts, target),
             "balance": hex(int(account.balance) if account else 0),
             "codeHash": hx(account.code_hash) if account else hx(keccak256(b"")),
             "nonce": hex(int(account.nonce) if account else 0),
-            "storageHash": hx(storage.root_hash),
+            "storageHash": hx(mpt_root(own) if own else EMPTY_TRIE_ROOT),
             "storageProof": [
-                {
-                    "key": slot, "value": hex(self.storage(address(addr), int(slot, 16))),
-                    "proof": [hx(pyrlp.encode(n)) for n in storage.get_proof(keccak256(int(slot, 16).to_bytes(32, "big")))],
-                }
-                for slot in slots
+                {"key": slot, "value": hex(int(state.get_storage(target, key))), "proof": path(own, key) if own else []}
+                for slot, key in zip(slots, keys)
             ],
+            # Not in eth_getProof: the block whose state root the proof is
+            # against, which a claim on L1 names.
+            "blockNumber": hex(int(header.number)),
         }
 
     def fee_history(self, count, newest, percentiles=None) -> dict:
         last = int(self.block_at(newest)["header"].number)
         first = max(0, last - int(count, 16) + 1 if isinstance(count, str) else last - count + 1)
-        blocks = self.blocks[first : last + 1]
+        blocks = self.blocks[max(0, first - self.first) : max(0, last - self.first + 1)]
         return {
             "oldestBlock": hex(first),
             "baseFeePerGas": [hex(int(b["header"].base_fee_per_gas)) for b in blocks] + [hex(self.next_base_fee())],
@@ -1091,8 +1367,11 @@ class Node:
             "eth_getBlockByNumber": lambda tag, full=False: self.rpc_block(self.block_at(tag), full),
             "eth_getBlockByHash": lambda h, full=False: self.rpc_block(next((b for b in self.blocks if hx(b["hash"]) == h), None), full),
             "eth_getBlockReceipts": self.block_receipts,
+            "debug_getRawHeader": lambda tag: (b := self.block_at(tag)) and hx(rlp.encode(b["header"])),
             "eth_getLogs": self.logs,
-            "nr_buildBlock": self.build,
+            "nr_preconfirm": self.preconfirm,
+            "nr_waitingPosts": self.waiting_posts,
+            "nr_getPreconfirmation": lambda number: self.config["preconfirmations"].get(str(int(number, 16))),
         }
         reply = {"jsonrpc": "2.0", "id": request.get("id")}
         method = request.get("method")
@@ -1100,8 +1379,11 @@ class Node:
             reply["error"] = {"code": -32601, "message": f"{method} is not supported"}
             return reply
         try:
-            with self.lock:
+            if method == "eth_getProof":  # locks only to copy the state
                 reply["result"] = methods[method](*request.get("params", []))
+            else:
+                with self.lock:
+                    reply["result"] = methods[method](*request.get("params", []))
         except RpcError as e:
             reply["error"] = {"code": e.code, "message": str(e)} | ({"data": e.data} if e.data else {})
         except Exception as e:

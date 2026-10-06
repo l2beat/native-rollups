@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import time
+import traceback
 
 from ethereum_rlp import rlp
 from ethereum_types.numeric import U64, U256, Uint
@@ -33,7 +34,7 @@ from ethereum.merkle_patricia_trie import root
 from ethereum.state import EMPTY_CODE_HASH, Address
 from ethereum.forks.amsterdam import fork, vm
 from ethereum.forks.amsterdam.block_access_lists import BlockAccessListBuilder
-from ethereum.forks.amsterdam.blocks import Block
+from ethereum.forks.amsterdam.blocks import Block, Header
 from ethereum.forks.amsterdam.requests import compute_requests_hash
 from ethereum.forks.amsterdam.stateless import STATELESS_INPUT_SCHEMA_ID
 from ethereum.forks.amsterdam.state_tracker import BlockState
@@ -56,7 +57,7 @@ ADVANCE_SELECTOR = keccak256(
 
 
 def cast(*args: str) -> str:
-    return subprocess.run(["cast", *args], check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["cast", *args], check=True, capture_output=True, text=True, timeout=180).stdout.strip()
 
 
 def rpc(url: str, method: str, *params: str):
@@ -64,7 +65,7 @@ def rpc(url: str, method: str, *params: str):
 
 
 def http_get(url: str):
-    return json.loads(subprocess.run(["curl", "-sf", url], check=True, capture_output=True, text=True).stdout)
+    return json.loads(subprocess.run(["curl", "-sf", "-m", "60", url], check=True, capture_output=True, text=True).stdout)
 
 
 def decode_advance(data: bytes) -> dict:
@@ -122,26 +123,50 @@ def follow(args: argparse.Namespace) -> None:
         return out.stdout if out.returncode == 0 and out.stdout.strip() else None
 
     explorer = ex.Explorer(args.explorer, args.rollup, str(l2_node.L2_MESSENGER), flatten) if args.explorer else None
-    verified, from_block, seen = [], 0, set()
+    verified, from_block, records = 0, 0, []
+    snapshot = explorer.snapshot() if explorer else None
+    if snapshot:
+        # The chain at a recent block, which the explorer's data reaches, so
+        # only the blocks after it are rebuilt again.
+        verified, from_block, data = snapshot
+        state, headers = rlp.decode(data)
+        chain.state = l2_node.load_state(state)
+        chain.blocks = [Block(header=rlp.decode_to(Header, h), transactions=(), ommers=(), withdrawals=()) for h in headers]
+        print(f"resumed from the snapshot at L2 block {verified}", flush=True)
     while True:
-        logs = rpc(args.l1_rpc, "eth_getLogs", json.dumps({
-            "address": args.rollup, "fromBlock": hex(from_block), "toBlock": "latest",
-            "topics": ["0x" + BLOCK_ADDED.hex()],
-        }))
+        try:
+            logs = rpc(args.l1_rpc, "eth_getLogs", json.dumps({
+                "address": args.rollup, "fromBlock": hex(from_block), "toBlock": "latest",
+                "topics": ["0x" + BLOCK_ADDED.hex()],
+            }))
+        except subprocess.SubprocessError:
+            if not args.watch:
+                raise
+            traceback.print_exc()  # L1 may be back at the next poll
+            time.sleep(args.interval)
+            continue
         for log in logs:
-            if int(log["topics"][1], 16) <= len(verified):
+            if int(log["topics"][1], 16) <= verified:
                 continue
             entry, details = rebuild(args, chain, gas_limit, log)
-            verified.append(entry)
-            from_block = int(log["blockNumber"], 16)
+            verified, from_block = entry["number"], entry["l1Block"]
+            if args.record:
+                records.append(entry)
+                write_record(args.record, {"rollup": args.rollup, "verified": records, "updatedAt": int(time.time())})
             if explorer:
                 index_block(args, explorer, details)
-            if args.record:
-                write_record(args.record, {"rollup": args.rollup, "verified": verified, "updatedAt": int(time.time())})
+                if verified % l2_node.SNAPSHOT_INTERVAL == 0:
+                    state = l2_node.dump_state(chain.state)
+                    explorer.save_snapshot(verified, from_block, rlp.encode([state, [rlp.encode(b.header) for b in chain.blocks]]))
+                explorer.commit()
         if explorer:
-            index_messages(args, explorer, seen)
-            explorer.save_index()
-            explorer.publish()
+            try:
+                index_messages(args, explorer)
+            except subprocess.SubprocessError:
+                if not args.watch:
+                    raise
+                traceback.print_exc()
+            explorer.commit()
         if not args.watch:
             break
         time.sleep(args.interval)
@@ -222,15 +247,23 @@ def index_block(args: argparse.Namespace, explorer: ex.Explorer, d: dict) -> Non
     explorer.add_l1_tx(advance, "advance", l2Block=block["number"])
 
 
-def index_messages(args: argparse.Namespace, explorer: ex.Explorer, seen: set) -> None:
-    """Indexes the L1 transactions that send deposits and claim withdrawals."""
+def index_messages(args: argparse.Namespace, explorer: ex.Explorer) -> None:
+    """Indexes the L1 transactions that send deposits and claim withdrawals,
+    from the L1 block it reached last time."""
+    start = explorer.meta("messagesFrom") or 0
+    latest = int(rpc(args.l1_rpc, "eth_blockNumber"), 16)
+    if latest < start:
+        return  # no new L1 block
     for topic, kind in ((L1_MESSAGE_SENT, "deposit"), (L2_MESSAGE_CLAIMED, "withdrawal claim")):
+        hashes = []
         for log in rpc(args.l1_rpc, "eth_getLogs", json.dumps({
-            "address": args.rollup, "fromBlock": "0x0", "toBlock": "latest", "topics": ["0x" + topic.hex()],
+            "address": args.rollup, "fromBlock": hex(start), "toBlock": hex(latest), "topics": ["0x" + topic.hex()],
         })):
-            if log["transactionHash"] not in seen:
-                seen.add(log["transactionHash"])
-                explorer.add_l1_tx(l1_tx(args, log["transactionHash"]), kind)
+            if log["transactionHash"] not in hashes:
+                hashes.append(log["transactionHash"])
+        for h in hashes:
+            explorer.add_l1_tx(l1_tx(args, h), kind)
+    explorer.set_meta(messagesFrom=latest + 1)
 
 
 def rebuild(args: argparse.Namespace, chain: fork.BlockChain, gas_limit: int, log: dict) -> tuple:
@@ -311,7 +344,7 @@ def main() -> None:
     parser.add_argument("--watch", action="store_true", help="keep following new L2 blocks")
     parser.add_argument("--interval", type=float, default=4, help="seconds between polls with --watch")
     parser.add_argument("--record", help="keep the verified blocks in this JSON file")
-    parser.add_argument("--explorer", help="write the decoded blocks and transactions to this directory")
+    parser.add_argument("--explorer", help="write the decoded blocks and transactions to this SQLite database")
     parser.add_argument(
         "--abis", nargs="*", default=[os.path.join(os.path.dirname(__file__), "..", "out")],
         help="directories with ABIs, from JSON artifacts or Go bindings, to decode calls and events with",

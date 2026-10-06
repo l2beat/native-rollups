@@ -75,7 +75,7 @@ for _ in range(TREE_DEPTH):
 
 
 def cast(*args: str) -> str:
-    return subprocess.run(["cast", *args], check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["cast", *args], check=True, capture_output=True, text=True, timeout=180).stdout.strip()
 
 
 def message_tree(leaves: list) -> tuple:
