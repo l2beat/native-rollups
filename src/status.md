@@ -1,6 +1,6 @@
 # Status and roadmap
 
-*Last updated: September 2026.*
+*Last updated: October 2026.*
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
@@ -21,6 +21,7 @@
 - **Reusing the L1 STF** is largely specified in the [Specification](./specification.md), and ethrex has [merged a proof of concept](https://github.com/lambdaclass/ethrex/pull/6418) of the earlier `EXECUTE` precompile design, already on Glamsterdam. The remaining issues are newer EIPs, such as Block-in-Blobs, and compatibility with future L1 upgrades.
 - **Proof-carrying transactions**, proposed in the [Native proof verification](https://ethresear.ch/t/native-proof-verification/24798) post in May 2026, are the main alternative to EIP-8288. The book follows EIP-8288, as explained in the [introduction](./introduction.md#candidate-designs).
 - **EIP-8288** (zkzkframes) was merged as a Draft on 9 September 2026. See [EIP-8288 (zkzkframes)](./zkzkframes.md).
+- **The reference implementation**: the [NativeRollup contract](https://github.com/l2beat/native-rollups/tree/main/contracts) runs end to end on a local EIP-8141 devnet, with real L2 blocks, mock proofs, and the EIP-8357 registry in its genesis. A [public explorer](https://nativerollups.fyi) shows each L2 block and message, and what is still mocked.
 - **EIP-8357**, the EVM verification key registry, is under review in [ethereum/EIPs#12055](https://github.com/ethereum/EIPs/pull/12055), with a reference implementation in [ethereum/sys-asm#56](https://github.com/ethereum/sys-asm/pull/56) and tests in [ethereum/execution-specs#3466](https://github.com/ethereum/execution-specs/pull/3466). See [EIP-8357](./evm_vk_registry.md).
 
 ## L1 dependencies
@@ -59,8 +60,9 @@ How will upgrades work with the zkEVM? Suppose a bug is found: how do nodes upgr
 
 ## Next steps
 
-1. Follow leanVM's move to RISC-V, so that the zkVM shared by L1 execution proofs and EIP-8288 can prove the L1 stateless validation program and verify proofs of arbitrary programs, which LeanSTARK dependencies require (see [EIP-8288 open issues](./zkzkframes.md#open-issues)).
-2. Specify how the mandatory L1 proof binds and absorbs the EIP-8288 aggregate.
-3. Make the proof aggregation design concrete.
-4. Move the ethrex proof of concept from the `EXECUTE` precompile to zkzkframes and the EVM verification key registry.
-5. Research native rollups with extensions.
+1. Make LeanSTARK dependencies work in EIP-8288: give them a place in the dependency digest, which is defined for LeanSPHINCS dependencies only, follow leanVM's move to RISC-V until it can verify proofs of arbitrary programs, and allow more than one per mempool wrapper (see [EIP-8288 open issues](./zkzkframes.md#open-issues)).
+2. Bring [EIP-8357](./evm_vk_registry.md) to clients and a fork: finish its review, tests, and system contract, and propose it together with EIP-8288.
+3. Specify how the mandatory L1 proof binds and absorbs the EIP-8288 aggregate.
+4. Find a path for L2 block data now that EIP-8142 was declined for Hegotá: EIP-8142 in a later fork, or another way to bind the data to blobs.
+5. Replace the reference implementation's mock proofs with zkVM proofs of the same program, once the execution and consensus specifications agree on what the proof commits to.
+6. Research [native rollups with extensions](./extensions.md).
