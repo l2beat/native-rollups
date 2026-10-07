@@ -155,7 +155,7 @@ The contract does not separately receive EIP-7928's `block_access_list_hash`. Th
 
 The contract implements the [root computation](#root-computation) and checks the result against the EIP-8288 dependency declared in the same transaction. It verifies no proof itself: in a valid block, EIP-8288 guarantees that every declared dependency is proven.
 
-The code below is abridged from the [reference implementation](https://github.com/l2beat/native-rollups/tree/main/contracts), which also contains the L2 messenger. It runs on a local [frames devnet](https://notes.ethereum.org/@ethpandaops/frames-devnet-0) with real L2 blocks, and mocks what L1 does not have yet: the EIP-8288 dependency, the EIP-8357 registry, and EIP-8142 in the L1 program.
+The code below is abridged from the [reference implementation](https://github.com/l2beat/native-rollups/tree/main/contracts), which also contains the L2 messenger. It runs on a local [frames devnet](https://notes.ethereum.org/@ethpandaops/frames-devnet-0) with real L2 blocks, and mocks what L1 does not have yet: the EIP-8288 dependency and EIP-8142 in the L1 program. The EIP-8357 registry is in the devnet's genesis, holding the entry its activation fork would register.
 
 ```solidity
 contract NativeRollup {
@@ -369,7 +369,7 @@ L1 data is enough to rebuild the L2 chain. An L2 node finds each block through t
 
 ## Open questions
 
-1. **Proof pricing**: covering an L2 proof in the mandatory L1 proof adds work for the L1 prover. EIP-8288 charges a fixed `LEANSTARK_VERIFICATION_GAS` per dependency. Whether that is adequate, or a separate proof gas market is needed, depends on the L1 zkEVM gas model.
+1. **Proof pricing**: covering an L2 proof in the mandatory L1 proof adds work for the L1 prover. EIP-8288 charges a fixed `LEANSTARK_VERIFICATION_GAS` per dependency, added to the transaction's intrinsic gas. Whether that is adequate, or a separate proof gas market is needed, depends on the L1 zkEVM gas model.
 
 2. **One L2 block per transaction**: EIP-8288 allows one STARK dependency per transaction, and the native program proves one block, so every L2 block needs its own L1 transaction. Proving a range of blocks with a single proof would require L1 to approve a program that validates multiple blocks.
 
