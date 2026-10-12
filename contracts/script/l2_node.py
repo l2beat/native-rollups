@@ -176,6 +176,19 @@ def json_rpc(url: str, method: str, *params):
     return out["result"]
 
 
+def get_logs(url: str, log_filter: dict, first: int, last: int) -> list:
+    """The logs matching `log_filter` from block `first` to `last`, queried
+    in halves until each range fits: Reth answers at most 20,000 logs per
+    query."""
+    try:
+        return json_rpc(url, "eth_getLogs", {**log_filter, "fromBlock": hex(first), "toBlock": hex(last)})
+    except RuntimeError as e:
+        if "max results" not in str(e) or first == last:
+            raise
+    middle = (first + last) // 2
+    return get_logs(url, log_filter, first, middle) + get_logs(url, log_filter, middle + 1, last)
+
+
 def hx(b: bytes) -> str:
     return "0x" + bytes(b).hex()
 
@@ -899,9 +912,8 @@ class Node:
         import l2_follower  # it imports this module
 
         source = SimpleNamespace(l1_rpc=self.l1_rpc, beacon=self.beacon, rollup=self.rollup)
-        logs = json_rpc(self.l1_rpc, "eth_getLogs", {
-            "address": self.rollup, "fromBlock": "0x0", "toBlock": "latest", "topics": [hx(l2_follower.BLOCK_ADDED)],
-        })
+        latest = int(json_rpc(self.l1_rpc, "eth_blockNumber"), 16)
+        logs = get_logs(self.l1_rpc, {"address": self.rollup, "topics": [hx(l2_follower.BLOCK_ADDED)]}, 0, latest)
         derived = False
         for log in sorted(logs, key=lambda log: int(log["topics"][1], 16)):
             if int(log["topics"][1], 16) == int(self.head.number) + 1:
