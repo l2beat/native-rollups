@@ -40,7 +40,7 @@ from execution_testing import Address as TestAddress
 
 from ethereum.crypto.hash import keccak256
 
-from l2_node import L2_CHAIN_ID, L2_MESSENGER, PRIORITY_FEE, hx, json_rpc
+from l2_node import L2_CHAIN_ID, L2_MESSENGER, PRIORITY_FEE, get_logs, hx, json_rpc
 
 PROVE_ROOT_SIGNATURE = "proveL1MessageRoot(uint256,bytes,bytes[],bytes[])"
 CLAIM_SIGNATURE = "claimL1Message((address,address,uint256,uint256,uint256,bytes,uint256),bytes32[],address)"
@@ -116,9 +116,7 @@ def prefix_roots(leaves: list) -> list:
 
 def l1_messages(l1_rpc: str, rollup: str, anchor: int) -> list:
     """The messages the rollup contract had sent by the anchor block."""
-    logs = json_rpc(l1_rpc, "eth_getLogs", {
-        "address": rollup, "fromBlock": "0x0", "toBlock": hex(anchor), "topics": [hx(L1_MESSAGE_SENT)],
-    })
+    logs = get_logs(l1_rpc, {"address": rollup, "topics": [hx(L1_MESSAGE_SENT)]}, 0, anchor)
     messages = []
     for log in logs:
         data = bytes.fromhex(log["data"][2:])
