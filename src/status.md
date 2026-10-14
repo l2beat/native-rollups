@@ -22,7 +22,7 @@
 - **Proof-carrying transactions**, proposed in the [Native proof verification](https://ethresear.ch/t/native-proof-verification/24798) post in May 2026, are the main alternative to EIP-8288. The book follows EIP-8288, as explained in the [introduction](./introduction.md#candidate-designs).
 - **EIP-8288** (zkzkframes) was merged as a Draft on 9 September 2026. See [EIP-8288 (zkzkframes)](./zkzkframes.md).
 - **The reference implementation**: the [NativeRollup contract](https://github.com/l2beat/native-rollups/tree/main/contracts) runs end to end on a local EIP-8141 devnet, with real L2 blocks, mock proofs, and the EIP-8357 registry in its genesis. A [public explorer](https://nativerollups.fyi) shows each L2 block and message, and what is still mocked.
-- **EIP-8357**, the EVM verification key registry, is under review in [ethereum/EIPs#12055](https://github.com/ethereum/EIPs/pull/12055), with a reference implementation in [ethereum/sys-asm#56](https://github.com/ethereum/sys-asm/pull/56) and tests in [ethereum/execution-specs#3466](https://github.com/ethereum/execution-specs/pull/3466). See [EIP-8357](./evm_vk_registry.md).
+- **EIP-8357**, the EVM verification key registry, was merged as a [Draft](https://eips.ethereum.org/EIPS/eip-8357) on 14 October 2026, with a reference implementation in [ethereum/sys-asm#56](https://github.com/ethereum/sys-asm/pull/56) and tests in [ethereum/execution-specs#3466](https://github.com/ethereum/execution-specs/pull/3466). See [EIP-8357](./evm_vk_registry.md).
 
 ## L1 dependencies
 

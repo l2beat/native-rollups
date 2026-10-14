@@ -1,7 +1,8 @@
-# A local network with the frames-devnet-0 settings: Gloas from genesis and
-# the EIP-8141 execution fork at epoch 1, plus the EIP-8357 registry. It runs the two frames-devnet-0
-# clients whose pools take blob-carrying frame transactions, in the EIP-7594
-# network form: Nethermind and Reth. Run with:
+# A local network with the bogota-devnet-0 settings: Gloas from genesis and
+# the EIP-8141 execution fork at epoch 1, plus the EIP-8357 registry. It runs
+# the two bogota-devnet-0 clients whose pools take blob-carrying frame
+# transactions, in the EIP-7594 network form: Nethermind and Reth. Their images
+# keep the devnet's earlier frames-devnet-0 tag. Run with:
 #   kurtosis run github.com/ethpandaops/ethereum-package@6dd3f2613d1f9d1a9274864083c692726146c9db \
 #       --enclave frames --args-file frames/kurtosis.yaml
 participants:

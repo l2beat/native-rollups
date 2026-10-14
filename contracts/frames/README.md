@@ -1,6 +1,6 @@
-# Native rollup on frames-devnet-0
+# Native rollup on bogota-devnet-0
 
-Runs the `NativeRollup` contract on a local copy of [frames-devnet-0](https://notes.ethereum.org/@ethpandaops/frames-devnet-0), a chain with [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions but without EIP-8288 or EIP-8357. Its genesis holds the EIP-8357 registry at its address, with the entry the fork that activates EIP-8357 would register, since the clients do not implement that fork. Two pieces stand in for what the chain lacks:
+Runs the `NativeRollup` contract on a local copy of [bogota-devnet-0](https://notes.ethereum.org/@ethpandaops/bogota-devnet-0), a chain with [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions but without EIP-8288 or EIP-8357. Its genesis holds the EIP-8357 registry at its address, with the entry the fork that activates EIP-8357 would register, since the clients do not implement that fork. Two pieces stand in for what the chain lacks:
 
 - `MockDependencyVerifier`: a `DEFAULT` frame calls it with the EIP-8288 dependency triple followed by a proof, here a signature by a trusted prover. `FramesNativeRollup` requires that frame to target the verifier and to have succeeded, and reads the triple from its data.
 - `frame_introspection.eas`: exposes `TXPARAM`, `FRAMEPARAM` and `FRAMEDATACOPY` to Solidity, which does not support the frame instructions yet.

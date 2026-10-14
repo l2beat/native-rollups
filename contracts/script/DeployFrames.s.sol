@@ -9,7 +9,7 @@ import {FramesSequencedRollup} from "../src/frames/FramesSequencedRollup.sol";
 import {MockDependencyVerifier} from "../src/frames/MockDependencyVerifier.sol";
 
 /// @notice Deploys a native rollup on an EIP-8141 chain without EIP-8288,
-///         such as this repository's local copy of frames-devnet-0, whose
+///         such as this repository's local copy of bogota-devnet-0, whose
 ///         genesis holds the EIP-8357 registry with its first entry.
 /// @dev    Environment: PRIVATE_KEY (deployer), PROVER (address signing mock
 ///         proofs), GENESIS_HASH and GENESIS_STATE_ROOT (the L2 genesis, from

@@ -35,7 +35,7 @@
   <template id="about">
     <h1>A native rollup, explained as it runs</h1>
     <p class="lead">A native rollup is an L2 whose blocks Ethereum checks with its own proof program, the one it will use
-      for its own blocks. This one runs on a local copy of frames-devnet-0, and everything this explorer shows is rebuilt
+      for its own blocks. This one runs on a local copy of bogota-devnet-0, and everything this explorer shows is rebuilt
       from L1 alone.</p>
     <h2>What's real and what's mocked</h2>
     <p class="section-lead">Everything this demo cannot run yet is missing from L1, not from the rollup. Each mock stands
@@ -43,7 +43,7 @@
     <table class="mock-table">
       <thead><tr><th>Part</th><th>Status</th><th>What stands in</th><th>Goes away with</th></tr></thead>
       <tbody>
-        <tr><td>L1 chain with frame transactions and blobs</td><td><span class="badge real">Real</span></td><td>A local copy of frames-devnet-0 with Nethermind and Reth</td><td></td></tr>
+        <tr><td>L1 chain with frame transactions and blobs</td><td><span class="badge real">Real</span></td><td>A local copy of bogota-devnet-0 with Nethermind and Reth</td><td></td></tr>
         <tr><td>L2 execution</td><td><span class="badge real">Real</span></td><td>execution-specs' Amsterdam rules with EIP-8141, as on the L1</td><td></td></tr>
         <tr><td>Stateless validation program</td><td><span class="badge real">Real</span></td><td>Run as ordinary code instead of inside a zkVM</td><td></td></tr>
         <tr><td>Block data in blobs</td><td><span class="badge real">Real</span></td><td>EIP-8142's encoding, on real L1 blobs</td><td></td></tr>

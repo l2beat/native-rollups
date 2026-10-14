@@ -13,7 +13,7 @@
 
 EIP-8357 is a draft Core EIP that tells contracts which verification key L1 has approved for proving EVM execution in each fork. It is the one piece native rollups need on top of [EIP-8288](./zkzkframes.md). This page summarizes the design; the EIP is authoritative:
 
-- EIP text: [ethereum/EIPs#12055](https://github.com/ethereum/EIPs/pull/12055)
+- EIP: [EIP-8357](https://eips.ethereum.org/EIPS/eip-8357) (Draft)
 - Reference implementation: [ethereum/sys-asm#56](https://github.com/ethereum/sys-asm/pull/56)
 - Tests: [ethereum/execution-specs#3466](https://github.com/ethereum/execution-specs/pull/3466)
 - Discussion: [Ethereum Magicians](https://ethereum-magicians.org/t/eip-8357-evm-verification-key-registry/29222)

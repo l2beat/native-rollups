@@ -155,7 +155,7 @@ The contract does not separately receive EIP-7928's `block_access_list_hash`. Th
 
 The contract implements the [root computation](#root-computation) and checks the result against the EIP-8288 dependency declared in the same transaction. It verifies no proof itself: in a valid block, EIP-8288 guarantees that every declared dependency is proven.
 
-The code below is abridged from the [reference implementation](https://github.com/l2beat/native-rollups/tree/main/contracts), which also contains the L2 messenger. It runs on a local [frames devnet](https://notes.ethereum.org/@ethpandaops/frames-devnet-0) with real L2 blocks, and mocks what L1 does not have yet: the EIP-8288 dependency and EIP-8142 in the L1 program. The EIP-8357 registry is in the devnet's genesis, holding the entry its activation fork would register.
+The code below is abridged from the [reference implementation](https://github.com/l2beat/native-rollups/tree/main/contracts), which also contains the L2 messenger. It runs on a local copy of [bogota-devnet-0](https://notes.ethereum.org/@ethpandaops/bogota-devnet-0), the EIP-8141 devnet, with real L2 blocks, and mocks what L1 does not have yet: the EIP-8288 dependency and EIP-8142 in the L1 program. The EIP-8357 registry is in the devnet's genesis, holding the entry its activation fork would register.
 
 ```solidity
 contract NativeRollup {
