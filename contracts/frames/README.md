@@ -17,7 +17,7 @@ L2 to L1 messages go the other way: the messenger's `sendMessage` locks the valu
 
 ```shell
 kurtosis run github.com/ethpandaops/ethereum-package@f191032be3a7ba069a6bb049ea5d5b9c3b1357e8 \
-    --enclave frames --args-file frames/kurtosis.yaml
+    --enclave bogota --args-file frames/kurtosis.yaml
 ```
 
 Frame transactions work from epoch 1, when the Bogota fork activates. The registry's entry is the hash of `frames-devnet mock EVM verification key`, a placeholder for the mock proofs, with schema ID `0x1601`, Bogota revision 1. `advance` transactions carry blobs, and of the bogota-devnet-1 clients Nethermind, Reth and ethrex accept blob-carrying frame transactions in the EIP-7594 network form, so the network runs these three. geth rejects that form.

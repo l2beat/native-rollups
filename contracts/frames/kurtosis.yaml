@@ -4,7 +4,7 @@
 # bogota-devnet-1 clients whose pools take blob-carrying frame transactions,
 # in the EIP-7594 network form: Nethermind, Reth and ethrex. Run with:
 #   kurtosis run github.com/ethpandaops/ethereum-package@f191032be3a7ba069a6bb049ea5d5b9c3b1357e8 \
-#       --enclave frames --args-file frames/kurtosis.yaml
+#       --enclave bogota --args-file frames/kurtosis.yaml
 participants:
   - el_type: nethermind
     el_image: ethpandaops/nethermind:bogota-devnet-1
@@ -51,9 +51,13 @@ ethereum_genesis_generator_params:
   extra_env:
     DEPLOY_EIP8253_PRESTATE: "false"
 
-# Fixed host ports, so that a container keeps its address when it restarts.
+# Fixed host ports, so that a container keeps its address when it restarts,
+# below Linux's ephemeral range (32768 and up), where Docker picks the other
+# containers' host ports and could take one first.
 port_publisher:
   el:
     enabled: true
+    public_port_start: 30100
   cl:
     enabled: true
+    public_port_start: 31100
