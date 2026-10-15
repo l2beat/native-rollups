@@ -115,6 +115,8 @@ const fill = (bytes) => {
 // the transaction's sender.
 const ENTRY_POINT = "0x00000000000000000000000000000000000000aa";
 const frameCaller = (tx, f) => (f.mode === "SENDER" ? tx.from : ENTRY_POINT);
+// EIP-8141's expiry verifier, which reads its input as an 8-byte deadline.
+const EXPIRY_VERIFIER = "0x81413f0cf12e9b6a49b1d0439e081c577d57ffff";
 
 function labels() {
   const c = (state.session && state.session.contracts) || {};
@@ -128,7 +130,7 @@ function labels() {
     "0x000064d678505ad48f8ccb093bc65613800e8282": ["Builder requests (EIP-8282)", ""],
     "0x0000f90827f1c53a10cb7a02335b175320002935": ["Block hash history (EIP-2935)", ""],
     "0x00000000219ab540356cbb839cbe05303d7705fa": ["Beacon deposit contract", ""],
-    "0x81413f0cf12e9b6a49b1d0439e081c577d57ffff": ["Expiry verifier (EIP-8141)", ""],
+    [EXPIRY_VERIFIER]: ["Expiry verifier (EIP-8141)", ""],
     "0x8250968c12e01a19d6f667b9b2f3b3a4d0e51cb7": ["Nonce manager (EIP-8250)", ""],
     "0x8272d9679689ea2f307140cdf9002d27dc00ffff": ["Recent roots (EIP-8272)", ""],
     [ENTRY_POINT]: ["Entry point (EIP-8141)", ""],
@@ -1566,6 +1568,8 @@ function codeFor(target, call) {
   const key = call && snippetKey(target, call.function);
   if (key) return codeBlock(key);
   if (contractsAt(target).length) return "";
+  const eip = ((labels()[target.toLowerCase()] || [""])[0].match(EIP_PREDEPLOY) || [])[2];
+  if (eip) return `<p class="note">${addr(target, "l2")} runs the code <a href="https://eips.ethereum.org/EIPS/eip-${eip}">EIP-${eip}</a> gives. Its page shows its bytecode.</p>`;
   return `<p class="note">The explorer has no source for ${addr(target, "l2")}, only for the rollup's contracts. Its page shows its bytecode.</p>`;
 }
 
@@ -1647,6 +1651,13 @@ const ADVANCE_NOTES = {
 // Whether a frame before frame `i` claims a deposit to `to`.
 const claimsBefore = (tx, i, to) => tx.frames.slice(0, i).some((f) => f.call && f.call.function === "claimL1Message" && f.call.args.m.to === to);
 
+const MODE_TEXTS = {
+  VERIFY: "A VERIFY frame: read-only, it must not revert, and it approves what its flags allow.",
+  SENDER: "Calls the target as the sender, which is the caller the target sees.",
+  DEFAULT: "Calls the target from EIP-8141's entry point address, not as the sender.",
+  POST_TX: "A POST_TX frame (EIP-7906): read-only, it runs after the others and checks the transaction's outcome. If it fails, everything after the validation is undone, and the transaction still pays.",
+};
+
 function frameExplain(tx, f, i, layer) {
   const fn = f.call && f.call.function;
   const noCode = f.targetHasCode === undefined || f.targetHasCode === null ? !contractsAt(f.target).length : !f.targetHasCode;
@@ -1671,6 +1682,16 @@ function frameExplain(tx, f, i, layer) {
       ),
     };
   }
+  if (f.target === EXPIRY_VERIFIER && f.data && f.data.length === 18) {
+    const deadline = parseInt(f.data.slice(2), 16);
+    return {
+      text: f.mode === "VERIFY"
+        ? "An expiry frame: the expiry verifier reverts once the block's timestamp is past the deadline, which makes the transaction invalid after it."
+        : `${MODE_TEXTS[f.mode]} It calls the expiry verifier, which reverts once the block's timestamp is past the deadline.`,
+      badges: [],
+      extra: fields([["Deadline", `${deadline} <span class="muted">(${new Date(deadline * 1000).toLocaleString()})</span>`, "The frame's 8 bytes of data, the last block timestamp the verifier accepts."]]),
+    };
+  }
   const texts = {
     advance: "Calls advance on the rollup contract. It reads the dependency from the proof frame, rebuilds the proof's input from its storage, these arguments, the blob and the L1 anchor, and requires them to match.",
     proveL1MessageRoot: "Proves the root of L1's message tree against this L2 block's L1 anchor: the L1 block header, then the rollup contract's account and the root's storage slot in that block's state. The messenger caches the root, so only the first claim of a block carries this proof.",
@@ -1681,12 +1702,7 @@ function frameExplain(tx, f, i, layer) {
   const ctx = { chain: layer.toLowerCase(), fn };
   const known = f.call && texts[fn];
   return {
-    text: texts[fn] || {
-      VERIFY: "A VERIFY frame: read-only, it must not revert, and it approves what its flags allow.",
-      SENDER: "Calls the target as the sender, which is the caller the target sees.",
-      DEFAULT: "Calls the target from EIP-8141's entry point address, not as the sender.",
-      POST_TX: "A POST_TX frame (EIP-7906): read-only, it runs after the others and checks the transaction's outcome. If it fails, everything after the validation is undone, and the transaction still pays.",
-    }[f.mode] + (noCode && (!f.data || f.data === "0x") ? " The target has no code, so the frame only moves its value." : ""),
+    text: texts[fn] || MODE_TEXTS[f.mode] + (noCode && (!f.data || f.data === "0x") ? " The target has no code, so the frame only moves its value." : ""),
     badges: known ? [badge("real")] : [],
     extra: known ? argTable(f.call.args.params || f.call.args, fn === "advance" ? ADVANCE_NOTES : {}, ctx, callViews(f.call, f.status === 1))
       + rawInput(f.data) : inputData(f.data, f.call, ctx),
