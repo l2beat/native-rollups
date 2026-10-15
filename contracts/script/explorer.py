@@ -21,13 +21,13 @@ from ethereum_types.numeric import Uint
 
 from ethereum.crypto.hash import keccak256
 from ethereum.state import EMPTY_CODE_HASH, Address
-from ethereum.forks.amsterdam.blocks import FrameTransactionReceipt, decode_receipt
-from ethereum.forks.amsterdam.transactions import SetCodeTransaction, decode_transaction, get_transaction_hash, recover_sender
-from ethereum.forks.amsterdam.utils.address import compute_contract_address
-from ethereum.forks.amsterdam.vm.eoa_delegation import recover_authority
-from ethereum.forks.amsterdam.transactions.frame_transaction import FrameTransaction
+from ethereum.forks.bogota.blocks import FrameTransactionReceipt, decode_receipt
+from ethereum.forks.bogota.transactions import SetCodeTransaction, decode_transaction, get_transaction_hash, recover_sender
+from ethereum.forks.bogota.utils.address import compute_contract_address
+from ethereum.forks.bogota.vm.eoa_delegation import recover_authority
+from ethereum.forks.bogota.transactions.frame_transaction import FrameTransaction
 
-MODES = {0: "DEFAULT", 1: "VERIFY", 2: "SENDER"}
+MODES = {0: "DEFAULT", 1: "VERIFY", 2: "SENDER", 3: "POST_TX"}
 FLAGS = {1: "APPROVE_PAYMENT", 2: "APPROVE_EXECUTION", 4: "ATOMIC_BATCH"}
 # Arguments too large to show, summarized by name.
 SUMMARIZED = {"accountProof", "storageProof", "l1Header"}
@@ -422,7 +422,7 @@ def l2_transaction(raw: bytes, receipt, gas_used: int, messenger: str, base_fee:
     if isinstance(tx, FrameTransaction):
         sender = hx(tx.sender)
         out.update({
-            "from": sender, "nonce": int(tx.nonce),
+            "from": sender, "nonce": int(tx.nonce_seq), "nonceKeys": [int(k) for k in tx.nonce_keys],
             "signatures": [{"scheme": int(s.scheme), "signer": hx(s.signer) if len(s.signer) else sender} for s in tx.signatures],
             "frames": [],
         })

@@ -32,14 +32,14 @@ from ethereum_types.numeric import U64, U256, Uint
 from ethereum.crypto.hash import keccak256
 from ethereum.merkle_patricia_trie import root
 from ethereum.state import EMPTY_CODE_HASH, Address
-from ethereum.forks.amsterdam import fork, vm
-from ethereum.forks.amsterdam.block_access_lists import BlockAccessListBuilder
-from ethereum.forks.amsterdam.blocks import Block, Header
-from ethereum.forks.amsterdam.requests import compute_requests_hash
-from ethereum.forks.amsterdam.stateless import STATELESS_INPUT_SCHEMA_ID
-from ethereum.forks.amsterdam.state_tracker import BlockState
-from ethereum.forks.amsterdam.transactions import decode_transaction
-from ethereum.forks.amsterdam.transactions.frame_transaction import FrameMode
+from ethereum.forks.bogota import fork, vm
+from ethereum.forks.bogota.block_access_lists import BlockAccessListBuilder
+from ethereum.forks.bogota.blocks import Block, Header
+from ethereum.forks.bogota.requests import compute_requests_hash
+from ethereum.forks.bogota.stateless import STATELESS_INPUT_SCHEMA_ID
+from ethereum.forks.bogota.state_tracker import BlockState
+from ethereum.forks.bogota.transactions import decode_transaction
+from ethereum.forks.bogota.transactions.frame_transaction import FrameMode
 
 import block_in_blobs as bib
 import explorer as ex

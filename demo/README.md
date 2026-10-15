@@ -18,7 +18,7 @@ python3 demo/runner.py
 python3 demo/server.py
 ```
 
-and open http://127.0.0.1:8088. Both find the devnet's Nethermind, Reth and beacon node through Docker, or take them with `--rpc`, `--submit-rpc` and `--beacon`. The runner takes the paths of the two execution-specs environments with `--zkevm-specs` and `--frames-specs`. The server also serves the book at `/book/`, as `mdbook build` builds it from the checkout, so that the explorer's links match the code it runs.
+and open http://127.0.0.1:8088. Both find the devnet's Nethermind, Reth and beacon node through Docker, or take them with `--rpc`, `--submit-rpc` and `--beacon`. The runner takes the path of the execution-specs environment with `--specs`. The server also serves the book at `/book/`, as `mdbook build` builds it from the checkout, so that the explorer's links match the code it runs.
 
 ## Running unattended
 

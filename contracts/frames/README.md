@@ -7,7 +7,7 @@ Runs the `NativeRollup` contract on a local copy of [bogota-devnet-0](https://no
 
 The L2 blocks are real. `script/l2_node.py` is an L2 node that runs the chain with execution-specs under the L1 stateless validation program's rules, from a genesis holding the system contracts the Specification requires. It keeps the state in memory and serves a JSON-RPC with a mempool. The rollup runs the book's [preconfirmations](../../src/preconfirmations.md) customization, `FramesSequencedRollup`: only its sequencer posts blocks, against a bond. The operator asks the node for each block, anchored to an L1 block a few slots behind the head. The node validates every block with `run_stateless_guest` and signs the dependency only if the program accepts it: a trusted signer instead of a zkVM proof, attesting to the real statement. It adds the block to its chain at once, preconfirmed with the sequencer's signature, and the operator posts it later.
 
-A native rollup runs its L1's rules, and this L1 has EIP-8141, so the program is execution-specs `projects/zkevm` merged with `eips/bogota/eip-8141`, which EEST labels as the `Bogota` pseudo-fork (Amsterdam with EIP-8141). The merge conflicts only where both sides add lines. The node uses EEST for the genesis and to sign claims.
+A native rollup runs its L1's rules, so the program is execution-specs `devnets/bogota/1` merged with `projects/zkevm`, whose stateless program, written for Amsterdam, is ported to the `Bogota` fork. Its schema ID is `0x1601`, Bogota revision 1, with `0x16` as Bogota's fork index, which the program does not assign yet. All scripts run in this environment: the node and the follower, the operator, which builds L1 frame transactions with the same fork, and claims, which use EEST, as the genesis does.
 
 L1 to L2 messages follow the book's [messaging](../../src/messaging.md#l1-to-l2-messaging) and [gas token](../../src/gas_token_deposits.md) designs. The genesis holds the `L2Messenger` predeploy with a pre-minted supply of the gas token, and no other ETH. Users claim messages themselves, with transactions they sign and send to the node's RPC like any other. `script/l2_claims.py` builds them as a wallet would, from L1 data and the L2 RPC alone: it rebuilds the rollup contract's message tree from its `L1MessageSent` events, up to the anchor of the latest L2 block. A claim is a frame transaction from the claimer: `DEFAULT` frames claim the message, then the claimer's `VERIFY` frame approves payment, so a deposit to the claimer pays for its own claim. Unless the messenger already has a root with the message, an earlier `DEFAULT` frame proves the tree's root against the anchor, with the anchor's header and `eth_getProof` proofs, which the EIP-4788 contract lets L2 check. Messages carry a fee, which the sender pays on top of the value, for whoever claims them, so a relayer can claim messages to addresses that cannot claim themselves, such as contracts. Since their calls may run code anyone can change, one transaction could make many such claims fail, so the node only takes them from a claimer that can pay up front, and the relayer funds itself with a message to itself. Recipients claim their own messages for free. Messages also carry a gas limit, which their call gets whoever claims them, in both gas dimensions: a frame transaction pays state gas only out of the frame's budget, so the claim frame needs room for it there too.
 
@@ -29,37 +29,37 @@ The L2 genesis comes from the node and stores the rollup contract's address in t
 ```shell
 forge build
 ROLLUP=$(cast compute-address <deployer> --nonce $(( $(cast nonce <deployer> --rpc-url <rpc>) + 1 )) | awk '{print $NF}')
-uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_node.py genesis --state <l2-state> --l1-rollup $ROLLUP
+uv run --project <execution-specs> python script/l2_node.py genesis --state <l2-state> --l1-rollup $ROLLUP
 
 PRIVATE_KEY=<key> PROVER=<address> GENESIS_HASH=<hash> GENESIS_STATE_ROOT=<root> ROLLUP=$ROLLUP SEQUENCER=<address> \
     forge script script/DeployFrames.s.sol --rpc-url <rpc> --broadcast --slow --skip-simulation
 
-uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_node.py serve \
+uv run --project <execution-specs> python script/l2_node.py serve \
     --state <l2-state> --l1-rpc <rpc> --rollup $ROLLUP --port 8547 --beacon <cl-url>
 
 cast send $ROLLUP "sendMessage(address,uint256,uint256,bytes)" <l2-recipient> <fee> <gas-limit> 0x --value 1ether --rpc-url <rpc> --private-key <key>
 
-uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_claims.py \
+uv run --project <execution-specs> python script/l2_claims.py \
     --l1-rpc <rpc> --rollup $ROLLUP --l2-rpc http://127.0.0.1:8547 --wallet <recipient key> [--relayer <key>]
 
-uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py preconfirm \
+uv run --project <execution-specs> python script/frames_operator.py preconfirm \
     --rpc <rpc> --rollup <rollup> --verifier <verifier> \
     --sequencer-key <key> --prover-key <key> --l2-rpc http://127.0.0.1:8547
 
-uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py advance \
+uv run --project <execution-specs> python script/frames_operator.py advance \
     --rpc <rpc> --rollup <rollup> --verifier <verifier> --operator-key <key> --l2-rpc http://127.0.0.1:8547
 ```
 
 Without `SEQUENCER`, the script deploys `FramesNativeRollup`, which takes blocks from anyone. `preconfirm` builds, validates and preconfirms the next block, and `advance` posts the oldest preconfirmed block the rollup does not have yet. `sequence` runs both as a service: it preconfirms a block every `--block-time` seconds, at fixed timestamps and empty if the mempool is, and posts each once `--proving-time` has passed, several per L1 block, each in its own transaction. The node keeps the blocks the rollup contract has and those preconfirmed after them in the state file, and replays them when it starts. Its RPC serves the methods wallets and load generators use: balances, nonces, code, storage, `eth_call`, `eth_estimateGas`, `eth_sendRawTransaction`, blocks, receipts, logs and `eth_getProof`. Its `latest` block is preconfirmed and its `safe` block posted, which L2 to L1 claims prove against. `nr_preconfirm`, `nr_waitingPosts` and `nr_getPreconfirmation` are the operator's.
 
-The two scripts use different execution-specs environments: the operator builds L1 frame transactions with the devnet branch, and the L2 runs the merged program. Each `advance` sends one frame transaction: the operator's `VERIFY` frame, the dependency frame, and a `SENDER` frame calling `advance`. `--corrupt-proof` sends an invalid proof, which makes the dependency frame and `advance` fail.
+Each `advance` sends one frame transaction: the operator's `VERIFY` frame, the dependency frame, and a `SENDER` frame calling `advance`. `--corrupt-proof` sends an invalid proof, which makes the dependency frame and `advance` fail.
 
 Each L2 block goes to L1 in [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) payload blobs, which `script/block_in_blobs.py` encodes, and `advance` binds their versioned hashes. The L1 program does not implement EIP-8142 yet, so the node derives the payload blobs itself, as `engine_newPayload`'s native variant does, and its mock proof attests to the public input a program with EIP-8142 would output. Pass `--submit-rpc` with a Nethermind or Reth RPC to `advance`.
 
 `script/l2_follower.py` rebuilds the chain from L1 alone. For each `BlockAdded` event, it reads the header fields from the `advance` frame, fetches the payload blobs from the consensus layer's `/eth/v1/beacon/blobs/{slot}`, re-executes the block with execution-specs' `state_transition`, and checks the block hash the contract recorded:
 
 ```shell
-uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_follower.py \
+uv run --project <execution-specs> python script/l2_follower.py \
     --l1-rpc <rpc> --beacon <cl-url> --rollup <rollup> --genesis <l2-state>
 ```
 
@@ -69,6 +69,6 @@ uv run --project <execution-specs@projects/zkevm+eip-8141> python script/l2_foll
 cast send 0x8079000000000000000000000000000000000001 "sendMessage(address,uint256,uint256,bytes)" <l1-recipient> <fee> <gas-limit> 0x \
     --value 0.1ether --rpc-url http://127.0.0.1:8547 --private-key <key>
 
-uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py claim-l2-message \
+uv run --project <execution-specs> python script/frames_operator.py claim-l2-message \
     --rpc <rpc> --rollup <rollup> --key <key> --index <index> --l2-rpc http://127.0.0.1:8547
 ```

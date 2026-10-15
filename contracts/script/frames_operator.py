@@ -28,13 +28,14 @@ against the latest L2 block the rollup has.
 `check-vectors` checks the Python root computation against the
 consensus-specs vectors that the Solidity tests use.
 
-Run with the execution-specs `devnets/frames/0` environment, which provides
-the frame transaction types, and Foundry's `cast` on the PATH:
+Run with the execution-specs environment of the L2 node, `devnets/bogota/1`
+with the stateless guest, which provides the frame transaction types, and
+Foundry's `cast` on the PATH:
 
-    uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py \
+    uv run --project <execution-specs> python script/frames_operator.py \
         preconfirm --rpc <url> --rollup <address> --verifier <address> \
         --sequencer-key <key> --prover-key <key> --l2-rpc <url>
-    uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py \
+    uv run --project <execution-specs> python script/frames_operator.py \
         advance --rpc <url> --rollup <address> --verifier <address> --operator-key <key> --l2-rpc <url>
 """
 
@@ -51,8 +52,9 @@ import urllib.request
 from ethereum_types.bytes import Bytes0, Bytes20
 from ethereum_types.numeric import U64, U256, Uint
 
-from ethereum.forks.amsterdam.transactions import encode_transaction
-from ethereum.forks.amsterdam.transactions.frame_transaction import (
+from ethereum.forks.bogota.transactions import encode_transaction
+from ethereum.forks.bogota.transactions.frame_transaction import (
+    LEGACY_NONCE_KEYS,
     Frame,
     FrameFlag,
     FrameMode,
@@ -244,7 +246,8 @@ def send_post(args: argparse.Namespace, bundle: dict, nonce: int) -> str:
     tip = 10**9 + random.randrange(10**6)
     tx = FrameTransaction(
         chain_id=U64(int(cast("chain-id", "--rpc-url", rpc))),
-        nonce=U256(nonce),
+        nonce_keys=LEGACY_NONCE_KEYS,
+        nonce_seq=U64(nonce),
         sender=Bytes20(bytes.fromhex(operator[2:])),
         frames=(
             Frame(
