@@ -29,7 +29,7 @@
 | Dependency | Needed for | Status |
 |---|---|---|
 | L1 stateless validation program | The program native rollups prove | In development in [execution-specs `projects/zkevm`](https://github.com/ethereum/execution-specs/tree/projects/zkevm) |
-| Mandatory execution proofs | One L1 block proof that covers the L2 proofs | Optional proofs ([EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)) proposed for Hegotá; mandatory in K\* under the current strawmap ordering |
+| Mandatory execution proofs | One L1 block proof that covers the L2 proofs | Optional proofs ([EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)) declined for Hegotá on 15 October 2026; mandatory in K\* under the current strawmap ordering |
 | [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions | The transaction envelope for EIP-8288 dependencies | Scheduled for Hegotá |
 | Compact `NewPayloadRequestHeader` | Validation without full payloads, and the contract's root computation | Removed from the optional-proof flow ([consensus-specs#5076](https://github.com/ethereum/consensus-specs/issues/5076)), assumed to return with mandatory proofs |
 | [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) Block-in-Blobs | L2 block data in blobs | Declined for Hegotá on 21 September 2026 |
