@@ -781,7 +781,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rpc", help="an L1 RPC for reads, by default the devnet's Reth")
     parser.add_argument("--submit-rpc", nargs="+",
-                        help="the L1 RPCs every transaction is sent to, by default the devnet's Nethermind and Reth")
+                        help="the L1 RPCs every transaction is sent to, by default the devnet's Nethermind, Reth and ethrex")
     parser.add_argument("--beacon", help="a beacon API that serves blobs, by default the devnet's first Lighthouse")
     parser.add_argument("--specs", default=os.path.expanduser("~/work/execution-specs-zkevm-bogota"),
                         help="the execution-specs environment of the contract scripts")
@@ -797,7 +797,7 @@ def main() -> None:
     # Reads go to Reth: Nethermind encodes frame transactions differently
     # from geth and Reth, with other field names and plain numbers.
     args.rpc = args.rpc or devnet_url("el-2-reth", 8545)
-    args.submit_rpc = args.submit_rpc or [devnet_url("el-1-nethermind", 8545), devnet_url("el-2-reth", 8545)]
+    args.submit_rpc = args.submit_rpc or [devnet_url(name, 8545) for name in ("el-1-nethermind", "el-2-reth", "el-3-ethrex")]
     args.beacon = args.beacon or devnet_url("cl-1-lighthouse", 4000)
     if not args.rpc or not all(args.submit_rpc) or not args.beacon:
         sys.exit("the devnet is not running: start it, or pass --rpc, --submit-rpc and --beacon")

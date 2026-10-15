@@ -1,6 +1,6 @@
 """
 Operator for a native rollup on an EIP-8141 chain without EIP-8288, such as
-bogota-devnet-0, with the preconfirmations customization (see
+bogota-devnet-1, with the preconfirmations customization (see
 FramesSequencedRollup).
 
 `preconfirm` anchors the next L2 block to an L1 block a few slots behind the
@@ -17,9 +17,9 @@ in one frame transaction:
 
 The transaction carries the block's EIP-8142 payload blobs, so it is sent in
 the EIP-7594 network form with the blobs, their commitments and their cell
-proofs. `--submit-rpc`, which can repeat, selects clients that accept blob-carrying frame
-transactions: on bogota-devnet-0, Nethermind and Reth do, while geth and
-ethrex do not.
+proofs. `--submit-rpc`, which can repeat, selects clients that accept
+blob-carrying frame transactions: on bogota-devnet-1, Nethermind, Reth and
+ethrex do, while geth does not.
 
 `claim-l2-message` claims an L2 to L1 message, which an L2 account sent with
 `L2Messenger.sendMessage`, with a proof from the L2 node's `eth_getProof`

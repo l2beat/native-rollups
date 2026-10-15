@@ -1,6 +1,6 @@
-# Native rollup on bogota-devnet-0
+# Native rollup on bogota-devnet-1
 
-Runs the `NativeRollup` contract on a local copy of [bogota-devnet-0](https://notes.ethereum.org/@ethpandaops/bogota-devnet-0), a chain with [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions but without EIP-8288 or EIP-8357. Its genesis holds the EIP-8357 registry at its address, with the entry the fork that activates EIP-8357 would register, since the clients do not implement that fork. Two pieces stand in for what the chain lacks:
+Runs the `NativeRollup` contract on a local copy of [bogota-devnet-1](https://notes.ethereum.org/@ethpandaops/bogota-devnet-1), a chain with [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions but without EIP-8288 or EIP-8357. Its genesis holds the EIP-8357 registry at its address, with the entry the fork that activates EIP-8357 would register, since the clients do not implement that fork. Two pieces stand in for what the chain lacks:
 
 - `MockDependencyVerifier`: a `DEFAULT` frame calls it with the EIP-8288 dependency triple followed by a proof, here a signature by a trusted prover. `FramesNativeRollup` requires that frame to target the verifier and to have succeeded, and reads the triple from its data.
 - `frame_introspection.eas`: exposes `TXPARAM`, `FRAMEPARAM` and `FRAMEDATACOPY` to Solidity, which does not support the frame instructions yet.
@@ -16,11 +16,11 @@ L2 to L1 messages go the other way: the messenger's `sendMessage` locks the valu
 ## Local network
 
 ```shell
-kurtosis run github.com/ethpandaops/ethereum-package@6dd3f2613d1f9d1a9274864083c692726146c9db \
+kurtosis run github.com/ethpandaops/ethereum-package@f191032be3a7ba069a6bb049ea5d5b9c3b1357e8 \
     --enclave frames --args-file frames/kurtosis.yaml
 ```
 
-Frame transactions work from epoch 1, when the EIP-8141 fork activates. The registry's entry is the hash of `frames-devnet mock EVM verification key`, a placeholder for the mock proofs, with schema ID `0x1501`, Amsterdam revision 1. `advance` transactions carry blobs, and of the frames-devnet-0 clients only Nethermind and Reth accept blob-carrying frame transactions, in the EIP-7594 network form, so the network runs these two. geth rejects that form and accepts the transaction without its blobs, which then makes the payloads it builds invalid until the transaction leaves its pool. ethrex does not support them yet.
+Frame transactions work from epoch 1, when the Bogota fork activates. The registry's entry is the hash of `frames-devnet mock EVM verification key`, a placeholder for the mock proofs, with schema ID `0x1601`, Bogota revision 1. `advance` transactions carry blobs, and of the bogota-devnet-1 clients Nethermind, Reth and ethrex accept blob-carrying frame transactions in the EIP-7594 network form, so the network runs these three. geth rejects that form.
 
 ## Deploy and advance
 
@@ -54,7 +54,7 @@ Without `SEQUENCER`, the script deploys `FramesNativeRollup`, which takes blocks
 
 Each `advance` sends one frame transaction: the operator's `VERIFY` frame, the dependency frame, and a `SENDER` frame calling `advance`. `--corrupt-proof` sends an invalid proof, which makes the dependency frame and `advance` fail.
 
-Each L2 block goes to L1 in [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) payload blobs, which `script/block_in_blobs.py` encodes, and `advance` binds their versioned hashes. The L1 program does not implement EIP-8142 yet, so the node derives the payload blobs itself, as `engine_newPayload`'s native variant does, and its mock proof attests to the public input a program with EIP-8142 would output. Pass `--submit-rpc` with a Nethermind or Reth RPC to `advance`.
+Each L2 block goes to L1 in [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) payload blobs, which `script/block_in_blobs.py` encodes, and `advance` binds their versioned hashes. The L1 program does not implement EIP-8142 yet, so the node derives the payload blobs itself, as `engine_newPayload`'s native variant does, and its mock proof attests to the public input a program with EIP-8142 would output. Pass `--submit-rpc` with a Nethermind, Reth or ethrex RPC to `advance`.
 
 `script/l2_follower.py` rebuilds the chain from L1 alone. For each `BlockAdded` event, it reads the header fields from the `advance` frame, fetches the payload blobs from the consensus layer's `/eth/v1/beacon/blobs/{slot}`, re-executes the block with execution-specs' `state_transition`, and checks the block hash the contract recorded:
 
