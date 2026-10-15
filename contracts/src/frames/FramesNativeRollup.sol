@@ -5,7 +5,7 @@ import {NativeRollup} from "../NativeRollup.sol";
 import {Frames} from "./Frames.sol";
 
 /// @notice The native rollup contract on a chain with EIP-8141 frame
-///         transactions but without EIP-8288, such as frames-devnet-0. The
+///         transactions but without EIP-8288, such as bogota-devnet-1. The
 ///         dependency is an earlier `DEFAULT` frame that calls the
 ///         `MockDependencyVerifier` with the dependency triple followed by a
 ///         proof. With EIP-8288 the frame becomes a dependency frame, and the
