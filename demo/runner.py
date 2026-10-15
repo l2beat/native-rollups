@@ -382,7 +382,12 @@ class Episode:
             {"scenario": "erctx", "name": "ERC-20 transfers", "config": {"throughput": 1, "max_wallets": 3, "random_amount": True}},
             {"scenario": "uniswap-swaps", "name": "Uniswap swaps", "config": {"throughput": 1, "max_wallets": 3}},
             {"scenario": "setcodetx", "name": "EIP-7702 delegations", "config": {"throughput": 1, "max_wallets": 2, "max_authorizations": 3, "max_delegators": 20}},
-            {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {"throughput": 1, "max_wallets": 3, "envelope": "base"}},
+            # Frame transactions in every EIP-8141 shape, and with an EIP-7906
+            # POST_TX assertion, in bogota-devnet-1's envelope.
+            {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {
+                "throughput": 1, "max_wallets": 3, "envelope": "keyed",
+                "shapes": "self-verify,transfer,batch,atomic,atomic-fail,expiry,post-tx",
+            }},
         ]
         l2_messages = [messages("withdrawals", L2_MESSENGER, "{randomaddr}", "0x", 2 * MESSAGE_FEE // 10**9)]
         l1 = [messages("deposits", c["rollup"], DEPOSIT_RECIPIENTS, "0x", 10_000_000)]

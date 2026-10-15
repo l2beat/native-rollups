@@ -35,7 +35,7 @@
   <template id="about">
     <h1>A native rollup, explained as it runs</h1>
     <p class="lead">A native rollup is an L2 whose blocks Ethereum checks with its own proof program, the one it will use
-      for its own blocks. This one runs on a local copy of bogota-devnet-0, and everything this explorer shows is rebuilt
+      for its own blocks. This one runs on a local copy of bogota-devnet-1, and everything this explorer shows is rebuilt
       from L1 alone.</p>
     <h2>What's real and what's mocked</h2>
     <p class="section-lead">Everything this demo cannot run yet is missing from L1, not from the rollup. Each mock stands
@@ -43,9 +43,9 @@
     <table class="mock-table">
       <thead><tr><th>Part</th><th>Status</th><th>What stands in</th><th>Goes away with</th></tr></thead>
       <tbody>
-        <tr><td>L1 chain with frame transactions and blobs</td><td><span class="badge real">Real</span></td><td>A local copy of bogota-devnet-0 with Nethermind and Reth</td><td></td></tr>
-        <tr><td>L2 execution</td><td><span class="badge real">Real</span></td><td>execution-specs' Amsterdam rules with EIP-8141, as on the L1</td><td></td></tr>
-        <tr><td>Stateless validation program</td><td><span class="badge real">Real</span></td><td>Run as ordinary code instead of inside a zkVM</td><td></td></tr>
+        <tr><td>L1 chain with frame transactions and blobs</td><td><span class="badge real">Real</span></td><td>A local copy of bogota-devnet-1 with Nethermind, Reth and ethrex</td><td></td></tr>
+        <tr><td>L2 execution</td><td><span class="badge real">Real</span></td><td>execution-specs' Bogota rules, frame transactions included, as on the L1</td><td></td></tr>
+        <tr><td>Stateless validation program</td><td><span class="badge real">Real</span></td><td>execution-specs' program, written for Amsterdam and ported to the Bogota rules, run as ordinary code instead of inside a zkVM</td><td></td></tr>
         <tr><td>Block data in blobs</td><td><span class="badge real">Real</span></td><td>EIP-8142's encoding, on real L1 blobs</td><td></td></tr>
         <tr><td>Rollup contract, L2 messenger, message proofs</td><td><span class="badge real">Real</span></td><td></td><td></td></tr>
         <tr><td>This explorer's L2 data</td><td><span class="badge real">Real</span></td><td>Rebuilt from L1 alone by an independent follower, which re-executes every block</td><td></td></tr>
@@ -57,7 +57,7 @@
         <tr><td>Preconfirmations</td><td><span class="badge real">Real</span></td><td>The sequencer builds a block every 4 seconds, empty if no transaction waits, signs its hash at once, and posts it once a fixed wait, standing in for proving time, has passed. A bond in the rollup contract backs every signature: anyone who shows a broken one has it burned</td><td></td></tr>
         <tr><td>Claims for others</td><td><span class="badge real">Real</span></td><td>Messages carry a fee for whoever claims them. A relayer on L2 and a claimer on L1 claim those whose recipients cannot, as anyone could, and recipients claim their own for free</td><td></td></tr>
         <tr><td>Example apps</td><td><span class="badge real">Real</span></td><td>An ERC-20 bridge and a ping pong, each a contract on both chains that only accepts the calls its messenger delivers from the other. The story bridges a demo token, and spamoor plays ping pong</td><td></td></tr>
-        <tr><td>Activity</td><td><span class="badge real">Real</span></td><td>Besides the story, spamoor sends ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, EIP-8141 frame transactions, ETH in both directions and pings</td><td></td></tr>
+        <tr><td>Activity</td><td><span class="badge real">Real</span></td><td>Besides the story, spamoor sends ERC-20 transfers, Uniswap swaps, EIP-7702 delegations, EIP-8141 frame transactions with EIP-7906 assertions among them, ETH in both directions and pings</td><td></td></tr>
       </tbody>
     </table>
     <p class="note">The prover key is the only trusted part. The follower checks it: it re-executes every block from L1

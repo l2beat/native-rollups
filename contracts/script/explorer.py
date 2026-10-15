@@ -422,7 +422,7 @@ def l2_transaction(raw: bytes, receipt, gas_used: int, messenger: str, base_fee:
     if isinstance(tx, FrameTransaction):
         sender = hx(tx.sender)
         out.update({
-            "from": sender, "nonce": int(tx.nonce_seq), "nonceKeys": [int(k) for k in tx.nonce_keys],
+            "from": sender, "nonce": int(tx.nonce_seq), "nonceKeys": [hex(k) for k in tx.nonce_keys],
             "signatures": [{"scheme": int(s.scheme), "signer": hx(s.signer) if len(s.signer) else sender} for s in tx.signatures],
             "frames": [],
         })
@@ -504,6 +504,7 @@ def l1_transaction(tx: dict, receipt: dict, block: dict) -> dict:
     }))
     if tx.get("frames"):
         frame_receipts = receipt.get("frameReceipts") or []
+        out["nonceKeys"] = tx.get("nonceKeys") or []
         out["frames"] = []
         for i, frame in enumerate(tx["frames"]):
             data = bytes.fromhex(frame["data"][2:])

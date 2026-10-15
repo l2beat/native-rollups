@@ -128,7 +128,9 @@ function labels() {
     "0x000064d678505ad48f8ccb093bc65613800e8282": ["Builder requests (EIP-8282)", ""],
     "0x0000f90827f1c53a10cb7a02335b175320002935": ["Block hash history (EIP-2935)", ""],
     "0x00000000219ab540356cbb839cbe05303d7705fa": ["Beacon deposit contract", ""],
-    "0x0000000000000000000000000000000000008141": ["Expiry verifier (EIP-8141)", ""],
+    "0x81413f0cf12e9b6a49b1d0439e081c577d57ffff": ["Expiry verifier (EIP-8141)", ""],
+    "0x8250968c12e01a19d6f667b9b2f3b3a4d0e51cb7": ["Nonce manager (EIP-8250)", ""],
+    "0x8272d9679689ea2f307140cdf9002d27dc00ffff": ["Recent roots (EIP-8272)", ""],
     [ENTRY_POINT]: ["Entry point (EIP-8141)", ""],
   };
   const add = (a, name, kind) => a && (l[a.toLowerCase()] = [name, kind]);
@@ -196,6 +198,17 @@ const kindText = (kind, n) => {
 };
 const contents = (kinds) =>
   ["deposit claim", "withdrawal", "transfer", "call", "deploy", "delegation", "frame transaction"].filter((k) => kinds[k]).map((k) => kindText(k, kinds[k])).join(", ") || '<span class="muted">empty</span>';
+// Forks by the first byte of a schema ID, `(fork_index << 8) | revision`.
+const FORKS = { 0x15: "Amsterdam", 0x16: "Bogota" };
+// A transaction's nonce. A frame transaction's is the sequence of the nonce
+// keys it names (EIP-8250), where key 0 is the account nonce.
+function nonceRow(tx) {
+  const keys = tx.nonceKeys || [];
+  if (!keys.length) return ["Nonce", tx.nonce, ""];
+  if (keys.length === 1 && BigInt(keys[0]) === 0n) return ["Nonce", tx.nonce, "Of nonce key 0, the account nonce (EIP-8250)."];
+  return ["Nonce", `${tx.nonce} <span class="muted">of keys ${keys.map((k) => hash(k)).join(", ")}</span>`,
+    "Of the keys it names, which the nonce manager keeps apart from the account nonce (EIP-8250)."];
+}
 const TX_TYPES = { 0: "legacy", 1: "EIP-2930 access list", 2: "EIP-1559", 4: "EIP-7702 set code", 6: "EIP-8141 frame transaction" };
 const L1_KINDS = { advance: "adds an L2 block", deposit: "message to L2", "withdrawal claim": "message claim" };
 // The function a message's call runs, as transaction lists show it: its
@@ -597,7 +610,7 @@ function about() {
     </tbody></table>
     <h2>Rebuild the chain yourself</h2>
     <p>With the follower this explorer runs on:</p>
-    <pre class="code">uv run --project &lt;execution-specs projects/zkevm + EIP-8141&gt; python contracts/script/l2_follower.py \\
+    <pre class="code">uv run --project &lt;execution-specs devnets/bogota/1 + projects/zkevm&gt; python contracts/script/l2_follower.py \\
     --l1-rpc &lt;L1 RPC&gt; --beacon &lt;beacon API&gt; --rollup ${c.rollup} \\
     --genesis demo/data/l2_state.json</pre>` : "");
 }
@@ -1021,7 +1034,7 @@ async function blockPage(route) {
       <div class="callout"><p>What the operator's node did before posting the block. None of it is on L1, and the follower's
         rebuild does not rely on it.</p></div>
       ${fields([
-        ["Stateless program", `<code>verify_stateless_new_payload</code> ${badge("real")}`, "Ethereum's stateless validation program from execution-specs, with EIP-8141, run as ordinary code instead of inside a zkVM. It gets the block and a witness of the state it reads, not the state itself."],
+        ["Stateless program", `<code>verify_stateless_new_payload</code> ${badge("real")}`, "Ethereum's stateless validation program from execution-specs, ported to the Bogota rules, run as ordinary code instead of inside a zkVM. It gets the block and a witness of the state it reads, not the state itself."],
         ["Result", `successful_validation = ${rec.l2.validation.successful}`, "The prover only signs blocks the program accepted."],
         ["Chain ID, schema ID", `${rec.l2.validation.chainId}, 0x${rec.l2.validation.schemaId.toString(16)}`, "Part of what the proof commits to, so a block cannot be proven under another chain's rules."],
         ["public_input_root", hash(rec.l2.publicInputRoot, true), "What the proof commits to. It is the data hash in the L1 transaction's proof frame."],
@@ -1144,7 +1157,9 @@ const ROLES = {
   "Builder requests (EIP-8282)": ["", "One of EIP-8282's two system contracts for builder deposits and exits, which Ethereum's rules require, so the L2 genesis has them too. Requests do nothing on L2."],
   "Block hash history (EIP-2935)": ["", "Stores recent block hashes. The system call before each block writes the parent's hash, as on L1."],
   "Beacon deposit contract": ["", "Ethereum's deposit contract for validators, in the L2 genesis for parity with L1. It does nothing on L2."],
-  "Expiry verifier (EIP-8141)": ["", "EIP-8141's contract that a frame can call to give a transaction an expiry. The L2 has it because its rules include EIP-8141."],
+  "Expiry verifier (EIP-8141)": ["", "EIP-8141's contract that a VERIFY frame calls to give a transaction an expiry."],
+  "Nonce manager (EIP-8250)": ["", "Holds the sequences of keyed nonces: a frame transaction that names nonce keys other than 0 advances them here instead of the account nonce. Only the protocol writes its storage, and calls to it revert."],
+  "Recent roots (EIP-8272)": ["", "Stores roots that applications write by slot, such as a privacy pool's tree root, which a frame transaction can check in a VERIFY frame before its account validates it."],
 };
 
 // An ERC-20's name, symbol, decimals and supply, and `holder`'s balance: on
@@ -1272,9 +1287,10 @@ async function addressPage(route) {
       ];
     } else if (a === (c.registry || "").toLowerCase()) {
       const entry = await call(a, "0x" + "0".repeat(64));
+      const schema = wordNumber(word(entry, 1));
       live = [
         ["Current key hash", hash(word(entry), true), "The EVM verification key hash for the current fork, which proofs must be under. Here a placeholder, the hash of \"frames-devnet mock EVM verification key\", since the proofs are mock signatures: with EIP-8357, a fork registers the hash of the zkVM key of Ethereum's validation program."],
-        ["Schema ID", `0x${wordNumber(word(entry, 1)).toString(16)}`, "The input schema the key's program expects: Amsterdam, revision 1."],
+        ["Schema ID", `0x${schema.toString(16)}`, `The input schema the key's program expects: ${FORKS[schema >> 8] || "an unknown fork"}, revision ${schema & 0xff}.`],
       ];
     } else if (a === (c.verifier || "").toLowerCase()) {
       live = [["Prover", addr(wordAddress(await call(a, SELECTORS.prover)), "l1"), "The only key whose signatures it accepts."]];
@@ -1362,7 +1378,10 @@ function mainSource(a) {
 
 // The system contracts of Ethereum's specification, by label: their source
 // is in ethereum/sys-asm.
-const SYSTEM_CONTRACT = /EIP-(7002|7251|8282|2935|4788|8141)|deposit contract/;
+const SYSTEM_CONTRACT = /EIP-(7002|7251|8282|2935|4788)|deposit contract/;
+// The frame transaction EIPs' contracts, by label: each EIP gives its code,
+// and genesis predeploys it.
+const EIP_PREDEPLOY = /^(Expiry verifier|Nonce manager|Recent roots) \(EIP-(\d+)\)$/;
 
 // Whether an address is a key's account, one that EIP-7702 delegated to a
 // contract's code, or a contract with or without a source the explorer has.
@@ -1378,7 +1397,7 @@ async function accountKind(a, chain) {
   if (code.startsWith("0xef0100") && code.length === 48) return "delegated";
   const created = chain === "l2" && (state.index.contracts || {})[a];
   const label = labels()[a];
-  return (created && created.source) || mainSource(a) || (label && SYSTEM_CONTRACT.test(label[0])) ? "verified" : "unverified";
+  return (created && created.source) || mainSource(a) || (label && (SYSTEM_CONTRACT.test(label[0]) || EIP_PREDEPLOY.test(label[0]))) ? "verified" : "unverified";
 }
 
 const KINDS = {
@@ -1457,6 +1476,11 @@ function sourceSection(a, name, bytecode, chain, verified) {
   } else if (bytecode && SYSTEM_CONTRACT.test(name)) {
     html += `<h2>Source</h2><p class="section-lead">A system contract from Ethereum's specification, whose source is in
       <a href="https://github.com/ethereum/sys-asm">ethereum/sys-asm</a>. The L2 genesis holds the bytecode EEST uses for L1.</p>`;
+  } else if (bytecode && EIP_PREDEPLOY.test(name)) {
+    const eip = name.match(EIP_PREDEPLOY)[2];
+    html += `<h2>Source</h2><p class="section-lead">A contract whose code
+      <a href="https://eips.ethereum.org/EIPS/eip-${eip}">EIP-${eip}</a> gives. The genesis of both chains predeploys it, the
+      L2's as EEST builds it for the same rules.</p>`;
   }
   if (bytecode) {
     html += `<details class="code"><summary><b>Runtime bytecode</b> <span class="muted">${num((bytecode.length - 2) / 2)} bytes, read from ${chain === "l1" ? "the L1 node" : "the follower's L2 state"}</span></summary>
@@ -1661,6 +1685,7 @@ function frameExplain(tx, f, i, layer) {
       VERIFY: "A VERIFY frame: read-only, it must not revert, and it approves what its flags allow.",
       SENDER: "Calls the target as the sender, which is the caller the target sees.",
       DEFAULT: "Calls the target from EIP-8141's entry point address, not as the sender.",
+      POST_TX: "A POST_TX frame (EIP-7906): read-only, it runs after the others and checks the transaction's outcome. If it fails, everything after the validation is undone, and the transaction still pays.",
     }[f.mode] + (noCode && (!f.data || f.data === "0x") ? " The target has no code, so the frame only moves its value." : ""),
     badges: known ? [badge("real")] : [],
     extra: known ? argTable(f.call.args.params || f.call.args, fn === "advance" ? ADVANCE_NOTES : {}, ctx, callViews(f.call, f.status === 1))
@@ -2003,7 +2028,7 @@ async function l2TxPage(route) {
     ${more([
       ...fees.details,
       ["Transaction type", `0x0${tx.type}, ${TX_TYPES[tx.type] || "unknown"}`, frame ? "EIP-8141: a list of frames, each a call with its own mode and gas." : ""],
-      ["Nonce", tx.nonce, ""],
+      nonceRow(tx),
       ["Position in block", position >= 0 ? position : "", ""],
       ["Size", `${num(tx.bytes)} bytes`, "Its share of the block's blob."],
     ])}
@@ -2084,7 +2109,7 @@ async function l1TxPage(route) {
   const overview = `${fields([
       ["Transaction hash", hash(tx.hash, true), "Read from the L1 node."],
       ["Status", tx.status ? `<span class="check">succeeded</span>` : `<span class="bad">failed</span>`, ""],
-      ["Block", `${num(tx.block)} <span class="muted">built by ${esc(tx.builder)}</span>`, frame && tx.blobVersionedHashes.length ? "Only Nethermind and Reth accept blob-carrying frame transactions on this devnet." : ""],
+      ["Block", `${num(tx.block)} <span class="muted">built by ${esc(tx.builder)}</span>`, ""],
       ["Timestamp", `${ago(tx.timestamp)} <span class="muted">(${new Date(tx.timestamp * 1000).toLocaleString()})</span>`, ""],
       ["Transaction action", `<span class="prose">${summary}</span>`, ""],
       ...(tokens ? [tokens] : []),
@@ -2101,7 +2126,7 @@ async function l1TxPage(route) {
       ...fees.details,
       ...(tx.blobVersionedHashes.length ? [["Blob", `${hash(tx.blobVersionedHashes[0], true)}${tx.l2Block ? `<br><a href="#/blob/${tx.l2Block}">view it decoded and raw →</a>` : ""}`, "The L2 block's data, in EIP-8142's encoding."]] : []),
       ["Transaction type", frame ? "0x06, EIP-8141 frame transaction" : `0x0${tx.type}, ${TX_TYPES[tx.type] || "unknown"}`, ""],
-      ["Nonce", tx.nonce, ""],
+      nonceRow(tx),
     ])}
     ${!frame && tx.data && tx.data !== "0x" ? `<h2>Input data</h2>${inputData(tx.data, tx.call, { chain: "l1", fn: tx.call && tx.call.function, ok: tx.status === 1 })}${codeFor(tx.to, tx.call)}` : ""}`;
   return `
