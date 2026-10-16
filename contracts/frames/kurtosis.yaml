@@ -1,23 +1,27 @@
-# A local network with the bogota-devnet-0 settings: Gloas from genesis and
-# the EIP-8141 execution fork at epoch 1, plus the EIP-8357 registry. It runs
-# the two bogota-devnet-0 clients whose pools take blob-carrying frame
-# transactions, in the EIP-7594 network form: Nethermind and Reth. Their images
-# keep the devnet's earlier frames-devnet-0 tag. Run with:
-#   kurtosis run github.com/ethpandaops/ethereum-package@6dd3f2613d1f9d1a9274864083c692726146c9db \
-#       --enclave frames --args-file frames/kurtosis.yaml
+# A local network with the bogota-devnet-1 settings: Gloas from genesis, the
+# Bogota execution fork (EIP-8141 frame transactions with EIPs 8250, 8272 and
+# 7906) at epoch 1, without EIP-8253, plus the EIP-8357 registry. It runs the
+# bogota-devnet-1 clients whose pools take blob-carrying frame transactions,
+# in the EIP-7594 network form: Nethermind, Reth and ethrex. Run with:
+#   kurtosis run github.com/ethpandaops/ethereum-package@f191032be3a7ba069a6bb049ea5d5b9c3b1357e8 \
+#       --enclave bogota --args-file frames/kurtosis.yaml
 participants:
   - el_type: nethermind
-    el_image: ethpandaops/nethermind:frames-devnet-0
+    el_image: ethpandaops/nethermind:bogota-devnet-1
     cl_type: lighthouse
-    cl_image: ethpandaops/lighthouse:unstable
+    cl_image: ethpandaops/lighthouse:unstable-8e0aeef
   - el_type: reth
-    el_image: ethpandaops/reth:frames-devnet-0
+    el_image: ethpandaops/reth:bogota-devnet-1
     # Proofs at past blocks, for deposit claims, which prove the message
     # tree at the L1 block an L2 block anchors to, up to 256 blocks back.
     el_extra_params:
       - --rpc.eth-proof-window=256
     cl_type: lighthouse
-    cl_image: ethpandaops/lighthouse:unstable
+    cl_image: ethpandaops/lighthouse:unstable-8e0aeef
+  - el_type: ethrex
+    el_image: ethpandaops/ethrex:bogota-devnet-1
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:unstable-8e0aeef
 
 network_params:
   gloas_fork_epoch: 0
@@ -30,19 +34,30 @@ network_params:
   # clients do not implement EIP-8357: slot 0, the current hash, is
   # keccak256("frames-devnet mock EVM verification key"), a placeholder for
   # the mock proofs, and its schema ID slot,
-  # keccak256(hash || uint256(1)), holds 0x1501, Amsterdam revision 1.
+  # keccak256(hash || uint256(1)), holds 0x1601, Bogota revision 1.
   additional_preloaded_contracts:
     "0x00005e9c1447c1a05a642ec9eb76d9c125468357":
       balance: "0ETH"
-      nonce: 1
+      # A hex string, as genesis files write it: ethrex refuses a number.
+      nonce: "0x1"
       code: "0x3460a1573373fffffffffffffffffffffffffffffffffffffffe14604a576020360360a1575f3580602c57545b801560a1575f52600160205260405f2054801560a15760205260405ff35b602036146085576040360360a1575f35801560a157805f52600160205260405f20805460a157602035801560a1578060101c60a15790555f55005b5f35801560a157805f52600160205260405f20541560a1575f55005b5f5ffd"
       storage:
         "0x0000000000000000000000000000000000000000000000000000000000000000": "0xf0cc70b85867f9592b138c7425d60e0bed9b7034cac36a485dd8a06ba68c88f1"
-        "0x1c14500bf14303a833f4f8a6d6fc3bb934a967267a6c80a69b78c96f3cd50f91": "0x0000000000000000000000000000000000000000000000000000000000001501"
+        "0x1c14500bf14303a833f4f8a6d6fc3bb934a967267a6c80a69b78c96f3cd50f91": "0x0000000000000000000000000000000000000000000000000000000000001601"
 
-# Fixed host ports, so that a container keeps its address when it restarts.
+# bogota-devnet-1 leaves out EIP-8253, whose prestate the genesis generator
+# deploys unless told not to.
+ethereum_genesis_generator_params:
+  extra_env:
+    DEPLOY_EIP8253_PRESTATE: "false"
+
+# Fixed host ports, so that a container keeps its address when it restarts,
+# below Linux's ephemeral range (32768 and up), where Docker picks the other
+# containers' host ports and could take one first.
 port_publisher:
   el:
     enabled: true
+    public_port_start: 30100
   cl:
     enabled: true
+    public_port_start: 31100

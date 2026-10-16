@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 /// @notice Stand-in for EIP-8288 on a chain with EIP-8141 but without it,
-///         such as frames-devnet-0. A `DEFAULT` frame calls this contract
+///         such as bogota-devnet-1. A `DEFAULT` frame calls this contract
 ///         with the EIP-8288 frame data followed by a proof:
 ///         `scheme || data_hash || verification_key_hash || proof`. The call
 ///         succeeds only if the proof is valid, and a rollup requires the

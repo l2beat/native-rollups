@@ -1,6 +1,6 @@
 """
 Operator for a native rollup on an EIP-8141 chain without EIP-8288, such as
-bogota-devnet-0, with the preconfirmations customization (see
+bogota-devnet-1, with the preconfirmations customization (see
 FramesSequencedRollup).
 
 `preconfirm` anchors the next L2 block to an L1 block a few slots behind the
@@ -17,9 +17,9 @@ in one frame transaction:
 
 The transaction carries the block's EIP-8142 payload blobs, so it is sent in
 the EIP-7594 network form with the blobs, their commitments and their cell
-proofs. `--submit-rpc`, which can repeat, selects clients that accept blob-carrying frame
-transactions: on bogota-devnet-0, Nethermind and Reth do, while geth and
-ethrex do not.
+proofs. `--submit-rpc`, which can repeat, selects clients that accept
+blob-carrying frame transactions: on bogota-devnet-1, Nethermind, Reth and
+ethrex do, while geth does not.
 
 `claim-l2-message` claims an L2 to L1 message, which an L2 account sent with
 `L2Messenger.sendMessage`, with a proof from the L2 node's `eth_getProof`
@@ -28,13 +28,14 @@ against the latest L2 block the rollup has.
 `check-vectors` checks the Python root computation against the
 consensus-specs vectors that the Solidity tests use.
 
-Run with the execution-specs `devnets/frames/0` environment, which provides
-the frame transaction types, and Foundry's `cast` on the PATH:
+Run with the execution-specs environment of the L2 node, `devnets/bogota/1`
+with the stateless guest, which provides the frame transaction types, and
+Foundry's `cast` on the PATH:
 
-    uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py \
+    uv run --project <execution-specs> python script/frames_operator.py \
         preconfirm --rpc <url> --rollup <address> --verifier <address> \
         --sequencer-key <key> --prover-key <key> --l2-rpc <url>
-    uv run --project <execution-specs@devnets/frames/0> python script/frames_operator.py \
+    uv run --project <execution-specs> python script/frames_operator.py \
         advance --rpc <url> --rollup <address> --verifier <address> --operator-key <key> --l2-rpc <url>
 """
 
@@ -51,8 +52,9 @@ import urllib.request
 from ethereum_types.bytes import Bytes0, Bytes20
 from ethereum_types.numeric import U64, U256, Uint
 
-from ethereum.forks.amsterdam.transactions import encode_transaction
-from ethereum.forks.amsterdam.transactions.frame_transaction import (
+from ethereum.forks.bogota.transactions import encode_transaction
+from ethereum.forks.bogota.transactions.frame_transaction import (
+    LEGACY_NONCE_KEYS,
     Frame,
     FrameFlag,
     FrameMode,
@@ -215,9 +217,10 @@ def preconfirm(args: argparse.Namespace) -> None:
         record(args.record, entry)
 
 
-def send_post(args: argparse.Namespace, bundle: dict, nonce: int) -> str:
+def send_post(args: argparse.Namespace, bundle: dict, nonce: int, ahead: bool = False) -> tuple[str, bytes]:
     """Sends the frame transaction that posts a preconfirmed block, with
-    `nonce`, and returns its hash."""
+    `nonce`, and returns its hash and its network form. `ahead` says that
+    earlier posts are pending, which some clients refuse it for."""
     rpc = args.rpc
     operator = cast("wallet", "address", "--private-key", args.operator_key)
     p = bundle["params"]
@@ -244,7 +247,8 @@ def send_post(args: argparse.Namespace, bundle: dict, nonce: int) -> str:
     tip = 10**9 + random.randrange(10**6)
     tx = FrameTransaction(
         chain_id=U64(int(cast("chain-id", "--rpc-url", rpc))),
-        nonce=U256(nonce),
+        nonce_keys=LEGACY_NONCE_KEYS,
+        nonce_seq=U64(nonce),
         sender=Bytes20(bytes.fromhex(operator[2:])),
         frames=(
             Frame(
@@ -311,19 +315,19 @@ def send_post(args: argparse.Namespace, bundle: dict, nonce: int) -> str:
     )
     for m in bundle["l2Messages"]:
         print(f"sends L2 message {m['index']}: {m['value']} wei from {m['sender']} to {m['to']} on L1", flush=True)
-    return submit(args, wrapped)
+    return submit(args, wrapped, quiet=ahead), wrapped
 
 
-def submit(args: argparse.Namespace, raw: bytes) -> str:
+def submit(args: argparse.Namespace, raw: bytes, quiet: bool = False) -> str:
     """Sends a signed transaction to every client given, any of which may
     include it, so that it does not wait for a block one client builds if the
-    clients are not peered."""
+    clients are not peered. `quiet` leaves out the refusals."""
     sent = []
     for url in args.submit_rpc or [args.rpc]:
         try:
             sent.append(send_raw_transaction(url, raw))
         except SystemExit as e:
-            if "already known" not in str(e):  # unless a peer passed it on
+            if "already known" not in str(e) and not quiet:  # unless a peer passed it on
                 print(f"{url} refused it: {e}", flush=True)
     if not sent:
         raise SystemExit("no client took the transaction")
@@ -374,7 +378,7 @@ def advance(args: argparse.Namespace) -> None:
         print("no preconfirmed block to post")
         return
     operator = cast("wallet", "address", "--private-key", args.operator_key)
-    tx_hash = send_post(args, bundles[0], int(cast("nonce", "--rpc-url", args.rpc, operator)))
+    tx_hash, _ = send_post(args, bundles[0], int(cast("nonce", "--rpc-url", args.rpc, operator)))
     entry = post_record(args, bundles[0], tx_hash, wait_for_receipt(args.rpc, tx_hash))
     if entry is None:
         raise SystemExit("advance failed")
@@ -415,16 +419,18 @@ def sequence(args: argparse.Namespace) -> None:
 
     def post() -> None:
         operator = cast("wallet", "address", "--private-key", args.operator_key)
-        in_flight = {}  # L2 block number -> (bundle, transaction hash)
+        in_flight = {}  # L2 block number -> (bundle, transaction hash, network form, nonce)
+        offered = set()  # the L2 blocks whose posts were offered again
         while True:
             try:
-                for number, (bundle, tx_hash) in sorted(in_flight.items()):
+                for number, (bundle, tx_hash, _, _) in sorted(in_flight.items()):
                     receipt = json.loads(cast("rpc", "--rpc-url", args.rpc, "eth_getTransactionReceipt", tx_hash))
                     if receipt:
                         entry = post_record(args, bundle, tx_hash, receipt)
                         if entry:
                             emit(entry)
                         del in_flight[number]
+                        offered.discard(number)
                 # Posts not yet included, this process's or not, as the
                 # nonces the submitting client has pending. With none, any
                 # earlier post landed or was dropped, so the waiting blocks
@@ -437,9 +443,21 @@ def sequence(args: argparse.Namespace) -> None:
                 )
                 if pending == confirmed:
                     in_flight.clear()
+                    offered.clear()
                 elif not in_flight:
                     time.sleep(2)
                     continue
+                # Clients that keep one pending frame transaction per sender,
+                # as EIP-8141's mempool rules ask, refuse a post while an
+                # earlier one is pending, so each is offered again once it is
+                # the next to land.
+                for number, (_, _, raw, nonce) in in_flight.items():
+                    if nonce == confirmed and number not in offered:
+                        offered.add(number)
+                        try:
+                            submit(args, raw, quiet=True)
+                        except SystemExit:
+                            pass
                 head = call(args.rpc, args.rollup, "blockHash()(bytes32)")
                 after = max(in_flight, default=0)
                 ready = [
@@ -447,7 +465,8 @@ def sequence(args: argparse.Namespace) -> None:
                     if b["number"] > after and time.time() - b["preconfirmation"]["time"] >= args.proving_time
                 ][: MAX_POSTS - len(in_flight)]
                 for b in ready:
-                    in_flight[b["number"]] = (b, send_post(args, b, pending))
+                    tx_hash, raw = send_post(args, b, pending, ahead=pending > confirmed)
+                    in_flight[b["number"]] = (b, tx_hash, raw, pending)
                     pending += 1
             except BaseException:
                 traceback.print_exc()

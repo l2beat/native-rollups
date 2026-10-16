@@ -27,7 +27,7 @@ which answers each with a pong. Those recipients cannot claim, so relayers
 do: the L2 node's relayer account on L2, and a claimer account on L1.
 
 Only uses the standard library: it runs the contract scripts in their uv
-environments, as the README of `contracts/frames/` describes.
+environment, as the README of `contracts/frames/` describes.
 
     python3 demo/runner.py
 """
@@ -199,7 +199,7 @@ class Episode:
         nonce = int(cast("nonce", "--rpc-url", a.rpc, deployer))
         rollup = cast("compute-address", "--nonce", str(nonce + 1), deployer).split()[-1]
         genesis = json.loads(run([
-            "uv", "run", "--project", a.zkevm_specs, "python", "script/l2_node.py",
+            "uv", "run", "--project", a.specs, "python", "script/l2_node.py",
             "genesis", "--state", self.state, "--l1-rollup", rollup,
         ]).strip().splitlines()[-1])
         out = subprocess.run(
@@ -313,7 +313,7 @@ class Episode:
         a = self.args
         log = open(os.path.join(DATA, "l2_node.log"), "a")
         self.node = subprocess.Popen(
-            ["uv", "run", "--project", a.zkevm_specs, "python", "script/l2_node.py", "serve",
+            ["uv", "run", "--project", a.specs, "python", "script/l2_node.py", "serve",
              "--state", self.state, "--l1-rpc", a.rpc, "--rollup", self.contracts["rollup"], "--port", str(a.l2_port),
              "--beacon", a.beacon],
             cwd=CONTRACTS, stdout=log, stderr=subprocess.STDOUT,
@@ -337,7 +337,7 @@ class Episode:
         # The follower resumes from its last snapshot in the explorer's data.
         log = open(os.path.join(DATA, "follower.log"), "a")
         self.follower = subprocess.Popen(
-            ["uv", "run", "--project", a.zkevm_specs, "python", "script/l2_follower.py",
+            ["uv", "run", "--project", a.specs, "python", "script/l2_follower.py",
              "--l1-rpc", a.rpc, "--beacon", a.beacon, "--rollup", self.contracts["rollup"],
              "--genesis", self.state, "--watch", "--explorer", EXPLORER, "--abis", os.path.join(CONTRACTS, "out"),
              *([os.path.join(os.path.dirname(a.spamoor), "..", "scenarios")] if a.spamoor else []),
@@ -382,7 +382,12 @@ class Episode:
             {"scenario": "erctx", "name": "ERC-20 transfers", "config": {"throughput": 1, "max_wallets": 3, "random_amount": True}},
             {"scenario": "uniswap-swaps", "name": "Uniswap swaps", "config": {"throughput": 1, "max_wallets": 3}},
             {"scenario": "setcodetx", "name": "EIP-7702 delegations", "config": {"throughput": 1, "max_wallets": 2, "max_authorizations": 3, "max_delegators": 20}},
-            {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {"throughput": 1, "max_wallets": 3, "envelope": "base"}},
+            # Frame transactions in every EIP-8141 shape, and with an EIP-7906
+            # POST_TX assertion, in bogota-devnet-1's envelope.
+            {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {
+                "throughput": 1, "max_wallets": 3, "envelope": "keyed",
+                "shapes": "self-verify,transfer,batch,atomic,atomic-fail,expiry,post-tx",
+            }},
         ]
         l2_messages = [messages("withdrawals", L2_MESSENGER, "{randomaddr}", "0x", 2 * MESSAGE_FEE // 10**9)]
         l1 = [messages("deposits", c["rollup"], DEPOSIT_RECIPIENTS, "0x", 10_000_000)]
@@ -421,7 +426,7 @@ class Episode:
         filed = self.session.get("filed", size)
         threading.Thread(target=self.file_blocks, args=(log, filed if filed <= size else 0), daemon=True).start()
         self.operator = subprocess.Popen(
-            ["uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "sequence",
+            ["uv", "run", "--project", a.specs, "python", "script/frames_operator.py", "sequence",
              "--rpc", a.rpc, *[x for url in a.submit_rpc for x in ("--submit-rpc", url)], "--rollup", self.contracts["rollup"],
              "--verifier", self.contracts["verifier"], "--sequencer-key", OPERATOR_KEY, "--prover-key", self.prover_key,
              "--l2-rpc", self.l2_rpc, "--block-time", str(a.block_time), "--proving-time", str(a.proving_time), "--log", log],
@@ -629,7 +634,7 @@ class Episode:
             self.claimed.add(index)
             return
         run([
-            "uv", "run", "--project", a.frames_specs, "python", "script/frames_operator.py", "claim-l2-message",
+            "uv", "run", "--project", a.specs, "python", "script/frames_operator.py", "claim-l2-message",
             "--rpc", a.rpc, *[x for url in a.submit_rpc for x in ("--submit-rpc", url)], "--rollup", self.contracts["rollup"],
             "--key", key, "--index", str(index), "--l2-rpc", self.l2_rpc, "--record", self.record + f".{claimant}",
         ])
@@ -646,7 +651,7 @@ class Episode:
         messages to other addresses."""
         a = self.args
         out = run([
-            "uv", "run", "--project", a.zkevm_specs, "python", "script/l2_claims.py",
+            "uv", "run", "--project", a.specs, "python", "script/l2_claims.py",
             "--l1-rpc", a.rpc, "--rollup", self.contracts["rollup"], "--l2-rpc", self.l2_rpc, "--relayer", RELAYER_KEY,
             # Spamoor claims its first deposit itself, before it starts sending.
             *[x for key in [*USER_KEYS.values(), APPS_KEY, *([] if self.spamoor else [SPAMOOR_L2_KEY])] for x in ("--wallet", key)],
@@ -781,10 +786,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rpc", help="an L1 RPC for reads, by default the devnet's Reth")
     parser.add_argument("--submit-rpc", nargs="+",
-                        help="the L1 RPCs every transaction is sent to, by default the devnet's Nethermind and Reth")
+                        help="the L1 RPCs every transaction is sent to, by default the devnet's Nethermind, Reth and ethrex")
     parser.add_argument("--beacon", help="a beacon API that serves blobs, by default the devnet's first Lighthouse")
-    parser.add_argument("--zkevm-specs", default=os.path.expanduser("~/work/execution-specs-zkevm-frames"))
-    parser.add_argument("--frames-specs", default=os.path.expanduser("~/work/execution-specs-frames"))
+    parser.add_argument("--specs", default=os.path.expanduser("~/work/execution-specs-zkevm-bogota"),
+                        help="the execution-specs environment of the contract scripts")
     parser.add_argument("--interval", type=float, default=12, help="seconds between steps of the story")
     parser.add_argument("--block-time", type=int, default=4, help="seconds between L2 blocks")
     parser.add_argument("--proving-time", type=int, default=20,
@@ -797,7 +802,7 @@ def main() -> None:
     # Reads go to Reth: Nethermind encodes frame transactions differently
     # from geth and Reth, with other field names and plain numbers.
     args.rpc = args.rpc or devnet_url("el-2-reth", 8545)
-    args.submit_rpc = args.submit_rpc or [devnet_url("el-1-nethermind", 8545), devnet_url("el-2-reth", 8545)]
+    args.submit_rpc = args.submit_rpc or [devnet_url(name, 8545) for name in ("el-1-nethermind", "el-2-reth", "el-3-ethrex")]
     args.beacon = args.beacon or devnet_url("cl-1-lighthouse", 4000)
     if not args.rpc or not all(args.submit_rpc) or not args.beacon:
         sys.exit("the devnet is not running: start it, or pass --rpc, --submit-rpc and --beacon")

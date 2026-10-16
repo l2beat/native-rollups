@@ -4,9 +4,9 @@ A minimal L2 node and mock prover for the native rollup.
 It runs the L2 chain with execution-specs under the L1 stateless validation
 program's rules, holds the chain's state in memory, and serves a JSON-RPC
 with a mempool. A native rollup runs its L1's rules, and the L1 here has
-EIP-8141 frame transactions, so the rules come from execution-specs
-`projects/zkevm` merged with `eips/bogota/eip-8141` (Amsterdam with
-EIP-8141).
+bogota-devnet-1's rules, so the rules come from execution-specs
+`devnets/bogota/1` with the stateless guest of `projects/zkevm` ported to its
+Bogota fork.
 
 The genesis holds the system contracts the Specification requires, the
 `L2Messenger` predeploy with the pre-minted gas token supply, and the frame
@@ -82,24 +82,24 @@ from ethereum.exceptions import EthereumException
 from ethereum.merkle_patricia_trie import EMPTY_TRIE_ROOT, copy_trie, root, trie_get, trie_set
 from ethereum.state import Account, Address
 from ethereum.state_mpt import State, apply_changes_to_state, set_account, set_storage, store_code
-from ethereum.forks.amsterdam import fork, vm
-from ethereum.forks.amsterdam.block_access_lists import BlockAccessListBuilder
-from ethereum.forks.amsterdam.blocks import Block, FrameTransactionReceipt, Header, decode_receipt
-from ethereum.forks.amsterdam.execution_engine.requests import decode_execution_requests
-from ethereum.forks.amsterdam.requests import compute_requests_hash
-from ethereum.forks.amsterdam.state_tracker import BlockState, TransactionState, extract_block_diff, get_account, incorporate_tx_into_block
-from ethereum.forks.amsterdam.state_tracker import set_account as set_tracked_account
-from ethereum.forks.amsterdam.stateless import STATELESS_INPUT_SCHEMA_ID
-from ethereum.forks.amsterdam.stateless_guest import deserialize_stateless_input, run_stateless_guest
-from ethereum.forks.amsterdam.stateless_host import (
+from ethereum.forks.bogota import fork, vm
+from ethereum.forks.bogota.block_access_lists import BlockAccessListBuilder
+from ethereum.forks.bogota.blocks import Block, FrameTransactionReceipt, Header, decode_receipt
+from ethereum.forks.bogota.execution_engine.requests import decode_execution_requests
+from ethereum.forks.bogota.requests import compute_requests_hash
+from ethereum.forks.bogota.state_tracker import BlockState, TransactionState, extract_block_diff, get_account, incorporate_tx_into_block
+from ethereum.forks.bogota.state_tracker import set_account as set_tracked_account
+from ethereum.forks.bogota.stateless import STATELESS_INPUT_SCHEMA_ID
+from ethereum.forks.bogota.stateless_guest import deserialize_stateless_input, run_stateless_guest
+from ethereum.forks.bogota.stateless_host import (
     build_stateless_input,
     deserialize_stateless_output,
     serialize_stateless_input,
 )
-from ethereum.forks.amsterdam import stateless_host_exec_witness as host_witness
-from ethereum.forks.amsterdam.incremental_mpt import IncrementalMPT, MutableBranchNode, MutableExtensionNode, Witness, mpt_get, mpt_root
-from ethereum.forks.amsterdam.stateless import ExecutionWitness
-from ethereum.forks.amsterdam.transactions import (
+from ethereum.forks.bogota import stateless_host_exec_witness as host_witness
+from ethereum.forks.bogota.incremental_mpt import IncrementalMPT, MutableBranchNode, MutableExtensionNode, Witness, mpt_get, mpt_root
+from ethereum.forks.bogota.stateless import ExecutionWitness
+from ethereum.forks.bogota.transactions import (
     AccessListTransaction,
     BlobTransaction,
     FeeMarketTransaction,
@@ -109,10 +109,15 @@ from ethereum.forks.amsterdam.transactions import (
     recover_sender,
     validate_transaction,
 )
-from ethereum.forks.amsterdam.transactions.frame_transaction import FrameMode, FrameTransaction, validate_frame_transaction
-from ethereum.forks.amsterdam.utils.address import compute_contract_address
-from ethereum.forks.amsterdam.vm.gas import GasCosts, allocate_evm_gas
-from ethereum.forks.amsterdam.vm.interpreter import process_top_level
+from ethereum.forks.bogota.transactions.frame_transaction import (
+    LEGACY_NONCE_KEYS,
+    FrameMode,
+    FrameTransaction,
+    validate_frame_transaction,
+)
+from ethereum.forks.bogota.utils.address import compute_contract_address
+from ethereum.forks.bogota.vm.gas import GasCosts, allocate_evm_gas
+from ethereum.forks.bogota.vm.interpreter import process_top_level
 from ethereum.utils.ssz import _to_view
 
 import block_in_blobs as bib
@@ -215,6 +220,13 @@ def block_transaction(raw: bytes):
 
 def sender_of(tx) -> Address:
     return tx.sender if isinstance(tx, FrameTransaction) else recover_sender(tx)
+
+
+def tx_nonce(tx) -> int:
+    """A transaction's nonce. For a frame transaction, the sequence its nonce
+    keys must hold: the pool only takes the legacy key, the sender's account
+    nonce."""
+    return int(tx.nonce_seq) if isinstance(tx, FrameTransaction) else int(tx.nonce)
 
 
 # ---------------------------------------------------------------------------
@@ -852,10 +864,11 @@ class Node:
 
         # As `build_execution_witness`: record the pre-state nodes the block
         # reads or writes, then write.
-        host_witness._capture_pre_state_storage_nodes(storage, host_witness._collect_storage_accesses(block_state))
+        storage_accesses = host_witness._collect_storage_accesses(block_state)
+        host_witness._capture_pre_state_storage_nodes(storage, storage_accesses)
         host_witness._apply_storage_writes(storage, block_state.storage_writes)
         dirty = host_witness._get_all_dirty_accounts(block_state)
-        host_witness._capture_pre_state_account_nodes(accounts, block_state.account_reads, dirty)
+        host_witness._capture_pre_state_account_nodes(accounts, block_state.account_reads | set(storage_accesses), dirty)
         host_witness._apply_account_writes(accounts, storage, block_state, dirty)
         state_root = mpt_root(accounts)
         nodes = host_witness._collect_accessed_nodes(accounts, storage)
@@ -1037,7 +1050,7 @@ class Node:
         tx = entry["tx"]
         out = {
             "hash": hx(entry["hash"]), "type": hex(entry["raw"][0] if entry["raw"][0] < 0xC0 else 0),
-            "nonce": hex(int(tx.nonce)), "from": hx(entry["from"]),
+            "nonce": hex(tx_nonce(tx)), "from": hx(entry["from"]),
             "blockHash": hx(block["hash"]) if block else None,
             "blockNumber": hex(int(block["header"].number)) if block else None,
             "transactionIndex": hex(index) if block else None,
@@ -1216,13 +1229,17 @@ class Node:
             raise RpcError(-32000, "wrong chain ID")
         if isinstance(tx, (BlobTransaction, FrameTransaction)) and tx.blob_versioned_hashes:
             raise RpcError(-32000, "L2 blocks carry no blob transactions")
-        if int(tx.nonce) < self.nonce(sender):
+        # Keyed nonces are valid in blocks, but the pool orders transactions
+        # by the sender's account nonce only.
+        if isinstance(tx, FrameTransaction) and tx.nonce_keys != LEGACY_NONCE_KEYS:
+            raise RpcError(-32000, "the pool takes no keyed nonces (EIP-8250)")
+        if tx_nonce(tx) < self.nonce(sender):
             raise RpcError(-32000, "nonce too low")
         # One pending claim per message, which succeeds, so a pending claim
         # cannot keep a message from being claimed.
         claimed = tuple(message[6] for message, _ in claims(tx))
         for index in claimed:
-            if any(index in t.claims for t in self.pool.values() if (t.sender, t.nonce) != (sender, int(tx.nonce))):
+            if any(index in t.claims for t in self.pool.values() if (t.sender, t.nonce) != (sender, tx_nonce(tx))):
                 raise RpcError(-32000, f"a claim of L1 message {index} is already pending")
         # The envelope names a frame transaction's sender, and its VERIFY
         # frames check the signatures, so only running it shows who sent it.
@@ -1231,10 +1248,10 @@ class Node:
             self.check_frame_transaction(tx, sender)
         # A transaction replaces the sender's one with the same nonce.
         for h, t in list(self.pool.items()):
-            if t.sender == sender and t.nonce == int(tx.nonce):
+            if t.sender == sender and t.nonce == tx_nonce(tx):
                 del self.pool[h]
         self.arrivals += 1
-        self.pool[keccak256(raw)] = PoolTransaction(raw, tx, sender, int(tx.nonce), self.arrivals, claimed)
+        self.pool[keccak256(raw)] = PoolTransaction(raw, tx, sender, tx_nonce(tx), self.arrivals, claimed)
         return hx(keccak256(raw))
 
     def check_unfunded(self, tx: FrameTransaction, sender: Address) -> None:
@@ -1271,7 +1288,7 @@ class Node:
         # own nonce.
         state = TransactionState(parent=block_state)
         account = get_account(state, sender)
-        set_tracked_account(state, sender, Account(nonce=Uint(tx.nonce), balance=account.balance, code_hash=account.code_hash))
+        set_tracked_account(state, sender, Account(nonce=Uint(tx_nonce(tx)), balance=account.balance, code_hash=account.code_hash))
         incorporate_tx_into_block(state, env.block_access_list_builder)
         output = vm.BlockOutput()
         try:

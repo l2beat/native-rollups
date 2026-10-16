@@ -1,6 +1,6 @@
 # Native rollup demo
 
-An annotated explorer for the native rollup of `contracts/`, running on a local copy of bogota-devnet-0. It lists every L2 block and the rollup's L1 transactions, breaks each transaction down frame by frame with decoded calls and events, links deposits and withdrawals across both chains, and notes on every field what it is, where it comes from, and whether it is real or mocked.
+An annotated explorer for the native rollup of `contracts/`, running on a local copy of bogota-devnet-1. It lists every L2 block and the rollup's L1 transactions, breaks each transaction down frame by frame with decoded calls and events, links deposits and withdrawals across both chains, and notes on every field what it is, where it comes from, and whether it is real or mocked.
 
 Its L2 data comes from the follower, which rebuilds every block from L1 alone, and it reads live chain state directly from the L1 and beacon nodes.
 
@@ -18,7 +18,7 @@ python3 demo/runner.py
 python3 demo/server.py
 ```
 
-and open http://127.0.0.1:8088. Both find the devnet's Nethermind, Reth and beacon node through Docker, or take them with `--rpc`, `--submit-rpc` and `--beacon`. The runner takes the paths of the two execution-specs environments with `--zkevm-specs` and `--frames-specs`. The server also serves the book at `/book/`, as `mdbook build` builds it from the checkout, so that the explorer's links match the code it runs.
+and open http://127.0.0.1:8088. Both find the devnet's Nethermind, Reth, ethrex and beacon node through Docker, or take them with `--rpc`, `--submit-rpc` and `--beacon`. The runner takes the path of the execution-specs environment with `--specs`. The server also serves the book at `/book/`, as `mdbook build` builds it from the checkout, so that the explorer's links match the code it runs.
 
 ## Running unattended
 
