@@ -51,6 +51,8 @@ BLOCK_ADDED = keccak256(b"BlockAdded(uint64,bytes32)")
 # follower starts from it, past any L1 blocks a reset of the machine running
 # L1 may have changed: three epochs, more than finality lags.
 L1_REINDEX_BLOCKS = 96
+# How many times the follower asks for a block's blobs, 2 seconds apart.
+BLOB_ATTEMPTS = 10
 # NativeRollup.EMPTY_LIST_ROOT: the SSZ root of no withdrawals.
 EMPTY_LIST_ROOT = bytes.fromhex("f5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b")
 L1_MESSAGE_SENT = keccak256(b"L1MessageSent(uint256,address,address,uint256,uint256,uint256,bytes)")
@@ -101,8 +103,18 @@ def payload_blobs(args: argparse.Namespace, l1_block: dict, versioned_hashes: li
     genesis_time = int(http_get(f"{args.beacon}/eth/v1/beacon/genesis")["data"]["genesis_time"])
     seconds_per_slot = int(http_get(f"{args.beacon}/eth/v1/config/spec")["data"]["SECONDS_PER_SLOT"])
     slot = (int(l1_block["timestamp"], 16) - genesis_time) // seconds_per_slot
+    # The execution layer can show the block's logs before the consensus
+    # layer serves its blobs, so a fresh block's request may fail at first.
+    for attempt in range(BLOB_ATTEMPTS):
+        try:
+            blobs = http_get(f"{args.beacon}/eth/v1/beacon/blobs/{slot}")["data"]
+            break
+        except subprocess.CalledProcessError:
+            if attempt == BLOB_ATTEMPTS - 1:
+                raise
+            time.sleep(2)
     by_hash = {}
-    for blob in http_get(f"{args.beacon}/eth/v1/beacon/blobs/{slot}")["data"]:
+    for blob in blobs:
         blob = bytes.fromhex(blob[2:])
         by_hash[bib.versioned_hash(bib.commitment(blob))] = blob
     return [by_hash[h] for h in versioned_hashes]
