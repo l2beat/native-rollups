@@ -437,12 +437,14 @@ class Episode:
         """Merges each preconfirmation and post the sequencer reports into
         its block's file, and keeps the session's summary of them: the
         latest preconfirmed and posted blocks, the preconfirmed blocks L1
-        does not have yet, and the recent times from preconfirmation to L1."""
+        does not have yet, and the recent times from preconfirmation to L1.
+        Stops with the episode's L2 node, as the next episode files from
+        where it stopped."""
         blocks = os.path.join(DATA, "blocks")
         os.makedirs(blocks, exist_ok=True)
         with open(log, "rb") as f:
             f.seek(offset)
-            while True:
+            while self.node.poll() is None:
                 line = f.readline()
                 if not line.endswith(b"\n"):
                     time.sleep(0.5)
