@@ -105,6 +105,10 @@ PING_VALUE = 4 * MESSAGE_FEE
 # A bound on the gas of a claim on L1 besides its call, for the claimer's
 # fee check.
 L1_CLAIM_GAS = 400_000
+# The gas limit of transactions that send a message. A message tree insert
+# costs more at some indices than at others, so an estimate made before
+# another message lands can fall short.
+MESSAGE_GAS = 400_000
 ETH = 10**18
 # What a user keeps on L2 for fees.
 RESERVE = ETH // 20
@@ -290,7 +294,7 @@ class Episode:
             c["demoToken"] = deploy(self.init_code("DemoToken", "constructor(address[],uint256)", holders, str(1000 * ETH)))
             c["apps"] = apps
             self.send_l1(APPS_KEY, c["rollup"], "sendMessage(address,uint256,uint256,bytes)", apps, "0", "0", "0x",
-                         "--value", str(ETH))
+                         "--value", str(ETH), "--gas-limit", str(MESSAGE_GAS))
             self.session["contracts"] = c
         if not c.get("appsOnL2"):
             if int(json_rpc(self.l2_rpc, "eth_getBalance", c["apps"], "latest"), 16) == 0:
@@ -371,7 +375,7 @@ class Episode:
             carry a fee for whoever does. `gwei` includes it."""
             tasks = {"execution": [{"type": "call", "data": {
                 "target": target, "call_abi": SEND_MESSAGE_ABI, "call_fn_name": "sendMessage",
-                "call_args": [to, str(MESSAGE_FEE), str(gas_limit), data], "amount": gwei, "gas_limit": 400_000,
+                "call_args": [to, str(MESSAGE_FEE), str(gas_limit), data], "amount": gwei, "gas_limit": MESSAGE_GAS,
             }}]}
             return {"scenario": "taskrunner", "name": name, "config": {
                 "seed": name, "throughput": 1, "max_pending": 2, "max_wallets": 2, "tasks_config": json.dumps(tasks),
@@ -501,6 +505,7 @@ class Episode:
         to = to or address
         receipt = self.send_l1(
             key, self.contracts["rollup"], "sendMessage(address,uint256,uint256,bytes)", to, str(fee), "0", "0x", "--value", amount,
+            "--gas-limit", str(MESSAGE_GAS),
         )
         self.event(
             "deposit", f"{user[0].upper() + user[1:]} deposits {amount.replace('ether', ' ETH')} from L1",
@@ -587,7 +592,7 @@ class Episode:
             send = lambda *args: self.send_l1(USER_KEYS[user], *args)  # noqa: E731
             send(c["demoToken"], "approve(address,uint256)", c["l1Bridge"], str(amount))
             receipt = send(c["l1Bridge"], "deposit(address,address,uint256)", c["demoToken"], self.users[user], str(amount),
-                           "--value", str(MESSAGE_FEE))
+                           "--value", str(MESSAGE_FEE), "--gas-limit", str(MESSAGE_GAS))
             index = next(int(log["topics"][1], 16) for log in receipt["logs"] if log["topics"][0] == L1_MESSAGE_SENT)
             self.event("message", f"{user} bridges {amount / ETH:g} DEMO to L2", to="l2", sender=user, index=index,
                        l1={"txHash": receipt["transactionHash"], "block": int(receipt["blockNumber"], 16)})
@@ -601,7 +606,8 @@ class Episode:
         answers it with a pong."""
         c = self.contracts
         if from_l1:
-            receipt = self.send_l1(USER_KEYS[user], c["pingPongL1"], "ping()", "--value", str(PING_VALUE))
+            receipt = self.send_l1(USER_KEYS[user], c["pingPongL1"], "ping()", "--value", str(PING_VALUE),
+                                   "--gas-limit", str(MESSAGE_GAS))
             index = next(int(log["topics"][1], 16) for log in receipt["logs"] if log["topics"][0] == L1_MESSAGE_SENT)
             self.event("message", f"{user} sends a ping to L2", to="l2", sender=user, index=index,
                        l1={"txHash": receipt["transactionHash"], "block": int(receipt["blockNumber"], 16)})
