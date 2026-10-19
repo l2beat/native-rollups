@@ -387,7 +387,7 @@ class Episode:
             {"scenario": "uniswap-swaps", "name": "Uniswap swaps", "config": {"throughput": 1, "max_wallets": 3}},
             {"scenario": "setcodetx", "name": "EIP-7702 delegations", "config": {"throughput": 1, "max_wallets": 2, "max_authorizations": 3, "max_delegators": 20}},
             # Frame transactions in every EIP-8141 shape, and with an EIP-7906
-            # POST_TX assertion, in bogota-devnet-1's envelope.
+            # ASSERT frame, in bogota-devnet-1's envelope.
             {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {
                 "throughput": 1, "max_wallets": 3, "envelope": "keyed",
                 "shapes": "self-verify,transfer,batch,atomic,atomic-fail,expiry,post-tx",
