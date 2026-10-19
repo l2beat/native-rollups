@@ -9,9 +9,11 @@ the operator to attach the blobs to `advance`, and by the follower to rebuild
 the chain from L1.
 """
 
+import ctypes
 import hashlib
 import importlib.util
 import os
+import sys
 
 import ckzg
 from ethereum_rlp import rlp
@@ -86,7 +88,14 @@ def commitment(blob: bytes) -> bytes:
 
 def cell_proofs(blob: bytes) -> list:
     """The EIP-7594 cell proofs that the network wrapper carries."""
-    _, proofs = ckzg.compute_cells_and_kzg_proofs(blob, trusted_setup())
+    cells, proofs = ckzg.compute_cells_and_kzg_proofs(blob, trusted_setup())
+    # ckzg's Python binding (2.1.8 and earlier) keeps a reference to both
+    # lists it returns, so each call would leak them, about 270 KB. Drop
+    # it, if the lists have one more reference than a list held only here.
+    alone = []
+    if sys.getrefcount(proofs) > sys.getrefcount(alone):
+        for leaked in (cells, proofs):
+            ctypes.pythonapi.Py_DecRef(ctypes.py_object(leaked))
     return [bytes(p) for p in proofs]
 
 
