@@ -592,7 +592,7 @@ class Node:
             excess_blob_gas=U64(0),
             parent_beacon_block_root=Bytes32(anchor),
             block_access_list_builder=BlockAccessListBuilder(),
-            slot_number=U64(0),
+            slot_number=U64(self.head.number + Uint(1)),  # the block number, as the rollup contract fixes it
         )
 
     def execute(self, env: vm.BlockEnvironment, required: list, optional: list) -> tuple:
@@ -676,7 +676,8 @@ class Node:
             "extra_data": EXTRA_DATA, "prev_randao": prev_randao, "nonce": bytes(8), "base_fee_per_gas": base_fee,
             "withdrawals_root": root(output.withdrawals_trie), "blob_gas_used": 0, "excess_blob_gas": 0,
             "parent_beacon_block_root": anchor, "requests_hash": compute_requests_hash(output.requests),
-            "block_access_list_hash": fork.hash_block_access_list(output.block_access_list), "slot_number": 0,
+            "block_access_list_hash": fork.hash_block_access_list(output.block_access_list),
+            "slot_number": int(parent.number) + 1,
         })
         block = Block(header=h, transactions=tuple(included), ommers=(), withdrawals=())
 

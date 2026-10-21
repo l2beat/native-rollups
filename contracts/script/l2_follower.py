@@ -246,7 +246,7 @@ def proof_input(h, params: dict, advance: dict) -> dict:
             "transactionsRoot", "blockAccessListRoot",
         )},
         **{k: int(params[k]) for k in ("gasUsed", "timestamp", "baseFeePerGas")},
-        "withdrawalsRoot": EMPTY_LIST_ROOT, "blobGasUsed": 0, "excessBlobGas": 0, "slotNumber": 0,
+        "withdrawalsRoot": EMPTY_LIST_ROOT, "blobGasUsed": 0, "excessBlobGas": 0, "slotNumber": int(h.number),
     })
     hashes = versioned_hashes_root([b(x) for x in advance["blobVersionedHashes"]])
     requests = b(params["executionRequestsRoot"])
@@ -342,7 +342,7 @@ def rebuild(args: argparse.Namespace, chain: fork.BlockChain, gas_limit: int, lo
         excess_blob_gas=U64(0),
         parent_beacon_block_root=anchor,
         block_access_list_builder=BlockAccessListBuilder(),
-        slot_number=U64(0),
+        slot_number=U64(parent.number + Uint(1)),
     )
     output = fork.apply_body(block_env, tuple(transactions), ())
 
@@ -355,7 +355,7 @@ def rebuild(args: argparse.Namespace, chain: fork.BlockChain, gas_limit: int, lo
         "prev_randao": p["prevRandao"], "nonce": bytes(8), "base_fee_per_gas": p["baseFeePerGas"],
         "withdrawals_root": root(output.withdrawals_trie), "blob_gas_used": 0, "excess_blob_gas": 0,
         "parent_beacon_block_root": anchor, "requests_hash": compute_requests_hash(output.requests),
-        "block_access_list_hash": keccak256(bal), "slot_number": 0,
+        "block_access_list_hash": keccak256(bal), "slot_number": int(parent.number) + 1,
     })
     fork.state_transition(chain, Block(header=h, transactions=tuple(transactions), ommers=(), withdrawals=()))
     rebuilt_hash = keccak256(rlp.encode(h))

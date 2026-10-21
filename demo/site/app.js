@@ -694,7 +694,7 @@ function boundaryView(b, rec) {
     ["blob_gas_used", "0", "fixed", "constant", "no blob transactions on L2"],
     ["excess_blob_gas", "0", "fixed", "constant", ""],
     ["block_access_list_root", short(ssz.blockAccessListRoot), "checked", "the list: in the blob", `EIP-7928 access list, ${num(b.balBytes)} bytes`],
-    ["slot_number", String(b.slotNumber), "fixed", "constant, to be defined", "SLOTNUM"],
+    ["slot_number", num(b.slotNumber), "storage", "blockNumber + 1", "SLOTNUM"],
     ["versioned_hashes", short(b.l1.blobVersionedHashes[0]), "l1", "BLOBHASH(0)", `the blob: ${num(b.payloadBytes)} bytes of block data`],
     ["parent_beacon_block_root", short(b.parentBeaconBlockRoot), "l1", `BLOCKHASH(${num(anchor)}), the anchor`, "kept by EIP-4788: see messages, below"],
     ["execution_requests", short(ssz.executionRequestsRoot), "checked", "any accepted", "no effect on L2"],
@@ -1077,7 +1077,7 @@ async function blockPage(route) {
       ["Blob gas used, excess", `${b.blobGasUsed}, ${b.excessBlobGas}`, "Always 0: the L2 has no blob transactions."],
       ["Requests hash", hash(b.requestsHash, true), "EIP-7685 requests. L2 users can create them, but they do nothing on L2, so the contract accepts any."],
       ["Access list hash", hash(b.blockAccessListHash, true), `EIP-7928's block access list. Its ${num(b.balBytes)} bytes travel in the blob, and the contract gets its SSZ root.`],
-      ["Slot number", b.slotNumber, "Fixed to 0 for now. The L2 value is not defined yet."],
+      ["Slot number", num(b.slotNumber), "The block number, set by the contract. EIP-8198, which Hegotá considers, requires a block's slot number to exceed its parent's."],
     ])}`;
   return `
     <h1>Block #${b.number} <span class="net l2">L2</span></h1>
