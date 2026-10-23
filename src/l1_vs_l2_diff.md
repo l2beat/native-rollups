@@ -23,7 +23,7 @@ Rollups have no consensus layer that handles blobs, so they cannot support blob-
 
 ## Slot number
 
-`slot_number` is a fixed constant for L2, whose value is still to be defined (see [Specification](./specification.md#executionpayload)), so the `SLOTNUM` opcode ([EIP-7843](https://eips.ethereum.org/EIPS/eip-7843)) returns the same value in every block.
+The rollup contract sets `slot_number` to the L2 block number, so the `SLOTNUM` opcode ([EIP-7843](https://eips.ethereum.org/EIPS/eip-7843)) returns the same value as `NUMBER`. A constant would break under [EIP-8198](https://eips.ethereum.org/EIPS/eip-8198) quick slots, which Hegotá considers: every block's slot number must exceed its parent's, and the largest change of the base fee per block becomes `min(seconds, 12 × slots) / (96 × slots)`, from the seconds and slots between the two blocks. With one slot per block, the L2 base fee then changes by at most `min(seconds, 12) / 96` per block: as fast per second as on L1 for blocks at most 12 seconds apart, and by 1/8 for blocks further apart. The contract sets the value itself because an operator choosing it could skip many slots per block and hold the base fee almost still.
 
 ## Beacon roots storage
 
