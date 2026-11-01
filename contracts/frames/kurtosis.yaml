@@ -1,17 +1,18 @@
-# A local network with the bogota-devnet-1 settings: Gloas from genesis, the
-# Bogota execution fork (EIP-8141 frame transactions with EIPs 8250, 8272 and
-# 7906) at epoch 1, without EIP-8253, plus the EIP-8357 registry. It runs the
-# bogota-devnet-1 clients whose pools take blob-carrying frame transactions,
-# in the EIP-7594 network form: Nethermind, Reth and ethrex. Run with:
+# A local network with the bogota-devnet-2 settings: Gloas from genesis and
+# the Bogota execution fork at epoch 1 (EIP-8141 frame transactions with EIPs
+# 8250, 8272, 7906, 8298, 8151, 4758 and 8253), plus the EIP-8357 registry. It
+# runs the bogota-devnet-2 clients whose pools take blob-carrying frame
+# transactions, in the EIP-7594 network form: Nethermind, Reth and ethrex.
+# Run with:
 #   kurtosis run github.com/ethpandaops/ethereum-package@f191032be3a7ba069a6bb049ea5d5b9c3b1357e8 \
 #       --enclave bogota --args-file frames/kurtosis.yaml
 participants:
   - el_type: nethermind
-    el_image: ethpandaops/nethermind:bogota-devnet-1
+    el_image: ethpandaops/nethermind:bogota-devnet-2
     cl_type: lighthouse
     cl_image: ethpandaops/lighthouse:unstable-8e0aeef
   - el_type: reth
-    el_image: ethpandaops/reth:bogota-devnet-1
+    el_image: ethpandaops/reth:bogota-devnet-2
     # Proofs at past blocks, for deposit claims, which prove the message
     # tree at the L1 block an L2 block anchors to, up to 256 blocks back.
     el_extra_params:
@@ -19,7 +20,7 @@ participants:
     cl_type: lighthouse
     cl_image: ethpandaops/lighthouse:unstable-8e0aeef
   - el_type: ethrex
-    el_image: ethpandaops/ethrex:bogota-devnet-1
+    el_image: ethpandaops/ethrex:bogota-devnet-2
     cl_type: lighthouse
     cl_image: ethpandaops/lighthouse:unstable-8e0aeef
 
@@ -45,8 +46,9 @@ network_params:
         "0x0000000000000000000000000000000000000000000000000000000000000000": "0xf0cc70b85867f9592b138c7425d60e0bed9b7034cac36a485dd8a06ba68c88f1"
         "0x1c14500bf14303a833f4f8a6d6fc3bb934a967267a6c80a69b78c96f3cd50f91": "0x0000000000000000000000000000000000000000000000000000000000001601"
 
-# bogota-devnet-1 leaves out EIP-8253, whose prestate the genesis generator
-# deploys unless told not to.
+# EIP-8253 bumps the nonces of the accounts the chain configuration lists, at
+# the fork block. This network lists none, so it needs no prestate for them,
+# which the genesis generator deploys unless told not to.
 ethereum_genesis_generator_params:
   extra_env:
     DEPLOY_EIP8253_PRESTATE: "false"

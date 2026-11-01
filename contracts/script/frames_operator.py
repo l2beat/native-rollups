@@ -1,6 +1,6 @@
 """
 Operator for a native rollup on an EIP-8141 chain without EIP-8288, such as
-bogota-devnet-1, with the preconfirmations customization (see
+bogota-devnet-2, with the preconfirmations customization (see
 FramesSequencedRollup).
 
 `preconfirm` anchors the next L2 block to an L1 block a few slots behind the
@@ -18,8 +18,8 @@ in one frame transaction:
 The transaction carries the block's EIP-8142 payload blobs, so it is sent in
 the EIP-7594 network form with the blobs, their commitments and their cell
 proofs. `--submit-rpc`, which can repeat, selects clients that accept
-blob-carrying frame transactions: on bogota-devnet-1, Nethermind, Reth and
-ethrex do, while geth does not.
+blob-carrying frame transactions: Nethermind, Reth and ethrex do, while on
+bogota-devnet-1 geth did not.
 
 `claim-l2-message` claims an L2 to L1 message, which an L2 account sent with
 `L2Messenger.sendMessage`, with a proof from the L2 node's `eth_getProof`
@@ -28,7 +28,7 @@ against the latest L2 block the rollup has.
 `check-vectors` checks the Python root computation against the
 consensus-specs vectors that the Solidity tests use.
 
-Run with the execution-specs environment of the L2 node, `devnets/bogota/1`
+Run with the execution-specs environment of the L2 node, `devnets/bogota/2`
 with the stateless guest, which provides the frame transaction types, and
 Foundry's `cast` on the PATH:
 
@@ -64,7 +64,9 @@ from ethereum.forks.bogota.transactions.frame_transaction import (
     GasLimits,
     TransactionFees,
     compute_frame_signature_hash,
+    validate_frame_transaction,
 )
+from ethereum.forks.bogota.vm.gas import calculate_total_blob_gas
 
 from ethereum.crypto.hash import keccak256
 from ethereum_rlp import rlp
@@ -245,7 +247,7 @@ def send_post(args: argparse.Namespace, bundle: dict, nonce: int, ahead: bool = 
     # a new transaction: a client that dropped the old one may still refuse
     # it as already known.
     tip = 10**9 + random.randrange(10**6)
-    tx = FrameTransaction(
+    unsigned = FrameTransaction(
         chain_id=U64(int(cast("chain-id", "--rpc-url", rpc))),
         nonce_keys=LEGACY_NONCE_KEYS,
         nonce_seq=U64(nonce),
@@ -277,29 +279,31 @@ def send_post(args: argparse.Namespace, bundle: dict, nonce: int, ahead: bool = 
             ),
         ),
         signatures=(
+            # The signature hash commits to the signature's length, so the
+            # placeholder has the length of the real one.
             FrameSignature(
                 scheme=FrameSignatureScheme.SECP256K1,
                 signer=bytes.fromhex(operator[2:]),
                 message=Bytes0(),
-                signature=b"",
+                signature=bytes(65),
             ),
         ),
-        fees=TransactionFees(
-            max_priority_fee_per_gas=Uint(tip),
-            max_fee_per_gas=Uint(2 * base_fee + tip),
-            max_fee_per_blob_gas=U256(2 * blob_base_fee),
-        ),
+        fees=TransactionFees(max_fee=Uint(0), max_priority_fee_per_gas=Uint(tip)),
         blob_versioned_hashes=versioned_hashes,
     )
-    # Sign the canonical hash, then insert the signature as v || r || s.
-    sig = sign_hash(args.operator_key, compute_frame_signature_hash(tx))
-    signature = FrameSignature(
-        scheme=FrameSignatureScheme.SECP256K1,
-        signer=bytes.fromhex(operator[2:]),
-        message=Bytes0(),
-        signature=bytes([sig[64] - 27]) + sig[:64],
-    )
-    tx = replace(tx, signatures=(signature,))
+
+    def signed(tx: FrameTransaction) -> FrameTransaction:
+        """Signs the canonical hash and inserts the signature as v || r || s."""
+        sig = sign_hash(args.operator_key, compute_frame_signature_hash(tx))
+        signature = replace(tx.signatures[0], signature=bytes([sig[64] - 27]) + sig[:64])
+        return replace(tx, signatures=(signature,))
+
+    # One max_fee budget pays for the execution, state and blob gas, with
+    # room for both base fees to double before inclusion. The gas bound
+    # does not depend on the fees, but deriving it checks the signature.
+    max_gas = int(validate_frame_transaction(signed(unsigned)).max_gas)
+    max_fee = max_gas * (2 * base_fee + tip) + int(calculate_total_blob_gas(unsigned)) * 2 * blob_base_fee
+    tx = signed(replace(unsigned, fees=TransactionFees(max_fee=Uint(max_fee), max_priority_fee_per_gas=Uint(tip))))
     raw = encode_transaction(tx)
     # EIP-7594 network form: [tx_payload_body, wrapper_version, blobs, commitments, cell_proofs].
     commitments = [bib.commitment(blob) for blob in blobs]

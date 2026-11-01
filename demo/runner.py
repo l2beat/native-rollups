@@ -387,10 +387,10 @@ class Episode:
             {"scenario": "uniswap-swaps", "name": "Uniswap swaps", "config": {"throughput": 1, "max_wallets": 3}},
             {"scenario": "setcodetx", "name": "EIP-7702 delegations", "config": {"throughput": 1, "max_wallets": 2, "max_authorizations": 3, "max_delegators": 20}},
             # Frame transactions in every EIP-8141 shape, and with an EIP-7906
-            # ASSERT frame, in bogota-devnet-1's envelope.
+            # ASSERT frame, in bogota-devnet-2's envelope.
             {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {
                 "throughput": 1, "max_wallets": 3, "envelope": "keyed",
-                "shapes": "self-verify,transfer,batch,atomic,atomic-fail,expiry,post-tx",
+                "shapes": "self-verify,transfer,batch,atomic,atomic-fail,expiry,assert",
             }},
         ]
         l2_messages = [messages("withdrawals", L2_MESSENGER, "{randomaddr}", "0x", 2 * MESSAGE_FEE // 10**9)]
@@ -796,7 +796,7 @@ def main() -> None:
     parser.add_argument("--submit-rpc", nargs="+",
                         help="the L1 RPCs every transaction is sent to, by default the devnet's Nethermind, Reth and ethrex")
     parser.add_argument("--beacon", help="a beacon API that serves blobs, by default the devnet's first Lighthouse")
-    parser.add_argument("--specs", default=os.path.expanduser("~/work/execution-specs-zkevm-bogota"),
+    parser.add_argument("--specs", default=os.path.expanduser("~/work/execution-specs-zkevm-bogota-2"),
                         help="the execution-specs environment of the contract scripts")
     parser.add_argument("--interval", type=float, default=12, help="seconds between steps of the story")
     parser.add_argument("--block-time", type=int, default=4, help="seconds between L2 blocks")

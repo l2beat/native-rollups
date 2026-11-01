@@ -4,8 +4,8 @@ A minimal L2 node and mock prover for the native rollup.
 It runs the L2 chain with execution-specs under the L1 stateless validation
 program's rules, holds the chain's state in memory, and serves a JSON-RPC
 with a mempool. A native rollup runs its L1's rules, and the L1 here has
-bogota-devnet-1's rules, so the rules come from execution-specs
-`devnets/bogota/1` with the stateless guest of `projects/zkevm` ported to its
+bogota-devnet-2's rules, so the rules come from execution-specs
+`devnets/bogota/2` with the stateless guest of `projects/zkevm` ported to its
 Bogota fork.
 
 The genesis holds the system contracts the Specification requires, the
@@ -229,6 +229,16 @@ def tx_nonce(tx) -> int:
     return int(tx.nonce_seq) if isinstance(tx, FrameTransaction) else int(tx.nonce)
 
 
+def frame_fees(tx: FrameTransaction, base_fee: int) -> tuple[int, int]:
+    """A frame transaction's escrow and price per gas at `base_fee`, as
+    EIP-8141's `calculate_frame_transaction_fees` derives them from its
+    `max_fee` budget. The pool takes no blobs, so there is no blob fee."""
+    max_gas = int(validate_frame_transaction(tx).max_gas)
+    required = max_gas * base_fee
+    tip = min(int(tx.fees.max_priority_fee_per_gas) * max_gas, max(int(tx.fees.max_fee) - required, 0))
+    return required + tip, base_fee + tip // max_gas
+
+
 # ---------------------------------------------------------------------------
 # Genesis
 # ---------------------------------------------------------------------------
@@ -280,7 +290,7 @@ def genesis_fixture(config: dict) -> dict:
                 ),
                 TestAddress(FRAMES_HELPER): TestAccount(code=bytes.fromhex(config["framesHelperCode"][2:])),
             }
-        ),
+        ).with_genesis_accounts(),
         post={},
         chain_id=L2_CHAIN_ID,
         genesis_environment=Environment(gas_limit=L2_GAS_LIMIT),
@@ -1043,8 +1053,9 @@ class Node:
     def effective_gas_price(self, tx, base_fee: int) -> int:
         if isinstance(tx, (LegacyTransaction, AccessListTransaction)):
             return int(tx.gas_price)
-        fees = tx.fees if isinstance(tx, FrameTransaction) else tx
-        return min(int(fees.max_fee_per_gas), base_fee + int(fees.max_priority_fee_per_gas))
+        if isinstance(tx, FrameTransaction):
+            return frame_fees(tx, base_fee)[1]
+        return min(int(tx.max_fee_per_gas), base_fee + int(tx.max_priority_fee_per_gas))
 
     def rpc_transaction(self, entry: dict, block: dict | None, index: int | None) -> dict:
         tx = entry["tx"]
@@ -1058,7 +1069,7 @@ class Node:
         if isinstance(tx, FrameTransaction):
             out.update({
                 "chainId": hex(int(tx.chain_id)), "sender": hx(tx.sender),
-                "maxFeePerGas": hex(int(tx.fees.max_fee_per_gas)),
+                "maxFee": hex(int(tx.fees.max_fee)),
                 "maxPriorityFeePerGas": hex(int(tx.fees.max_priority_fee_per_gas)),
                 "gas": hex(sum(int(f.gas_limits.execution) + int(f.gas_limits.state) for f in tx.frames)),
                 "value": "0x0", "input": "0x",
@@ -1263,7 +1274,7 @@ class Node:
         anyone else can change: frames that only prove the root and claim
         messages paying the sender itself, which has no code."""
         account = self.chain.state.get_account_optional(sender)
-        max_cost = int(validate_frame_transaction(tx).max_gas) * int(tx.fees.max_fee_per_gas)
+        max_cost = frame_fees(tx, self.next_base_fee())[0]
         if account is not None and int(account.balance) >= max_cost:
             return
         prefix = next((i for i, f in enumerate(tx.frames) if f.mode == FrameMode.VERIFY), len(tx.frames))

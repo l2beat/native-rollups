@@ -25,7 +25,7 @@ from ethereum.forks.bogota.blocks import FrameTransactionReceipt, decode_receipt
 from ethereum.forks.bogota.transactions import SetCodeTransaction, decode_transaction, get_transaction_hash, recover_sender
 from ethereum.forks.bogota.utils.address import compute_contract_address
 from ethereum.forks.bogota.vm.eoa_delegation import recover_authority
-from ethereum.forks.bogota.transactions.frame_transaction import FrameTransaction
+from ethereum.forks.bogota.transactions.frame_transaction import FrameTransaction, validate_frame_transaction
 
 MODES = {0: "DEFAULT", 1: "VERIFY", 2: "SENDER", 3: "ASSERT"}
 FLAGS = {1: "APPROVE_PAYMENT", 2: "APPROVE_EXECUTION", 4: "ATOMIC_BATCH"}
@@ -400,13 +400,19 @@ def l2_kind(tx: dict, messenger: str) -> str:
 
 
 def fees(tx, gas_used: int, base_fee: int) -> dict:
-    """What a transaction offered to pay per gas, what it paid, and where
-    the fee went: the base fee is burned, the rest goes to the fee
-    recipient."""
-    prices = tx.fees if isinstance(tx, FrameTransaction) else tx
-    if hasattr(prices, "max_fee_per_gas"):
-        offered = {"maxFeePerGas": int(prices.max_fee_per_gas), "maxPriorityFeePerGas": int(prices.max_priority_fee_per_gas)}
-        price = min(int(prices.max_fee_per_gas), base_fee + int(prices.max_priority_fee_per_gas))
+    """What a transaction offered to pay, what it paid, and where the fee
+    went: the base fee is burned, the rest goes to the fee recipient."""
+    if isinstance(tx, FrameTransaction):
+        # One budget for all the gas, as EIP-8141's
+        # `calculate_frame_transaction_fees` prices it. L2 frame
+        # transactions carry no blobs.
+        offered = {"maxFee": int(tx.fees.max_fee), "maxPriorityFeePerGas": int(tx.fees.max_priority_fee_per_gas)}
+        max_gas = int(validate_frame_transaction(tx).max_gas)
+        tip = min(int(tx.fees.max_priority_fee_per_gas) * max_gas, max(int(tx.fees.max_fee) - max_gas * base_fee, 0))
+        price = base_fee + tip // max_gas
+    elif hasattr(tx, "max_fee_per_gas"):
+        offered = {"maxFeePerGas": int(tx.max_fee_per_gas), "maxPriorityFeePerGas": int(tx.max_priority_fee_per_gas)}
+        price = min(int(tx.max_fee_per_gas), base_fee + int(tx.max_priority_fee_per_gas))
     else:
         offered = {"gasPrice": int(tx.gas_price)}
         price = int(tx.gas_price)
@@ -496,7 +502,10 @@ def l1_transaction(tx: dict, receipt: dict, block: dict) -> dict:
         "logs": [decode_log(log["address"], [bytes.fromhex(t[2:]) for t in log["topics"]], bytes.fromhex(log["data"][2:])) for log in receipt["logs"]],
     }
     base_fee, price, gas = int(block.get("baseFeePerGas") or "0x0", 16), out["effectiveGasPrice"], out["gasUsed"]
-    offered = ("maxFeePerGas", "maxPriorityFeePerGas") if tx.get("maxFeePerGas") else ("gasPrice",)
+    offered = (
+        ("maxFee", "maxPriorityFeePerGas") if tx.get("maxFee")
+        else ("maxFeePerGas", "maxPriorityFeePerGas") if tx.get("maxFeePerGas") else ("gasPrice",)
+    )
     out.update(jsonable({
         **{k: int(tx[k], 16) for k in offered}, "baseFeePerGas": base_fee,
         "fee": gas * price, "burned": gas * base_fee, "tip": gas * (price - base_fee),

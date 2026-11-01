@@ -203,11 +203,10 @@ const contents = (kinds) =>
 // Forks by the first byte of a schema ID, `(fork_index << 8) | revision`.
 const FORKS = { 0x15: "Amsterdam", 0x16: "Bogota" };
 // A transaction's nonce. A frame transaction's is the sequence of the nonce
-// keys it names (EIP-8250), where key 0 is the account nonce.
+// keys it names (EIP-8250), and naming none selects the account nonce.
 function nonceRow(tx) {
   const keys = tx.nonceKeys || [];
-  if (!keys.length) return ["Nonce", tx.nonce, ""];
-  if (keys.length === 1 && BigInt(keys[0]) === 0n) return ["Nonce", tx.nonce, "Of nonce key 0, the account nonce (EIP-8250)."];
+  if (!keys.length) return ["Nonce", tx.nonce, tx.frames ? "The account nonce, since it names no nonce keys (EIP-8250)." : ""];
   return ["Nonce", `${tx.nonce} <span class="muted">of keys ${keys.map((k) => hash(k)).join(", ")}</span>`,
     "Of the keys it names, which the nonce manager keeps apart from the account nonce (EIP-8250)."];
 }
@@ -1890,10 +1889,12 @@ function mainnetCost(gas) {
 
 function feeRows(tx, chain) {
   if (tx.effectiveGasPrice === undefined || tx.fee === undefined) return { overview: [], details: [] };
-  const offered = tx.maxFeePerGas !== undefined
-    ? [["Max fee per gas", perGas(tx.maxFeePerGas), "The most the sender pays per gas, base fee included."],
-      ["Max priority fee per gas", perGas(tx.maxPriorityFeePerGas), "The most the sender tips per gas, on top of the base fee."]]
-    : [];
+  const tipRow = ["Max priority fee per gas", perGas(tx.maxPriorityFeePerGas), "The most the sender tips per gas, on top of the base fee."];
+  const offered = tx.maxFee !== undefined
+    ? [["Max fee", eth(tx.maxFee), "The most the sender pays in all, for the execution, state and blob gas together (EIP-8141)."], tipRow]
+    : tx.maxFeePerGas !== undefined
+      ? [["Max fee per gas", perGas(tx.maxFeePerGas), "The most the sender pays per gas, base fee included."], tipRow]
+      : [];
   return {
     overview: [
       ["Transaction fee", `${eth(tx.fee)} <span class="muted">= ${num(tx.gasUsed)} gas × ${num(tx.effectiveGasPrice)} wei</span>${mainnetCost(tx.gasUsed)}`,
@@ -2225,12 +2226,12 @@ async function loadBlob(number) {
 
 const TX_FIELDS = {
   2: ["chainId", "nonce", "maxPriorityFeePerGas", "maxFeePerGas", "gasLimit", "to", "value", "data", "accessList", "yParity", "r", "s"],
-  6: ["chainId", "nonce", "sender", "frames", "signatures", "fees", "blobVersionedHashes"],
+  6: ["chainId", "nonceKeys", "nonceSeq", "sender", "frames", "signatures", "fees", "blobVersionedHashes"],
 };
-const INT_FIELDS = new Set(["chainId", "nonce", "maxPriorityFeePerGas", "maxFeePerGas", "gasLimit", "value", "yParity", "mode", "flags", "execution", "state", "scheme", "maxFeePerBlobGas"]);
+const INT_FIELDS = new Set(["chainId", "nonce", "nonceSeq", "maxPriorityFeePerGas", "maxFeePerGas", "maxFee", "gasLimit", "value", "yParity", "mode", "flags", "execution", "state", "scheme"]);
 const FRAME_FIELDS = ["mode", "flags", "target", "limits", "value", "data"];
 const SIGNATURE_FIELDS = ["scheme", "signer", "msg", "signature"];
-const FEE_FIELDS = ["maxPriorityFeePerGas", "maxFeePerGas", "maxFeePerBlobGas"];
+const FEE_FIELDS = ["maxFee", "maxPriorityFeePerGas"];
 
 // A decoded RLP value, with field names where the transaction type defines them.
 function rlpTree(v, names, open = false) {

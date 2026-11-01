@@ -63,7 +63,8 @@ def claim_gas(m: dict) -> tuple:
 
 def max_claim_gas(m: dict) -> int:
     """A bound on a claim's gas: the frames' limits, their intrinsic cost,
-    and the signature's, which `TXPARAM(0x06)` charges at the maximum fee."""
+    and the signature's. At the price per gas it is the claim's `max_fee`
+    budget, the most the claim can cost."""
     return CLAIM_GAS_LIMIT + CLAIM_STATE_GAS_LIMIT + sum(claim_gas(m)) + 100_000 + 400_000 + 100_000
 L1_MESSAGE_ROOT_SLOT = 3  # root of NativeRollup.l1Messages
 CLAIMED_SLOT = 1  # L2Messenger.claimedBits, 256 flags per slot
@@ -170,7 +171,7 @@ def main() -> None:
     claimed = lambda i: words.setdefault(i >> 8, storage(keccak256((i >> 8).to_bytes(32, "big") + CLAIMED_SLOT.to_bytes(32, "big")))) >> (i & 0xFF) & 1  # noqa: E731
 
     # Twice the base fee leaves room for it to rise before inclusion.
-    max_fee = 2 * int(head["baseFeePerGas"], 16) + PRIORITY_FEE
+    price = 2 * int(head["baseFeePerGas"], 16) + PRIORITY_FEE
     wallets = {str(EOA(key=int(k, 16))).lower(): EOA(key=int(k, 16)) for k in args.wallet}
     relayer = EOA(key=int(args.relayer, 16)) if args.relayer else None
     if relayer is not None:
@@ -180,7 +181,7 @@ def main() -> None:
         claimer = wallets.get(m["to"].lower())
         # The relayer only claims what pays: the fee, received before the
         # VERIFY frame, must cover the most the claim can cost.
-        if claimer is None and relayer is not None and m["fee"] >= max_claim_gas(m) * max_fee:
+        if claimer is None and relayer is not None and m["fee"] >= max_claim_gas(m) * price:
             claimer = relayer
         if claimer is not None and not claimed(m["index"]):
             claims.setdefault(str(claimer).lower(), (claimer, []))[1].append(m)
@@ -238,7 +239,7 @@ def main() -> None:
                 ]
                 + [Frame(mode=VERIFY_MODE, flags=APPROVE_EXECUTION_AND_PAYMENT)],
                 chain_id=L2_CHAIN_ID,
-                max_fee_per_gas=max_fee,
+                max_fee=max_claim_gas(m) * price,
                 max_priority_fee_per_gas=PRIORITY_FEE,
             )
             try:
