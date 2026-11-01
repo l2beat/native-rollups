@@ -58,7 +58,6 @@ import threading
 import time
 import traceback
 import typing
-import urllib.request
 from dataclasses import dataclass
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -121,6 +120,7 @@ from ethereum.forks.bogota.vm.interpreter import process_top_level
 from ethereum.utils.ssz import _to_view
 
 import block_in_blobs as bib
+import jsonrpc
 from ssz_roots import container4, payload_root, public_input_root, versioned_hashes_root  # noqa: E402
 
 L2_CHAIN_ID = 8079
@@ -169,16 +169,7 @@ def cast(*args: str) -> str:
 
 
 def json_rpc(url: str, method: str, *params):
-    request = urllib.request.Request(
-        url,
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}).encode(),
-        {"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        out = json.load(response)
-    if "error" in out:
-        raise RuntimeError(f"{method}: {out['error']}")
-    return out["result"]
+    return jsonrpc.call(url, method, *params)
 
 
 def get_logs(url: str, log_filter: dict, first: int, last: int) -> list:

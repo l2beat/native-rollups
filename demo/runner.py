@@ -43,10 +43,11 @@ import sys
 import threading
 import time
 import traceback
-import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONTRACTS = os.path.join(ROOT, "contracts")
+sys.path.insert(0, os.path.join(CONTRACTS, "script"))
+import jsonrpc  # noqa: E402
 DATA = os.path.join(ROOT, "demo", "data")
 # The rollup's mock prover key, which the site does not serve.
 PROVER = os.path.join(DATA, "prover.json")
@@ -105,6 +106,10 @@ PING_VALUE = 4 * MESSAGE_FEE
 # A bound on the gas of a claim on L1 besides its call, for the claimer's
 # fee check.
 L1_CLAIM_GAS = 400_000
+# NativeRollup.claimedL2Messages(uint256), and how many such calls go in one
+# JSON-RPC batch.
+CLAIMED_SELECTOR = "0x9a737a5f"
+CLAIMED_BATCH = 200
 # The gas limit of transactions that send a message. A message tree insert
 # costs more at some indices than at others, so an estimate made before
 # another message lands can fall short.
@@ -151,13 +156,7 @@ def create2_address(init_code: str) -> str:
 
 
 def json_rpc(url: str, method: str, *params):
-    request = urllib.request.Request(
-        url,
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}).encode(),
-        {"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        out = json.load(response)
+    out = jsonrpc.post(url, {"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}, 30, jsonrpc.ATTEMPTS)
     if "error" in out:
         raise RuntimeError(f"{method}: {out['error']['message']}")
     return out["result"]
@@ -638,7 +637,7 @@ class Episode:
         """Claims an L2 to L1 message, unless anyone already did, such as
         this runner before it restarted, with a claim still on its way."""
         a = self.args
-        if cast("call", "--rpc-url", a.rpc, self.contracts["rollup"], "claimedL2Messages(uint256)(bool)", str(index)) == "true":
+        if self.claimed_on_l1([index]):
             self.claimed.add(index)
             return
         run([
@@ -689,15 +688,34 @@ class Episode:
         if failed:
             raise failed
 
+    def claimed_on_l1(self, indices: list) -> set:
+        """Which of the L2 to L1 messages `indices` the rollup contract has
+        delivered, in batches of view calls."""
+        claimed = set()
+        for i in range(0, len(indices), CLAIMED_BATCH):
+            chunk = indices[i : i + CLAIMED_BATCH]
+            results = jsonrpc.batch(self.args.rpc, [
+                ("eth_call", [{"to": self.contracts["rollup"], "data": CLAIMED_SELECTOR + f"{index:064x}"}, "latest"]) for index in chunk
+            ])
+            claimed.update(index for index, r in zip(chunk, results) if int(r, 16))
+        return claimed
+
     def relay_withdrawals(self) -> None:
         """Claims on L1, with the claimer's key, the withdrawals to addresses
         outside the story whose fee covers the claim, as any claimer could."""
         users = {address.lower() for address in self.users.values()}
         while self.node is None or self.node.poll() is None:
             try:
-                price = int(cast("gas-price", "--rpc-url", self.args.rpc))
-                for index, to, fee, gas_limit in self.withdrawals():
-                    if to not in users and index not in self.claimed and fee >= (L1_CLAIM_GAS + 2 * gas_limit) * price:
+                price = int(json_rpc(self.args.rpc, "eth_gasPrice"), 16)
+                due = [
+                    index for index, to, fee, gas_limit in self.withdrawals()
+                    if to not in users and index not in self.claimed and fee >= (L1_CLAIM_GAS + 2 * gas_limit) * price
+                ]
+                # Others may have claimed them, or this runner before it
+                # restarted, which starts with none known.
+                self.claimed |= self.claimed_on_l1(due)
+                for index in due:
+                    if index not in self.claimed:
                         try:
                             self.claim(index, CLAIMER_KEY, "claimer")
                         except Exception:  # the others still go ahead

@@ -47,7 +47,6 @@ import subprocess
 import threading
 import time
 import traceback
-import urllib.request
 
 from ethereum_types.bytes import Bytes0, Bytes20
 from ethereum_types.numeric import U64, U256, Uint
@@ -72,6 +71,7 @@ from ethereum.crypto.hash import keccak256
 from ethereum_rlp import rlp
 
 import block_in_blobs as bib
+import jsonrpc
 from ssz_roots import check_vectors  # noqa: E402
 
 ADVANCE_SIGNATURE = (
@@ -110,7 +110,8 @@ def cast(*args: str) -> str:
 
 
 def call(rpc: str, to: str, sig: str) -> str:
-    return cast("call", "--rpc-url", rpc, to, sig)
+    """The word that the view function `sig`, without arguments, returns."""
+    return jsonrpc.call(rpc, "eth_call", {"to": to, "data": hx(keccak256(sig.encode())[:4])}, "latest")
 
 
 def sign_hash(key: str, digest: bytes) -> bytes:
@@ -128,13 +129,7 @@ def hx(b: bytes) -> str:
 
 
 def l2_rpc(url: str, method: str, *params):
-    request = urllib.request.Request(
-        url,
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}).encode(),
-        {"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=600) as response:
-        out = json.load(response)
+    out = jsonrpc.post(url, {"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}, 600, jsonrpc.ATTEMPTS)
     if "error" in out:
         raise SystemExit(f"L2 node: {method}: {out['error']['message']}")
     return out["result"]
@@ -143,15 +138,9 @@ def l2_rpc(url: str, method: str, *params):
 def send_raw_transaction(url: str, raw: bytes) -> str:
     # Over JSON-RPC rather than with cast: a blob transaction is longer than
     # Linux allows one command-line argument to be.
-    request = urllib.request.Request(
-        url,
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_sendRawTransaction", "params": [hx(raw)]}).encode(),
-        {"Content-Type": "application/json"},
-    )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            out = json.load(response)
-    except OSError as e:
+        out = jsonrpc.post(url, {"jsonrpc": "2.0", "id": 1, "method": "eth_sendRawTransaction", "params": [hx(raw)]}, 30, jsonrpc.ATTEMPTS)
+    except (OSError, RuntimeError) as e:
         raise SystemExit(str(e))
     if "error" in out:
         raise SystemExit(out["error"]["message"])
@@ -160,9 +149,9 @@ def send_raw_transaction(url: str, raw: bytes) -> str:
 
 def wait_for_receipt(rpc: str, tx_hash: str, blocks: int = 40) -> dict:
     """Polls for the receipt, giving up after `blocks` L1 blocks."""
-    last = int(cast("block-number", "--rpc-url", rpc)) + blocks
-    while int(cast("block-number", "--rpc-url", rpc)) <= last:
-        receipt = json.loads(cast("rpc", "--rpc-url", rpc, "eth_getTransactionReceipt", tx_hash))
+    last = int(jsonrpc.call(rpc, "eth_blockNumber"), 16) + blocks
+    while int(jsonrpc.call(rpc, "eth_blockNumber"), 16) <= last:
+        receipt = jsonrpc.call(rpc, "eth_getTransactionReceipt", tx_hash)
         if receipt:
             return receipt
         time.sleep(3)
@@ -175,16 +164,16 @@ def preconfirm_block(args: argparse.Namespace, timestamp: int | None = None) -> 
     happened."""
     rpc = args.rpc
     # The registry's current entry, under which the block must be posted.
-    registry = call(rpc, args.rollup, "evmVkRegistry()(address)")
-    entry = cast("call", "--rpc-url", rpc, registry, "0x" + "00" * 32)
+    registry = "0x" + call(rpc, args.rollup, "evmVkRegistry()")[-40:]
+    entry = jsonrpc.call(rpc, "eth_call", {"to": registry, "data": "0x" + "00" * 32}, "latest")
     vk_hash, schema_id = "0x" + entry[2:66], int(entry[66:130], 16)
 
     # Anchor a few slots behind the L1 head, so that a short L1 reorg does
     # not remove the anchor and, with it, the block. The block must reach L1
     # while the anchor is in the BLOCKHASH window.
-    l1_block = int(cast("block-number", "--rpc-url", rpc))
+    l1_block = int(jsonrpc.call(rpc, "eth_blockNumber"), 16)
     anchor_number = l1_block - ANCHOR_DEPTH
-    anchor_hash = cast("block", "--rpc-url", rpc, str(anchor_number), "--field", "hash")
+    anchor_hash = jsonrpc.call(rpc, "eth_getBlockByNumber", hex(anchor_number), False)["hash"]
 
     # The L2 node builds the next block on its latest one, validates it with
     # the stateless program, signs the dependency, and preconfirms it.
@@ -194,7 +183,7 @@ def preconfirm_block(args: argparse.Namespace, timestamp: int | None = None) -> 
         "anchorHash": anchor_hash,
         "schemaId": schema_id,
         "vkHash": vk_hash,
-        "l1ChainId": int(cast("chain-id", "--rpc-url", rpc)),
+        "l1ChainId": int(jsonrpc.call(rpc, "eth_chainId"), 16),
         "verifier": args.verifier,
         "rollup": args.rollup,
         "proverKey": args.prover_key,
@@ -230,7 +219,7 @@ def send_post(args: argparse.Namespace, bundle: dict, nonce: int, ahead: bool = 
     proof = bytes.fromhex(bundle["proof"][2:])
     blobs = [bytes.fromhex(blob[2:]) for blob in bundle["blobs"]]
     versioned_hashes = tuple(bytes.fromhex(h[2:]) for h in bundle["versionedHashes"])
-    blob_base_fee = int(cast("rpc", "--rpc-url", rpc, "eth_blobBaseFee").strip('"'), 16)
+    blob_base_fee = int(jsonrpc.call(rpc, "eth_blobBaseFee"), 16)
     if getattr(args, "corrupt_proof", False):
         proof = bytes([proof[0] ^ 1]) + proof[1:]
 
@@ -242,13 +231,13 @@ def send_post(args: argparse.Namespace, bundle: dict, nonce: int, ahead: bool = 
     )
     calldata = bytes.fromhex(cast("calldata", ADVANCE_SIGNATURE, params, str(DEPENDENCY_FRAME_INDEX))[2:])
 
-    base_fee = int(cast("base-fee", "--rpc-url", rpc))
+    base_fee = int(jsonrpc.call(rpc, "eth_getBlockByNumber", "latest", False)["baseFeePerGas"], 16)
     # A slightly different tip each time, so that sending a block again makes
     # a new transaction: a client that dropped the old one may still refuse
     # it as already known.
     tip = 10**9 + random.randrange(10**6)
     unsigned = FrameTransaction(
-        chain_id=U64(int(cast("chain-id", "--rpc-url", rpc))),
+        chain_id=U64(int(jsonrpc.call(rpc, "eth_chainId"), 16)),
         nonce_keys=LEGACY_NONCE_KEYS,
         nonce_seq=U64(nonce),
         sender=Bytes20(bytes.fromhex(operator[2:])),
@@ -342,7 +331,7 @@ def post_record(args: argparse.Namespace, bundle: dict, tx_hash: str, receipt: d
     """What posting a block did, once L1 included the transaction, or None
     if `advance` failed in it."""
     rpc = args.rpc
-    block = json.loads(cast("rpc", "--rpc-url", rpc, "eth_getBlockByNumber", receipt["blockNumber"], "false"))
+    block = jsonrpc.call(rpc, "eth_getBlockByNumber", receipt["blockNumber"], False)
     builder = bytes.fromhex(block["extraData"][2:])
     frames = [
         {"status": int(f["status"], 16), "executionGas": int(f["executionGasUsed"], 16), "stateGas": int(f["stateGasUsed"], 16)}
@@ -370,19 +359,19 @@ def post_record(args: argparse.Namespace, bundle: dict, tx_hash: str, receipt: d
             "blobGasUsed": int(receipt.get("blobGasUsed", "0x0"), 16),
             "blobGasPrice": int(receipt.get("blobGasPrice", "0x0"), 16),
             "frames": frames,
-            "rollupHead": int(call(rpc, args.rollup, "blockNumber()(uint256)").split()[0]),
+            "rollupHead": int(call(rpc, args.rollup, "blockNumber()"), 16),
         },
     }
 
 
 def advance(args: argparse.Namespace) -> None:
     """Posts the oldest preconfirmed block the rollup does not have yet."""
-    bundles = l2_rpc(args.l2_rpc, "nr_waitingPosts", call(args.rpc, args.rollup, "blockHash()(bytes32)"), 1)
+    bundles = l2_rpc(args.l2_rpc, "nr_waitingPosts", call(args.rpc, args.rollup, "blockHash()"), 1)
     if not bundles:
         print("no preconfirmed block to post")
         return
     operator = cast("wallet", "address", "--private-key", args.operator_key)
-    tx_hash, _ = send_post(args, bundles[0], int(cast("nonce", "--rpc-url", args.rpc, operator)))
+    tx_hash, _ = send_post(args, bundles[0], int(jsonrpc.call(args.rpc, "eth_getTransactionCount", operator, "latest"), 16))
     entry = post_record(args, bundles[0], tx_hash, wait_for_receipt(args.rpc, tx_hash))
     if entry is None:
         raise SystemExit("advance failed")
@@ -428,7 +417,7 @@ def sequence(args: argparse.Namespace) -> None:
         while True:
             try:
                 for number, (bundle, tx_hash, _, _) in sorted(in_flight.items()):
-                    receipt = json.loads(cast("rpc", "--rpc-url", args.rpc, "eth_getTransactionReceipt", tx_hash))
+                    receipt = jsonrpc.call(args.rpc, "eth_getTransactionReceipt", tx_hash)
                     if receipt:
                         entry = post_record(args, bundle, tx_hash, receipt)
                         if entry:
@@ -441,9 +430,9 @@ def sequence(args: argparse.Namespace) -> None:
                 # are exactly those to post. Otherwise only those after this
                 # process's posts, and none if it does not know which are in
                 # flight, as after a restart.
-                confirmed = int(cast("nonce", "--rpc-url", args.rpc, operator))
+                confirmed = int(jsonrpc.call(args.rpc, "eth_getTransactionCount", operator, "latest"), 16)
                 pending = max(
-                    int(cast("nonce", "--block", "pending", "--rpc-url", url, operator)) for url in args.submit_rpc or [args.rpc]
+                    int(jsonrpc.call(url, "eth_getTransactionCount", operator, "pending"), 16) for url in args.submit_rpc or [args.rpc]
                 )
                 if pending == confirmed:
                     in_flight.clear()
@@ -462,7 +451,7 @@ def sequence(args: argparse.Namespace) -> None:
                             submit(args, raw, quiet=True)
                         except SystemExit:
                             pass
-                head = call(args.rpc, args.rollup, "blockHash()(bytes32)")
+                head = call(args.rpc, args.rollup, "blockHash()")
                 after = max(in_flight, default=0)
                 ready = [
                     b for b in l2_rpc(args.l2_rpc, "nr_waitingPosts", head, MAX_POSTS)

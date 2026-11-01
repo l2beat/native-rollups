@@ -43,6 +43,7 @@ from ethereum.forks.bogota.transactions.frame_transaction import FrameMode
 
 import block_in_blobs as bib
 import explorer as ex
+import jsonrpc
 import l2_node
 from ssz_roots import container4, payload_root, public_input_root, versioned_hashes_root
 
@@ -66,12 +67,8 @@ def cast(*args: str) -> str:
     return subprocess.run(["cast", *args], check=True, capture_output=True, text=True, timeout=180).stdout.strip()
 
 
-def rpc(url: str, method: str, *params: str):
-    return json.loads(cast("rpc", "--rpc-url", url, method, *params))
-
-
-def http_get(url: str):
-    return json.loads(subprocess.run(["curl", "-sf", "-m", "60", url], check=True, capture_output=True, text=True).stdout)
+def rpc(url: str, method: str, *params):
+    return jsonrpc.call(url, method, *params)
 
 
 def decode_advance(data: bytes) -> dict:
@@ -100,8 +97,8 @@ def genesis(state_file: str) -> fork.BlockChain:
 
 def payload_blobs(args: argparse.Namespace, l1_block: dict, versioned_hashes: list) -> list:
     """The blobs with `versioned_hashes`, from the consensus layer."""
-    genesis_time = int(http_get(f"{args.beacon}/eth/v1/beacon/genesis")["data"]["genesis_time"])
-    spec = http_get(f"{args.beacon}/eth/v1/config/spec")["data"]
+    genesis_time = int(jsonrpc.get(f"{args.beacon}/eth/v1/beacon/genesis")["data"]["genesis_time"])
+    spec = jsonrpc.get(f"{args.beacon}/eth/v1/config/spec")["data"]
     seconds_per_slot = int(spec["SECONDS_PER_SLOT"])
     slot = (int(l1_block["timestamp"], 16) - genesis_time) // seconds_per_slot
     # Consensus clients keep blobs only for a window of epochs (EIP-4844).
@@ -112,9 +109,9 @@ def payload_blobs(args: argparse.Namespace, l1_block: dict, versioned_hashes: li
     # layer serves its blobs, so a fresh block's request may fail at first.
     for attempt in range(BLOB_ATTEMPTS):
         try:
-            blobs = http_get(f"{args.beacon}/eth/v1/beacon/blobs/{slot}")["data"]
+            blobs = jsonrpc.get(f"{args.beacon}/eth/v1/beacon/blobs/{slot}")["data"]
             break
-        except subprocess.CalledProcessError:
+        except (RuntimeError, OSError):
             if attempt == BLOB_ATTEMPTS - 1:
                 raise
             time.sleep(2)
@@ -215,7 +212,7 @@ def follow(args: argparse.Namespace) -> None:
 
 def rollup_block_number(args: argparse.Namespace) -> int:
     """The L2 block the rollup contract has last."""
-    return int(cast("call", "--rpc-url", args.l1_rpc, args.rollup, "blockNumber()(uint64)").split()[0])
+    return int(rpc(args.l1_rpc, "eth_call", {"to": args.rollup, "data": l2_node.hx(l2_node.BLOCK_NUMBER_SELECTOR)}, "latest"), 16)
 
 
 def still_on_l1(args: argparse.Namespace, block: dict) -> bool:
@@ -228,7 +225,7 @@ def still_on_l1(args: argparse.Namespace, block: dict) -> bool:
 def l1_tx(args: argparse.Namespace, tx_hash: str) -> dict:
     tx = rpc(args.l1_rpc, "eth_getTransactionByHash", tx_hash)
     receipt = rpc(args.l1_rpc, "eth_getTransactionReceipt", tx_hash)
-    block = rpc(args.l1_rpc, "eth_getBlockByNumber", tx["blockNumber"], "false")
+    block = rpc(args.l1_rpc, "eth_getBlockByNumber", tx["blockNumber"], False)
     return ex.l1_transaction(tx, receipt, block)
 
 
@@ -323,10 +320,10 @@ def rebuild(args: argparse.Namespace, chain: fork.BlockChain, gas_limit: int, lo
     tx = decode_transaction(bytes.fromhex(rpc(args.l1_rpc, "eth_getRawTransactionByHash", log["transactionHash"])[2:]))
     frame = next(f for f in tx.frames if f.mode == FrameMode.SENDER and bytes(f.to) == bytes.fromhex(args.rollup[2:]))
     p = decode_advance(bytes(frame.data))
-    l1_block = rpc(args.l1_rpc, "eth_getBlockByNumber", log["blockNumber"], "false")
+    l1_block = rpc(args.l1_rpc, "eth_getBlockByNumber", log["blockNumber"], False)
     blobs = payload_blobs(args, l1_block, [bytes(h) for h in tx.blob_versioned_hashes[: p["payloadBlobCount"]]])
     bal, transactions = bib.blobs_to_execution_payload_data(blobs)
-    anchor = bytes.fromhex(rpc(args.l1_rpc, "eth_getBlockByNumber", hex(p["anchorBlockNumber"]), "false")["hash"][2:])
+    anchor = bytes.fromhex(rpc(args.l1_rpc, "eth_getBlockByNumber", hex(p["anchorBlockNumber"]), False)["hash"][2:])
 
     # Re-execute once for the fields that L1 only has as SSZ roots.
     parent = chain.blocks[-1].header
