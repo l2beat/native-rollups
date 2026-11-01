@@ -101,8 +101,13 @@ def genesis(state_file: str) -> fork.BlockChain:
 def payload_blobs(args: argparse.Namespace, l1_block: dict, versioned_hashes: list) -> list:
     """The blobs with `versioned_hashes`, from the consensus layer."""
     genesis_time = int(http_get(f"{args.beacon}/eth/v1/beacon/genesis")["data"]["genesis_time"])
-    seconds_per_slot = int(http_get(f"{args.beacon}/eth/v1/config/spec")["data"]["SECONDS_PER_SLOT"])
+    spec = http_get(f"{args.beacon}/eth/v1/config/spec")["data"]
+    seconds_per_slot = int(spec["SECONDS_PER_SLOT"])
     slot = (int(l1_block["timestamp"], 16) - genesis_time) // seconds_per_slot
+    # Consensus clients keep blobs only for a window of epochs (EIP-4844).
+    kept = int(spec.get("MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS", spec["MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS"]))
+    if slot < (time.time() - genesis_time) // seconds_per_slot - kept * int(spec["SLOTS_PER_EPOCH"]):
+        raise RuntimeError(f"the consensus layer no longer keeps the blobs of slot {slot}: it keeps {kept} epochs of them")
     # The execution layer can show the block's logs before the consensus
     # layer serves its blobs, so a fresh block's request may fail at first.
     for attempt in range(BLOB_ATTEMPTS):
@@ -165,11 +170,9 @@ def follow(args: argparse.Namespace) -> None:
                 # L1 lost blocks the follower has: it starts again from a
                 # snapshot L1 has, when the runner restarts it.
                 raise SystemExit(f"the rollup contract no longer has L2 block {verified}")
-            logs = rpc(args.l1_rpc, "eth_getLogs", json.dumps({
-                "address": args.rollup, "fromBlock": hex(from_block), "toBlock": "latest",
-                "topics": ["0x" + BLOCK_ADDED.hex()],
-            }))
-        except subprocess.SubprocessError:
+            latest_l1 = int(rpc(args.l1_rpc, "eth_blockNumber"), 16)
+            logs = l2_node.get_logs(args.l1_rpc, {"address": args.rollup, "topics": ["0x" + BLOCK_ADDED.hex()]}, from_block, latest_l1)
+        except (subprocess.SubprocessError, RuntimeError, OSError):
             if not args.watch:
                 raise
             traceback.print_exc()  # L1 may be back at the next poll
@@ -197,7 +200,7 @@ def follow(args: argparse.Namespace) -> None:
         if explorer:
             try:
                 index_messages(args, explorer)
-            except subprocess.SubprocessError:
+            except (subprocess.SubprocessError, RuntimeError, OSError):
                 if not args.watch:
                     raise
                 traceback.print_exc()
@@ -303,9 +306,7 @@ def index_messages(args: argparse.Namespace, explorer: ex.Explorer) -> None:
         return  # no new L1 block
     for topic, kind in ((L1_MESSAGE_SENT, "deposit"), (L2_MESSAGE_CLAIMED, "withdrawal claim")):
         hashes = []
-        for log in rpc(args.l1_rpc, "eth_getLogs", json.dumps({
-            "address": args.rollup, "fromBlock": hex(start), "toBlock": hex(latest), "topics": ["0x" + topic.hex()],
-        })):
+        for log in l2_node.get_logs(args.l1_rpc, {"address": args.rollup, "topics": ["0x" + topic.hex()]}, start, latest):
             if log["transactionHash"] not in hashes:
                 hashes.append(log["transactionHash"])
         for h in hashes:

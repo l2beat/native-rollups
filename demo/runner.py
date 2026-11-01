@@ -661,6 +661,7 @@ class Episode:
         out = run([
             "uv", "run", "--project", a.specs, "python", "script/l2_claims.py",
             "--l1-rpc", a.rpc, "--rollup", self.contracts["rollup"], "--l2-rpc", self.l2_rpc, "--relayer", RELAYER_KEY,
+            "--cache", os.path.join(DATA, "l1_messages.json"),
             # Spamoor claims its first deposit itself, before it starts sending.
             *[x for key in [*USER_KEYS.values(), APPS_KEY, *([] if self.spamoor else [SPAMOOR_L2_KEY])] for x in ("--wallet", key)],
         ])

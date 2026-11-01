@@ -2201,12 +2201,21 @@ async function loadBlob(number) {
   const versionedHash = b.l1.blobVersionedHashes[0];
   if (!state.beacon) {
     const [g, spec] = await Promise.all([getJSON("/beacon/eth/v1/beacon/genesis"), getJSON("/beacon/eth/v1/config/spec")]);
-    state.beacon = { genesis: Number(g.data.genesis_time), secondsPerSlot: Number(spec.data.SECONDS_PER_SLOT) };
+    state.beacon = {
+      genesis: Number(g.data.genesis_time), secondsPerSlot: Number(spec.data.SECONDS_PER_SLOT),
+      // How long consensus clients keep blobs (EIP-4844), in slots.
+      keptSlots: Number(spec.data.MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS || spec.data.MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS) * Number(spec.data.SLOTS_PER_EPOCH),
+    };
   }
   const l1Block = await rpc("eth_getBlockByNumber", ["0x" + b.l1.block.toString(16), false]);
   const slot = Math.floor((parseInt(l1Block.timestamp, 16) - state.beacon.genesis) / state.beacon.secondsPerSlot);
   const url = `/beacon/eth/v1/beacon/blobs/${slot}?versioned_hashes=${versionedHash}`;
   const res = await getJSON(url);
+  if (!res || !res.data || !res.data.length) {
+    const head = Math.floor((Date.now() / 1000 - state.beacon.genesis) / state.beacon.secondsPerSlot);
+    if (slot < head - state.beacon.keptSlots) throw Object.assign(new Error("pruned"), { pruned: true, days: Math.round(state.beacon.keptSlots * state.beacon.secondsPerSlot / 86400) });
+    throw new Error(`the beacon node has no blob at slot ${slot}`);
+  }
   const blob = hexToBytes(res.data[0]);
   // EIP-8142: 31 bytes in each 32-byte field element, whose first byte is zero.
   const raw = new Uint8Array(4096 * 31);
@@ -2295,6 +2304,11 @@ async function blobPage(route) {
   try {
     d = await loadBlob(route.n);
   } catch (e) {
+    if (e.pruned) {
+      return `<h1>Blob of L2 block #${route.n}</h1><p class="note">The beacon node no longer has this blob: consensus clients
+        keep blobs for about ${e.days} days (EIP-4844), and this one is older. L1 still commits to it by its versioned hash, and
+        the follower rebuilt the block while the blob was available.</p>`;
+    }
     return `<h1>Blob of L2 block #${route.n}</h1><p class="note">Could not fetch the blob from the beacon node: ${esc(e)}</p>`;
   }
   const b = d.block;

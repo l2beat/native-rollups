@@ -936,7 +936,11 @@ class Node:
 
         source = SimpleNamespace(l1_rpc=self.l1_rpc, beacon=self.beacon, rollup=self.rollup)
         latest = int(json_rpc(self.l1_rpc, "eth_blockNumber"), 16)
-        logs = get_logs(self.l1_rpc, {"address": self.rollup, "topics": [hx(l2_follower.BLOCK_ADDED)]}, 0, latest)
+        # Anchors never move backwards, and a block lands on L1 after its
+        # anchor, so the missing blocks are on L1 from the head's anchor on.
+        anchor = json_rpc(self.l1_rpc, "eth_getBlockByHash", hx(self.head.parent_beacon_block_root), False)
+        first = int(anchor["number"], 16) if anchor else 0
+        logs = get_logs(self.l1_rpc, {"address": self.rollup, "topics": [hx(l2_follower.BLOCK_ADDED)]}, first, latest)
         derived = False
         for log in sorted(logs, key=lambda log: int(log["topics"][1], 16)):
             if int(log["topics"][1], 16) == int(self.head.number) + 1:

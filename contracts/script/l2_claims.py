@@ -25,7 +25,11 @@ node only takes those claims from a claimer that can pay up front: the
 relayer funds itself with a message to itself, which it claims as a wallet.
 
     uv run --project <execution-specs> python script/l2_claims.py --l1-rpc <url> --rollup <address> \
-        --l2-rpc <url> --wallet <key> [--wallet <key> ...] [--relayer <key>]
+        --l2-rpc <url> --wallet <key> [--wallet <key> ...] [--relayer <key>] [--cache <path>]
+
+`--cache` keeps what stays true across runs in a file: the messages, their
+leaves and the tree's roots up to `CACHE_MARGIN` L1 blocks below the anchor,
+and the claimed bits seen set, so a run only reads and hashes what is new.
 
 Run with the environment of the execution-specs merge the L2 node uses,
 which signs the frame transactions with EEST.
@@ -33,6 +37,7 @@ which signs the frame transactions with EEST.
 
 import argparse
 import json
+import os
 import subprocess
 
 from execution_testing import EOA, Frame, Transaction
@@ -70,6 +75,8 @@ L1_MESSAGE_ROOT_SLOT = 3  # root of NativeRollup.l1Messages
 CLAIMED_SLOT = 1  # L2Messenger.claimedBits, 256 flags per slot
 PROVEN_ROOT_SLOT = 4  # L2Messenger.provenL1MessageRoot
 TREE_DEPTH = 32
+# L1 blocks below the anchor that a message must be for the cache to keep it.
+CACHE_MARGIN = 64
 ZERO_HASHES = [bytes(32)]
 for _ in range(TREE_DEPTH):
     ZERO_HASHES.append(keccak256(ZERO_HASHES[-1] * 2))
@@ -96,10 +103,12 @@ def message_tree(leaves: list) -> tuple:
     return (level[0] if level else ZERO_HASHES[TREE_DEPTH]), paths
 
 
-def prefix_roots(leaves: list) -> list:
-    """The tree's root after each message, as `MessageTree.insert` keeps it."""
-    branch, roots = [bytes(32)] * TREE_DEPTH, []
-    for count, leaf in enumerate(leaves, 1):
+def extend_roots(branch: list, count: int, leaves: list) -> list:
+    """The tree's root after each of `leaves`, inserted into a tree of
+    `count` messages with the frontier `branch`, as `MessageTree.insert`
+    keeps it. Updates `branch`."""
+    roots = []
+    for count, leaf in enumerate(leaves, count + 1):
         node, size = leaf, count
         for height in range(TREE_DEPTH):
             if size & 1:
@@ -115,9 +124,10 @@ def prefix_roots(leaves: list) -> list:
     return roots
 
 
-def l1_messages(l1_rpc: str, rollup: str, anchor: int) -> list:
-    """The messages the rollup contract had sent by the anchor block."""
-    logs = get_logs(l1_rpc, {"address": rollup, "topics": [hx(L1_MESSAGE_SENT)]}, 0, anchor)
+def l1_messages(l1_rpc: str, rollup: str, anchor: int, first_block: int = 0, first_index: int = 0) -> list:
+    """The messages the rollup contract sent from `first_block` through the
+    anchor block, the first of them with index `first_index`."""
+    logs = get_logs(l1_rpc, {"address": rollup, "topics": [hx(L1_MESSAGE_SENT)]}, first_block, anchor)
     messages = []
     for log in logs:
         data = bytes.fromhex(log["data"][2:])
@@ -131,9 +141,58 @@ def l1_messages(l1_rpc: str, rollup: str, anchor: int) -> list:
             "fee": int.from_bytes(data[32:64], "big"),
             "gasLimit": int.from_bytes(data[64:96], "big"),
             "data": "0x" + data[offset + 32 : offset + 32 + length].hex(),
+            "block": int(log["blockNumber"], 16),
         })
-    assert [m["index"] for m in messages] == list(range(len(messages))), "missing L1 messages"
+    assert [m["index"] for m in messages] == list(range(first_index, first_index + len(messages))), "missing L1 messages"
     return messages
+
+
+class MessageCache:
+    """The messages the rollup contract had sent by an anchor block, with
+    their leaves and the tree's root after each, from the cache file and the
+    logs after it, and the claimed bits seen set. The file keeps only
+    messages `CACHE_MARGIN` blocks below the anchor, which an L1 reorg
+    cannot change, and claimed bits, which never clear."""
+
+    def __init__(self, path: str | None, l1_rpc: str, rollup: str, anchor: int):
+        self.path, self.rollup = path, rollup
+        stored = json.load(open(path)) if path and os.path.exists(path) else None
+        if stored is None or stored["rollup"] != rollup or stored["through"] > anchor:
+            stored = {"through": -1, "messages": [], "leaves": [], "roots": [], "branch": [hx(bytes(32))] * TREE_DEPTH, "claimed": {}}
+        self.claimed_words = {int(i): int(w, 16) for i, w in stored["claimed"].items()}
+        cached = stored["messages"]
+        new = l1_messages(l1_rpc, rollup, anchor, stored["through"] + 1, len(cached))
+        self.messages = cached + new
+        self.leaves = [bytes.fromhex(x[2:]) for x in stored["leaves"]] + [leaf(m) for m in new]
+        self.roots = [bytes.fromhex(x[2:]) for x in stored["roots"]]
+        branch = [bytes.fromhex(x[2:]) for x in stored["branch"]]
+        # The new messages that the file can keep, then the others.
+        self.through = max(stored["through"], anchor - CACHE_MARGIN)
+        settled = len(cached) + next((i for i, m in enumerate(new) if m["block"] > self.through), len(new))
+        self.roots += extend_roots(branch, len(cached), self.leaves[len(cached) : settled])
+        self.settled, self.branch = settled, list(branch)
+        self.roots += extend_roots(branch, settled, self.leaves[settled:])
+
+    def claimed(self, index: int, word) -> bool:
+        """Whether message `index` is claimed, reading its word of claimed
+        bits with `word` unless the bit was already seen set."""
+        i = index >> 8
+        if not self.claimed_words.get(i, 0) >> (index & 0xFF) & 1:
+            self.claimed_words[i] = word(i)
+        return bool(self.claimed_words[i] >> (index & 0xFF) & 1)
+
+    def save(self) -> None:
+        if not self.path:
+            return
+        n = self.settled
+        stored = {
+            "rollup": self.rollup, "through": self.through, "messages": self.messages[:n],
+            "leaves": [hx(x) for x in self.leaves[:n]], "roots": [hx(x) for x in self.roots[:n]],
+            "branch": [hx(x) for x in self.branch], "claimed": {str(i): hex(w) for i, w in self.claimed_words.items()},
+        }
+        with open(self.path + ".tmp", "w") as f:
+            json.dump(stored, f)
+        os.replace(self.path + ".tmp", self.path)
 
 
 def leaf(m: dict) -> bytes:
@@ -151,6 +210,7 @@ def main() -> None:
     parser.add_argument("--l2-rpc", required=True)
     parser.add_argument("--wallet", action="append", default=[], help="a key that claims the messages to its address")
     parser.add_argument("--relayer", help="a key that claims the messages to every other address")
+    parser.add_argument("--cache", help="a file that keeps the messages and claimed bits across runs")
     args = parser.parse_args()
 
     # The anchor of the latest L2 block, which the EIP-4788 contract keeps
@@ -158,17 +218,32 @@ def main() -> None:
     head = json_rpc(args.l2_rpc, "eth_getBlockByNumber", "latest", False)
     if int(head["number"], 16) == 0:
         return
-    timestamp = int(head["timestamp"], 16)
     anchor = int(json_rpc(args.l1_rpc, "eth_getBlockByHash", head["parentBeaconBlockRoot"], False)["number"], 16)
-    messages = l1_messages(args.l1_rpc, args.rollup, anchor)
+    cache = MessageCache(args.cache, args.l1_rpc, args.rollup, anchor)
+    try:
+        claim_messages(args, head, anchor, cache)
+    finally:
+        cache.save()
+
+
+def claim_messages(args: argparse.Namespace, head: dict, anchor: int, cache: MessageCache) -> None:
+    messages = cache.messages
     if not messages:
         return
+    timestamp = int(head["timestamp"], 16)
 
     def storage(slot: bytes) -> int:
         return int(json_rpc(args.l2_rpc, "eth_getStorageAt", L2_MESSENGER, hx(slot), "latest"), 16)
 
     words = {}
-    claimed = lambda i: words.setdefault(i >> 8, storage(keccak256((i >> 8).to_bytes(32, "big") + CLAIMED_SLOT.to_bytes(32, "big")))) >> (i & 0xFF) & 1  # noqa: E731
+
+    def word(i: int) -> int:
+        """A word of claimed bits, read once per run."""
+        if i not in words:
+            words[i] = storage(keccak256(i.to_bytes(32, "big") + CLAIMED_SLOT.to_bytes(32, "big")))
+        return words[i]
+
+    claimed = lambda i: cache.claimed(i, word)  # noqa: E731
 
     # Twice the base fee leaves room for it to rise before inclusion.
     price = 2 * int(head["baseFeePerGas"], 16) + PRIORITY_FEE
@@ -190,9 +265,9 @@ def main() -> None:
 
     # A root the messenger already has covers the first messages: claims of
     # those only need their path to it.
-    leaves = [leaf(m) for m in messages]
+    leaves = cache.leaves
     proven = storage(PROVEN_ROOT_SLOT.to_bytes(32, "big")).to_bytes(32, "big")
-    covered = next((count for count, root in reversed(list(enumerate(prefix_roots(leaves), 1))) if root == proven), 0)
+    covered = next((count for count, root in reversed(list(enumerate(cache.roots, 1))) if root == proven), 0)
     trees = {}
 
     def path(m: dict, size: int) -> str:
