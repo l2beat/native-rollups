@@ -27,7 +27,7 @@ from ethereum.forks.bogota.utils.address import compute_contract_address
 from ethereum.forks.bogota.vm.eoa_delegation import recover_authority
 from ethereum.forks.bogota.transactions.frame_transaction import FrameTransaction
 
-MODES = {0: "DEFAULT", 1: "VERIFY", 2: "SENDER", 3: "POST_TX"}
+MODES = {0: "DEFAULT", 1: "VERIFY", 2: "SENDER", 3: "ASSERT"}
 FLAGS = {1: "APPROVE_PAYMENT", 2: "APPROVE_EXECUTION", 4: "ATOMIC_BATCH"}
 # Arguments too large to show, summarized by name.
 SUMMARIZED = {"accountProof", "storageProof", "l1Header"}

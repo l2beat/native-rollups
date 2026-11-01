@@ -1655,7 +1655,7 @@ const MODE_TEXTS = {
   VERIFY: "A VERIFY frame: read-only, it must not revert, and it approves what its flags allow.",
   SENDER: "Calls the target as the sender, which is the caller the target sees.",
   DEFAULT: "Calls the target from EIP-8141's entry point address, not as the sender.",
-  POST_TX: "A POST_TX frame (EIP-7906): read-only, it runs after the others and checks the transaction's outcome. If it fails, everything after the validation is undone, and the transaction still pays.",
+  ASSERT: "An ASSERT frame (EIP-7906): read-only, it runs after the others and checks the transaction's outcome. If it fails, everything after the validation is undone, and the transaction still pays.",
 };
 
 function frameExplain(tx, f, i, layer) {
