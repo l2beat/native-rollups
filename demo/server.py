@@ -257,6 +257,22 @@ def explorer_query(db, path: str, query: dict):
     return None
 
 
+# How old the latest L2 block on L1 may be before /api/health reports the
+# rollup stalled, as the site's banner does.
+STALE_SECONDS = 600
+
+
+def health(server) -> tuple[bytes, int]:
+    """Whether the rollup advances: the latest L2 block the follower rebuilt
+    from L1 and its age, with status 503 once it is older than
+    STALE_SECONDS, for an uptime monitor to alert on."""
+    index = json.loads(server.explorer.get("index", {}))
+    latest = index["l2Blocks"][-1] if index and index["l2Blocks"] else None
+    age = int(time.time() - latest["timestamp"]) if latest else None
+    ok = age is not None and age <= STALE_SECONDS
+    return json.dumps({"ok": ok, "l2Block": latest and latest["number"], "ageSeconds": age}).encode(), 200 if ok else 503
+
+
 class ExplorerData:
     """The follower's data, read-only, with answers cached until it writes
     again, so that many visitors cost the same as one."""
@@ -454,6 +470,8 @@ class Handler(SimpleHTTPRequestHandler):
             # What the sequencer reported about the block: its preconfirmation and post.
             path = os.path.join(DATA, "blocks", self.path.split("/")[-1] + ".json")
             return self.send_json(open(path, "rb").read() if os.path.exists(path) else b"null")
+        if self.path == "/api/health":
+            return self.send_json(*health(self.server))
         if self.path == "/api/session":
             path = os.path.join(DATA, self.path.split("/")[-1] + ".json")
             return self.send_json(open(path, "rb").read() if os.path.exists(path) else b"null")

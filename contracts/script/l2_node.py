@@ -121,6 +121,7 @@ from ethereum.utils.ssz import _to_view
 
 import block_in_blobs as bib
 import jsonrpc
+import timestamps
 from ssz_roots import container4, payload_root, public_input_root, versioned_hashes_root  # noqa: E402
 
 L2_CHAIN_ID = 8079
@@ -1478,6 +1479,7 @@ class Node:
 
 
 def serve(args: argparse.Namespace) -> None:
+    timestamps.stamp()
     node = Node(args.state, args.l1_rpc, args.rollup, args.beacon)
     threading.Thread(target=node.follow, daemon=True).start()
 

@@ -126,6 +126,8 @@ h3 { font-size: 16px; margin: 20px 0 8px; }
 .lead { font-size: 17px; color: var(--ink-soft); max-width: 820px; }
 .section-lead { color: var(--muted); max-width: 820px; margin: 0 0 14px; }
 .note { color: var(--muted); font-size: 14px; }
+.status { background: var(--mock-bg); border-bottom: 1px solid var(--line); padding: 8px 20px; font-size: 14px; }
+.status p { margin: 0; max-width: 900px; }
 .row-links { display: flex; gap: 14px; font-size: 14px; margin: -4px 0 8px; }
 
 /* Badges */

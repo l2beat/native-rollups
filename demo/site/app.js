@@ -40,12 +40,33 @@ async function object(path) {
   return state.cache[path];
 }
 
+// How old the latest L2 block on L1 may be before the site says the rollup
+// stalled: blocks come every few seconds and reach L1 within minutes.
+const STALE_SECONDS = 600;
+
+// Says so when the explorer is not following the chain, instead of showing
+// old pages as if they were current.
+function showStatus(index, head) {
+  const el = document.getElementById("status");
+  const latest = index && index.l2Blocks.length ? index.l2Blocks[index.l2Blocks.length - 1] : null;
+  let text = "";
+  if (head === null) text = "The L1 node is not answering, so the pages show what the explorer saw last.";
+  else if (latest && Date.now() / 1000 - latest.timestamp > STALE_SECONDS) {
+    text = `No new L2 block has reached L1 for ${ago(latest.timestamp).replace("\u00a0ago", "")}: the devnet may be down or recovering. The pages show the chain up to L2 block #${num(latest.number)}.`;
+  }
+  el.hidden = !text;
+  el.innerHTML = text ? `<p>${esc(text)}</p>` : "";
+}
+
 async function refresh() {
   if (!state.snippets) state.snippets = await getJSON("/api/snippets");
   if (!state.sources) state.sources = await getJSON("/api/sources");
   if (!state.flat) state.flat = await getJSON("/api/flat");
   if (state.ethUsd === undefined) state.ethUsd = ((await getJSON("/api/eth-price")) || {}).usd ?? null;
-  const [index, session, head] = await Promise.all([getJSON("/api/explorer/index.json"), getJSON("/api/session"), rpc("eth_blockNumber")]);
+  const [index, session, head] = await Promise.all([
+    getJSON("/api/explorer/index.json"), getJSON("/api/session"), rpc("eth_blockNumber").catch(() => null),
+  ]);
+  showStatus(index, head ?? null);
   if (index && state.index && index.rollup !== state.index.rollup) [state.cache, state.records] = [{}, {}]; // a new episode
   state.index = index;
   state.session = session;

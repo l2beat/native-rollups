@@ -45,6 +45,7 @@ import block_in_blobs as bib
 import explorer as ex
 import jsonrpc
 import l2_node
+import timestamps
 from ssz_roots import container4, payload_root, public_input_root, versioned_hashes_root
 
 BLOCK_ADDED = keccak256(b"BlockAdded(uint64,bytes32)")
@@ -129,6 +130,8 @@ def write_record(path: str, entry: dict) -> None:
 
 
 def follow(args: argparse.Namespace) -> None:
+    if args.watch:
+        timestamps.stamp()
     chain = genesis(args.genesis)
     gas_limit = int(cast("call", "--rpc-url", args.l1_rpc, args.rollup, "l2GasLimit()(uint64)").split()[0])
     ex.load_signatures(args.abis)

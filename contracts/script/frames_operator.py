@@ -72,6 +72,7 @@ from ethereum_rlp import rlp
 
 import block_in_blobs as bib
 import jsonrpc
+import timestamps
 from ssz_roots import check_vectors  # noqa: E402
 
 ADVANCE_SIGNATURE = (
@@ -385,6 +386,7 @@ def sequence(args: argparse.Namespace) -> None:
     since its preconfirmation, standing in for proving, several per L1
     block. Appends what happened to --log, one JSON line per block
     preconfirmed or posted."""
+    timestamps.stamp()
     args.operator_key = args.sequencer_key
     log = open(args.log, "a")
     lock = threading.Lock()
