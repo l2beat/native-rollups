@@ -183,12 +183,12 @@ def json_rpc(url: str, method: str, *params):
 
 def get_logs(url: str, log_filter: dict, first: int, last: int) -> list:
     """The logs matching `log_filter` from block `first` to `last`, queried
-    in halves until each range fits: Reth answers at most 20,000 logs per
-    query."""
+    in halves until each range fits: Reth answers at most 20,000 logs, over
+    at most 100,000 blocks, per query."""
     try:
         return json_rpc(url, "eth_getLogs", {**log_filter, "fromBlock": hex(first), "toBlock": hex(last)})
     except RuntimeError as e:
-        if "max results" not in str(e) or first == last:
+        if ("max results" not in str(e) and "max block range" not in str(e)) or first == last:
             raise
     middle = (first + last) // 2
     return get_logs(url, log_filter, first, middle) + get_logs(url, log_filter, middle + 1, last)
