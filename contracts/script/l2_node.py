@@ -1486,11 +1486,14 @@ def serve(args: argparse.Namespace) -> None:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             reply = [node.handle(r) for r in body] if isinstance(body, list) else node.handle(body)
             data = json.dumps(reply).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the client stopped waiting
 
         def log_message(self, *_) -> None:
             pass

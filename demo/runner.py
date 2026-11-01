@@ -59,6 +59,10 @@ PACKAGES = os.path.join(DATA, "packages", "node_modules")
 DEPOSIT_RECIPIENTS = "0x" + "de90" + "0" * 34 + "{random:9}{random:9}"
 # The story events the session keeps.
 EVENTS_KEPT = 100
+# An episode that stops sooner than this counts towards a crash loop, after
+# which the runner waits longer before each new one, up to MAX_BACKOFF.
+SHORT_EPISODE = 600
+MAX_BACKOFF = 600
 # What the follower rebuilds from L1, which the explorer shows.
 EXPLORER = os.path.join(DATA, "explorer.db")
 
@@ -837,14 +841,18 @@ def main() -> None:
 
     number = 1
     new = args.new
+    failures, reason = 0, None  # episodes in a row that stopped soon after starting
     while True:
         episode = Episode(args, number)
+        started = time.time()
         try:
             i = None if new else episode.resume()
             if i is None:
                 episode.deploy()
                 i = 0
             new = False
+            if failures >= 2:
+                episode.event("restarted", f"The rollup's processes had stopped {failures} times in a row", reason=reason)
             while True:
                 try:
                     episode.step(i)
@@ -858,11 +866,20 @@ def main() -> None:
         except KeyboardInterrupt:
             episode.stop()
             sys.exit(0)
-        except Exception:
+        except Exception as e:
             traceback.print_exc()
-            time.sleep(args.interval)
+            reason = str(e)[-400:]
         episode.stop()
         number = episode.number + 1
+        # A restart that does not fix what stopped the processes would repeat
+        # every interval, and each restart loads the devnet, so the runner
+        # backs off while they keep stopping soon after they start. Only an
+        # episode that resumed the rollup records it, since an event writes
+        # the session.
+        failures = failures + 1 if time.time() - started < SHORT_EPISODE else 0
+        delay = min(args.interval * 2**failures, MAX_BACKOFF)
+        print(f"episode {episode.number} stopped ({failures} in a row soon after starting): next in {delay:.0f} s", flush=True)
+        time.sleep(delay)
 
 
 if __name__ == "__main__":
