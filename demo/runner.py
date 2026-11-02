@@ -43,10 +43,11 @@ import sys
 import threading
 import time
 import traceback
-import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONTRACTS = os.path.join(ROOT, "contracts")
+sys.path.insert(0, os.path.join(CONTRACTS, "script"))
+import jsonrpc  # noqa: E402
 DATA = os.path.join(ROOT, "demo", "data")
 # The rollup's mock prover key, which the site does not serve.
 PROVER = os.path.join(DATA, "prover.json")
@@ -58,6 +59,10 @@ PACKAGES = os.path.join(DATA, "packages", "node_modules")
 DEPOSIT_RECIPIENTS = "0x" + "de90" + "0" * 34 + "{random:9}{random:9}"
 # The story events the session keeps.
 EVENTS_KEPT = 100
+# An episode that stops sooner than this counts towards a crash loop, after
+# which the runner waits longer before each new one, up to MAX_BACKOFF.
+SHORT_EPISODE = 600
+MAX_BACKOFF = 600
 # What the follower rebuilds from L1, which the explorer shows.
 EXPLORER = os.path.join(DATA, "explorer.db")
 
@@ -105,6 +110,10 @@ PING_VALUE = 4 * MESSAGE_FEE
 # A bound on the gas of a claim on L1 besides its call, for the claimer's
 # fee check.
 L1_CLAIM_GAS = 400_000
+# NativeRollup.claimedL2Messages(uint256), and how many such calls go in one
+# JSON-RPC batch.
+CLAIMED_SELECTOR = "0x9a737a5f"
+CLAIMED_BATCH = 200
 # The gas limit of transactions that send a message. A message tree insert
 # costs more at some indices than at others, so an estimate made before
 # another message lands can fall short.
@@ -151,13 +160,7 @@ def create2_address(init_code: str) -> str:
 
 
 def json_rpc(url: str, method: str, *params):
-    request = urllib.request.Request(
-        url,
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}).encode(),
-        {"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        out = json.load(response)
+    out = jsonrpc.post(url, {"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}, 30, jsonrpc.ATTEMPTS)
     if "error" in out:
         raise RuntimeError(f"{method}: {out['error']['message']}")
     return out["result"]
@@ -387,10 +390,10 @@ class Episode:
             {"scenario": "uniswap-swaps", "name": "Uniswap swaps", "config": {"throughput": 1, "max_wallets": 3}},
             {"scenario": "setcodetx", "name": "EIP-7702 delegations", "config": {"throughput": 1, "max_wallets": 2, "max_authorizations": 3, "max_delegators": 20}},
             # Frame transactions in every EIP-8141 shape, and with an EIP-7906
-            # ASSERT frame, in bogota-devnet-1's envelope.
+            # ASSERT frame, in bogota-devnet-2's envelope.
             {"scenario": "frametx", "name": "EIP-8141 frame transactions", "config": {
                 "throughput": 1, "max_wallets": 3, "envelope": "keyed",
-                "shapes": "self-verify,transfer,batch,atomic,atomic-fail,expiry,post-tx",
+                "shapes": "self-verify,transfer,batch,atomic,atomic-fail,expiry,assert",
             }},
         ]
         l2_messages = [messages("withdrawals", L2_MESSENGER, "{randomaddr}", "0x", 2 * MESSAGE_FEE // 10**9)]
@@ -638,7 +641,7 @@ class Episode:
         """Claims an L2 to L1 message, unless anyone already did, such as
         this runner before it restarted, with a claim still on its way."""
         a = self.args
-        if cast("call", "--rpc-url", a.rpc, self.contracts["rollup"], "claimedL2Messages(uint256)(bool)", str(index)) == "true":
+        if self.claimed_on_l1([index]):
             self.claimed.add(index)
             return
         run([
@@ -661,6 +664,7 @@ class Episode:
         out = run([
             "uv", "run", "--project", a.specs, "python", "script/l2_claims.py",
             "--l1-rpc", a.rpc, "--rollup", self.contracts["rollup"], "--l2-rpc", self.l2_rpc, "--relayer", RELAYER_KEY,
+            "--cache", os.path.join(DATA, "l1_messages.json"),
             # Spamoor claims its first deposit itself, before it starts sending.
             *[x for key in [*USER_KEYS.values(), APPS_KEY, *([] if self.spamoor else [SPAMOOR_L2_KEY])] for x in ("--wallet", key)],
         ])
@@ -688,15 +692,34 @@ class Episode:
         if failed:
             raise failed
 
+    def claimed_on_l1(self, indices: list) -> set:
+        """Which of the L2 to L1 messages `indices` the rollup contract has
+        delivered, in batches of view calls."""
+        claimed = set()
+        for i in range(0, len(indices), CLAIMED_BATCH):
+            chunk = indices[i : i + CLAIMED_BATCH]
+            results = jsonrpc.batch(self.args.rpc, [
+                ("eth_call", [{"to": self.contracts["rollup"], "data": CLAIMED_SELECTOR + f"{index:064x}"}, "latest"]) for index in chunk
+            ])
+            claimed.update(index for index, r in zip(chunk, results) if int(r, 16))
+        return claimed
+
     def relay_withdrawals(self) -> None:
         """Claims on L1, with the claimer's key, the withdrawals to addresses
         outside the story whose fee covers the claim, as any claimer could."""
         users = {address.lower() for address in self.users.values()}
         while self.node is None or self.node.poll() is None:
             try:
-                price = int(cast("gas-price", "--rpc-url", self.args.rpc))
-                for index, to, fee, gas_limit in self.withdrawals():
-                    if to not in users and index not in self.claimed and fee >= (L1_CLAIM_GAS + 2 * gas_limit) * price:
+                price = int(json_rpc(self.args.rpc, "eth_gasPrice"), 16)
+                due = [
+                    index for index, to, fee, gas_limit in self.withdrawals()
+                    if to not in users and index not in self.claimed and fee >= (L1_CLAIM_GAS + 2 * gas_limit) * price
+                ]
+                # Others may have claimed them, or this runner before it
+                # restarted, which starts with none known.
+                self.claimed |= self.claimed_on_l1(due)
+                for index in due:
+                    if index not in self.claimed:
                         try:
                             self.claim(index, CLAIMER_KEY, "claimer")
                         except Exception:  # the others still go ahead
@@ -796,7 +819,7 @@ def main() -> None:
     parser.add_argument("--submit-rpc", nargs="+",
                         help="the L1 RPCs every transaction is sent to, by default the devnet's Nethermind, Reth and ethrex")
     parser.add_argument("--beacon", help="a beacon API that serves blobs, by default the devnet's first Lighthouse")
-    parser.add_argument("--specs", default=os.path.expanduser("~/work/execution-specs-zkevm-bogota"),
+    parser.add_argument("--specs", default=os.path.expanduser("~/work/execution-specs-zkevm-bogota-2"),
                         help="the execution-specs environment of the contract scripts")
     parser.add_argument("--interval", type=float, default=12, help="seconds between steps of the story")
     parser.add_argument("--block-time", type=int, default=4, help="seconds between L2 blocks")
@@ -818,14 +841,18 @@ def main() -> None:
 
     number = 1
     new = args.new
+    failures, reason = 0, None  # episodes in a row that stopped soon after starting
     while True:
         episode = Episode(args, number)
+        started = time.time()
         try:
             i = None if new else episode.resume()
             if i is None:
                 episode.deploy()
                 i = 0
             new = False
+            if failures >= 2:
+                episode.event("restarted", f"The rollup's processes had stopped {failures} times in a row", reason=reason)
             while True:
                 try:
                     episode.step(i)
@@ -839,11 +866,20 @@ def main() -> None:
         except KeyboardInterrupt:
             episode.stop()
             sys.exit(0)
-        except Exception:
+        except Exception as e:
             traceback.print_exc()
-            time.sleep(args.interval)
+            reason = str(e)[-400:]
         episode.stop()
         number = episode.number + 1
+        # A restart that does not fix what stopped the processes would repeat
+        # every interval, and each restart loads the devnet, so the runner
+        # backs off while they keep stopping soon after they start. Only an
+        # episode that resumed the rollup records it, since an event writes
+        # the session.
+        failures = failures + 1 if time.time() - started < SHORT_EPISODE else 0
+        delay = min(args.interval * 2**failures, MAX_BACKOFF)
+        print(f"episode {episode.number} stopped ({failures} in a row soon after starting): next in {delay:.0f} s", flush=True)
+        time.sleep(delay)
 
 
 if __name__ == "__main__":

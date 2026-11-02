@@ -43,7 +43,9 @@ from ethereum.forks.bogota.transactions.frame_transaction import FrameMode
 
 import block_in_blobs as bib
 import explorer as ex
+import jsonrpc
 import l2_node
+import timestamps
 from ssz_roots import container4, payload_root, public_input_root, versioned_hashes_root
 
 BLOCK_ADDED = keccak256(b"BlockAdded(uint64,bytes32)")
@@ -66,12 +68,8 @@ def cast(*args: str) -> str:
     return subprocess.run(["cast", *args], check=True, capture_output=True, text=True, timeout=180).stdout.strip()
 
 
-def rpc(url: str, method: str, *params: str):
-    return json.loads(cast("rpc", "--rpc-url", url, method, *params))
-
-
-def http_get(url: str):
-    return json.loads(subprocess.run(["curl", "-sf", "-m", "60", url], check=True, capture_output=True, text=True).stdout)
+def rpc(url: str, method: str, *params):
+    return jsonrpc.call(url, method, *params)
 
 
 def decode_advance(data: bytes) -> dict:
@@ -100,24 +98,28 @@ def genesis(state_file: str) -> fork.BlockChain:
 
 def payload_blobs(args: argparse.Namespace, l1_block: dict, versioned_hashes: list) -> list:
     """The blobs with `versioned_hashes`, from the consensus layer."""
-    genesis_time = int(http_get(f"{args.beacon}/eth/v1/beacon/genesis")["data"]["genesis_time"])
-    seconds_per_slot = int(http_get(f"{args.beacon}/eth/v1/config/spec")["data"]["SECONDS_PER_SLOT"])
+    genesis_time = int(jsonrpc.get(f"{args.beacon}/eth/v1/beacon/genesis")["data"]["genesis_time"])
+    spec = jsonrpc.get(f"{args.beacon}/eth/v1/config/spec")["data"]
+    seconds_per_slot = int(spec["SECONDS_PER_SLOT"])
     slot = (int(l1_block["timestamp"], 16) - genesis_time) // seconds_per_slot
     # The execution layer can show the block's logs before the consensus
     # layer serves its blobs, so a fresh block's request may fail at first.
     for attempt in range(BLOB_ATTEMPTS):
         try:
-            blobs = http_get(f"{args.beacon}/eth/v1/beacon/blobs/{slot}")["data"]
-            break
-        except subprocess.CalledProcessError:
-            if attempt == BLOB_ATTEMPTS - 1:
-                raise
-            time.sleep(2)
-    by_hash = {}
-    for blob in blobs:
-        blob = bytes.fromhex(blob[2:])
-        by_hash[bib.versioned_hash(bib.commitment(blob))] = blob
-    return [by_hash[h] for h in versioned_hashes]
+            by_hash = {}
+            for blob in jsonrpc.get(f"{args.beacon}/eth/v1/beacon/blobs/{slot}")["data"]:
+                blob = bytes.fromhex(blob[2:])
+                by_hash[bib.versioned_hash(bib.commitment(blob))] = blob
+            return [by_hash[h] for h in versioned_hashes]
+        except (RuntimeError, OSError, KeyError):
+            if attempt < BLOB_ATTEMPTS - 1:
+                time.sleep(2)
+    # Consensus clients must keep blobs for a window of epochs (EIP-4844),
+    # and may prune them after it.
+    kept = int(spec.get("MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS", spec["MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS"]))
+    if slot < (time.time() - genesis_time) // seconds_per_slot - kept * int(spec["SLOTS_PER_EPOCH"]):
+        raise RuntimeError(f"the consensus layer no longer has the blobs of slot {slot}: it must keep only {kept} epochs of them")
+    raise RuntimeError(f"the consensus layer has no blobs {[l2_node.hx(h) for h in versioned_hashes]} at slot {slot}")
 
 
 def write_record(path: str, entry: dict) -> None:
@@ -127,6 +129,8 @@ def write_record(path: str, entry: dict) -> None:
 
 
 def follow(args: argparse.Namespace) -> None:
+    if args.watch:
+        timestamps.stamp()
     chain = genesis(args.genesis)
     gas_limit = int(cast("call", "--rpc-url", args.l1_rpc, args.rollup, "l2GasLimit()(uint64)").split()[0])
     ex.load_signatures(args.abis)
@@ -165,11 +169,9 @@ def follow(args: argparse.Namespace) -> None:
                 # L1 lost blocks the follower has: it starts again from a
                 # snapshot L1 has, when the runner restarts it.
                 raise SystemExit(f"the rollup contract no longer has L2 block {verified}")
-            logs = rpc(args.l1_rpc, "eth_getLogs", json.dumps({
-                "address": args.rollup, "fromBlock": hex(from_block), "toBlock": "latest",
-                "topics": ["0x" + BLOCK_ADDED.hex()],
-            }))
-        except subprocess.SubprocessError:
+            latest_l1 = int(rpc(args.l1_rpc, "eth_blockNumber"), 16)
+            logs = l2_node.get_logs(args.l1_rpc, {"address": args.rollup, "topics": ["0x" + BLOCK_ADDED.hex()]}, from_block, latest_l1)
+        except (subprocess.SubprocessError, RuntimeError, OSError):
             if not args.watch:
                 raise
             traceback.print_exc()  # L1 may be back at the next poll
@@ -197,7 +199,7 @@ def follow(args: argparse.Namespace) -> None:
         if explorer:
             try:
                 index_messages(args, explorer)
-            except subprocess.SubprocessError:
+            except (subprocess.SubprocessError, RuntimeError, OSError):
                 if not args.watch:
                     raise
                 traceback.print_exc()
@@ -212,7 +214,7 @@ def follow(args: argparse.Namespace) -> None:
 
 def rollup_block_number(args: argparse.Namespace) -> int:
     """The L2 block the rollup contract has last."""
-    return int(cast("call", "--rpc-url", args.l1_rpc, args.rollup, "blockNumber()(uint64)").split()[0])
+    return int(rpc(args.l1_rpc, "eth_call", {"to": args.rollup, "data": l2_node.hx(l2_node.BLOCK_NUMBER_SELECTOR)}, "latest"), 16)
 
 
 def still_on_l1(args: argparse.Namespace, block: dict) -> bool:
@@ -225,7 +227,7 @@ def still_on_l1(args: argparse.Namespace, block: dict) -> bool:
 def l1_tx(args: argparse.Namespace, tx_hash: str) -> dict:
     tx = rpc(args.l1_rpc, "eth_getTransactionByHash", tx_hash)
     receipt = rpc(args.l1_rpc, "eth_getTransactionReceipt", tx_hash)
-    block = rpc(args.l1_rpc, "eth_getBlockByNumber", tx["blockNumber"], "false")
+    block = rpc(args.l1_rpc, "eth_getBlockByNumber", tx["blockNumber"], False)
     return ex.l1_transaction(tx, receipt, block)
 
 
@@ -303,9 +305,7 @@ def index_messages(args: argparse.Namespace, explorer: ex.Explorer) -> None:
         return  # no new L1 block
     for topic, kind in ((L1_MESSAGE_SENT, "deposit"), (L2_MESSAGE_CLAIMED, "withdrawal claim")):
         hashes = []
-        for log in rpc(args.l1_rpc, "eth_getLogs", json.dumps({
-            "address": args.rollup, "fromBlock": hex(start), "toBlock": hex(latest), "topics": ["0x" + topic.hex()],
-        })):
+        for log in l2_node.get_logs(args.l1_rpc, {"address": args.rollup, "topics": ["0x" + topic.hex()]}, start, latest):
             if log["transactionHash"] not in hashes:
                 hashes.append(log["transactionHash"])
         for h in hashes:
@@ -322,10 +322,10 @@ def rebuild(args: argparse.Namespace, chain: fork.BlockChain, gas_limit: int, lo
     tx = decode_transaction(bytes.fromhex(rpc(args.l1_rpc, "eth_getRawTransactionByHash", log["transactionHash"])[2:]))
     frame = next(f for f in tx.frames if f.mode == FrameMode.SENDER and bytes(f.to) == bytes.fromhex(args.rollup[2:]))
     p = decode_advance(bytes(frame.data))
-    l1_block = rpc(args.l1_rpc, "eth_getBlockByNumber", log["blockNumber"], "false")
+    l1_block = rpc(args.l1_rpc, "eth_getBlockByNumber", log["blockNumber"], False)
     blobs = payload_blobs(args, l1_block, [bytes(h) for h in tx.blob_versioned_hashes[: p["payloadBlobCount"]]])
     bal, transactions = bib.blobs_to_execution_payload_data(blobs)
-    anchor = bytes.fromhex(rpc(args.l1_rpc, "eth_getBlockByNumber", hex(p["anchorBlockNumber"]), "false")["hash"][2:])
+    anchor = bytes.fromhex(rpc(args.l1_rpc, "eth_getBlockByNumber", hex(p["anchorBlockNumber"]), False)["hash"][2:])
 
     # Re-execute once for the fields that L1 only has as SSZ roots.
     parent = chain.blocks[-1].header

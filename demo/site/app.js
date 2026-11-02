@@ -40,12 +40,33 @@ async function object(path) {
   return state.cache[path];
 }
 
+// How old the latest L2 block on L1 may be before the site says the rollup
+// stalled: blocks come every few seconds and reach L1 within minutes.
+const STALE_SECONDS = 600;
+
+// Says so when the explorer is not following the chain, instead of showing
+// old pages as if they were current.
+function showStatus(index, head) {
+  const el = document.getElementById("status");
+  const latest = index && index.l2Blocks.length ? index.l2Blocks[index.l2Blocks.length - 1] : null;
+  let text = "";
+  if (head === null) text = "The L1 node is not answering, so the pages show what the explorer saw last.";
+  else if (latest && Date.now() / 1000 - latest.timestamp > STALE_SECONDS) {
+    text = `No new L2 block has reached L1 for ${ago(latest.timestamp).replace("\u00a0ago", "")}: the devnet may be down or recovering. The pages show the chain up to L2 block #${num(latest.number)}.`;
+  }
+  el.hidden = !text;
+  el.innerHTML = text ? `<p>${esc(text)}</p>` : "";
+}
+
 async function refresh() {
   if (!state.snippets) state.snippets = await getJSON("/api/snippets");
   if (!state.sources) state.sources = await getJSON("/api/sources");
   if (!state.flat) state.flat = await getJSON("/api/flat");
   if (state.ethUsd === undefined) state.ethUsd = ((await getJSON("/api/eth-price")) || {}).usd ?? null;
-  const [index, session, head] = await Promise.all([getJSON("/api/explorer/index.json"), getJSON("/api/session"), rpc("eth_blockNumber")]);
+  const [index, session, head] = await Promise.all([
+    getJSON("/api/explorer/index.json"), getJSON("/api/session"), rpc("eth_blockNumber").catch(() => null),
+  ]);
+  showStatus(index, head ?? null);
   if (index && state.index && index.rollup !== state.index.rollup) [state.cache, state.records] = [{}, {}]; // a new episode
   state.index = index;
   state.session = session;
@@ -203,11 +224,10 @@ const contents = (kinds) =>
 // Forks by the first byte of a schema ID, `(fork_index << 8) | revision`.
 const FORKS = { 0x15: "Amsterdam", 0x16: "Bogota" };
 // A transaction's nonce. A frame transaction's is the sequence of the nonce
-// keys it names (EIP-8250), where key 0 is the account nonce.
+// keys it names (EIP-8250), and naming none selects the account nonce.
 function nonceRow(tx) {
   const keys = tx.nonceKeys || [];
-  if (!keys.length) return ["Nonce", tx.nonce, ""];
-  if (keys.length === 1 && BigInt(keys[0]) === 0n) return ["Nonce", tx.nonce, "Of nonce key 0, the account nonce (EIP-8250)."];
+  if (!keys.length) return ["Nonce", tx.nonce, tx.frames ? "The account nonce, since it names no nonce keys (EIP-8250)." : ""];
   return ["Nonce", `${tx.nonce} <span class="muted">of keys ${keys.map((k) => hash(k)).join(", ")}</span>`,
     "Of the keys it names, which the nonce manager keeps apart from the account nonce (EIP-8250)."];
 }
@@ -1890,10 +1910,12 @@ function mainnetCost(gas) {
 
 function feeRows(tx, chain) {
   if (tx.effectiveGasPrice === undefined || tx.fee === undefined) return { overview: [], details: [] };
-  const offered = tx.maxFeePerGas !== undefined
-    ? [["Max fee per gas", perGas(tx.maxFeePerGas), "The most the sender pays per gas, base fee included."],
-      ["Max priority fee per gas", perGas(tx.maxPriorityFeePerGas), "The most the sender tips per gas, on top of the base fee."]]
-    : [];
+  const tipRow = ["Max priority fee per gas", perGas(tx.maxPriorityFeePerGas), "The most the sender tips per gas, on top of the base fee."];
+  const offered = tx.maxFee !== undefined
+    ? [["Max fee", eth(tx.maxFee), "The most the sender pays in all, for the execution, state and blob gas together (EIP-8141)."], tipRow]
+    : tx.maxFeePerGas !== undefined
+      ? [["Max fee per gas", perGas(tx.maxFeePerGas), "The most the sender pays per gas, base fee included."], tipRow]
+      : [];
   return {
     overview: [
       ["Transaction fee", `${eth(tx.fee)} <span class="muted">= ${num(tx.gasUsed)} gas × ${num(tx.effectiveGasPrice)} wei</span>${mainnetCost(tx.gasUsed)}`,
@@ -2200,12 +2222,21 @@ async function loadBlob(number) {
   const versionedHash = b.l1.blobVersionedHashes[0];
   if (!state.beacon) {
     const [g, spec] = await Promise.all([getJSON("/beacon/eth/v1/beacon/genesis"), getJSON("/beacon/eth/v1/config/spec")]);
-    state.beacon = { genesis: Number(g.data.genesis_time), secondsPerSlot: Number(spec.data.SECONDS_PER_SLOT) };
+    state.beacon = {
+      genesis: Number(g.data.genesis_time), secondsPerSlot: Number(spec.data.SECONDS_PER_SLOT),
+      // How long consensus clients keep blobs (EIP-4844), in slots.
+      keptSlots: Number(spec.data.MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS || spec.data.MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS) * Number(spec.data.SLOTS_PER_EPOCH),
+    };
   }
   const l1Block = await rpc("eth_getBlockByNumber", ["0x" + b.l1.block.toString(16), false]);
   const slot = Math.floor((parseInt(l1Block.timestamp, 16) - state.beacon.genesis) / state.beacon.secondsPerSlot);
   const url = `/beacon/eth/v1/beacon/blobs/${slot}?versioned_hashes=${versionedHash}`;
   const res = await getJSON(url);
+  if (!res || !res.data || !res.data.length) {
+    const head = Math.floor((Date.now() / 1000 - state.beacon.genesis) / state.beacon.secondsPerSlot);
+    if (slot < head - state.beacon.keptSlots) throw Object.assign(new Error("pruned"), { pruned: true, days: Math.round(state.beacon.keptSlots * state.beacon.secondsPerSlot / 86400) });
+    throw new Error(`the beacon node has no blob at slot ${slot}`);
+  }
   const blob = hexToBytes(res.data[0]);
   // EIP-8142: 31 bytes in each 32-byte field element, whose first byte is zero.
   const raw = new Uint8Array(4096 * 31);
@@ -2225,12 +2256,12 @@ async function loadBlob(number) {
 
 const TX_FIELDS = {
   2: ["chainId", "nonce", "maxPriorityFeePerGas", "maxFeePerGas", "gasLimit", "to", "value", "data", "accessList", "yParity", "r", "s"],
-  6: ["chainId", "nonce", "sender", "frames", "signatures", "fees", "blobVersionedHashes"],
+  6: ["chainId", "nonceKeys", "nonceSeq", "sender", "frames", "signatures", "fees", "blobVersionedHashes"],
 };
-const INT_FIELDS = new Set(["chainId", "nonce", "maxPriorityFeePerGas", "maxFeePerGas", "gasLimit", "value", "yParity", "mode", "flags", "execution", "state", "scheme", "maxFeePerBlobGas"]);
+const INT_FIELDS = new Set(["chainId", "nonce", "nonceSeq", "maxPriorityFeePerGas", "maxFeePerGas", "maxFee", "gasLimit", "value", "yParity", "mode", "flags", "execution", "state", "scheme"]);
 const FRAME_FIELDS = ["mode", "flags", "target", "limits", "value", "data"];
 const SIGNATURE_FIELDS = ["scheme", "signer", "msg", "signature"];
-const FEE_FIELDS = ["maxPriorityFeePerGas", "maxFeePerGas", "maxFeePerBlobGas"];
+const FEE_FIELDS = ["maxFee", "maxPriorityFeePerGas"];
 
 // A decoded RLP value, with field names where the transaction type defines them.
 function rlpTree(v, names, open = false) {
@@ -2294,6 +2325,11 @@ async function blobPage(route) {
   try {
     d = await loadBlob(route.n);
   } catch (e) {
+    if (e.pruned) {
+      return `<h1>Blob of L2 block #${route.n}</h1><p class="note">The beacon node no longer has this blob: consensus clients
+        keep blobs for about ${e.days} days (EIP-4844), and this one is older. L1 still commits to it by its versioned hash, and
+        the follower rebuilt the block while the blob was available.</p>`;
+    }
     return `<h1>Blob of L2 block #${route.n}</h1><p class="note">Could not fetch the blob from the beacon node: ${esc(e)}</p>`;
   }
   const b = d.block;

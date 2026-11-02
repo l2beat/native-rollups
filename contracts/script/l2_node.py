@@ -4,8 +4,8 @@ A minimal L2 node and mock prover for the native rollup.
 It runs the L2 chain with execution-specs under the L1 stateless validation
 program's rules, holds the chain's state in memory, and serves a JSON-RPC
 with a mempool. A native rollup runs its L1's rules, and the L1 here has
-bogota-devnet-1's rules, so the rules come from execution-specs
-`devnets/bogota/1` with the stateless guest of `projects/zkevm` ported to its
+bogota-devnet-2's rules, so the rules come from execution-specs
+`devnets/bogota/2` with the stateless guest of `projects/zkevm` ported to its
 Bogota fork.
 
 The genesis holds the system contracts the Specification requires, the
@@ -58,7 +58,6 @@ import threading
 import time
 import traceback
 import typing
-import urllib.request
 from dataclasses import dataclass
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -121,6 +120,8 @@ from ethereum.forks.bogota.vm.interpreter import process_top_level
 from ethereum.utils.ssz import _to_view
 
 import block_in_blobs as bib
+import jsonrpc
+import timestamps
 from ssz_roots import container4, payload_root, public_input_root, versioned_hashes_root  # noqa: E402
 
 L2_CHAIN_ID = 8079
@@ -169,26 +170,17 @@ def cast(*args: str) -> str:
 
 
 def json_rpc(url: str, method: str, *params):
-    request = urllib.request.Request(
-        url,
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}).encode(),
-        {"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        out = json.load(response)
-    if "error" in out:
-        raise RuntimeError(f"{method}: {out['error']}")
-    return out["result"]
+    return jsonrpc.call(url, method, *params)
 
 
 def get_logs(url: str, log_filter: dict, first: int, last: int) -> list:
     """The logs matching `log_filter` from block `first` to `last`, queried
-    in halves until each range fits: Reth answers at most 20,000 logs per
-    query."""
+    in halves until each range fits: Reth answers at most 20,000 logs, over
+    at most 100,000 blocks, per query."""
     try:
         return json_rpc(url, "eth_getLogs", {**log_filter, "fromBlock": hex(first), "toBlock": hex(last)})
     except RuntimeError as e:
-        if "max results" not in str(e) or first == last:
+        if ("max results" not in str(e) and "max block range" not in str(e)) or first == last:
             raise
     middle = (first + last) // 2
     return get_logs(url, log_filter, first, middle) + get_logs(url, log_filter, middle + 1, last)
@@ -227,6 +219,16 @@ def tx_nonce(tx) -> int:
     keys must hold: the pool only takes the legacy key, the sender's account
     nonce."""
     return int(tx.nonce_seq) if isinstance(tx, FrameTransaction) else int(tx.nonce)
+
+
+def frame_fees(tx: FrameTransaction, base_fee: int) -> tuple[int, int]:
+    """A frame transaction's escrow and price per gas at `base_fee`, as
+    EIP-8141's `calculate_frame_transaction_fees` derives them from its
+    `max_fee` budget. The pool takes no blobs, so there is no blob fee."""
+    max_gas = int(validate_frame_transaction(tx).max_gas)
+    required = max_gas * base_fee
+    tip = min(int(tx.fees.max_priority_fee_per_gas) * max_gas, max(int(tx.fees.max_fee) - required, 0))
+    return required + tip, base_fee + tip // max_gas
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +282,7 @@ def genesis_fixture(config: dict) -> dict:
                 ),
                 TestAddress(FRAMES_HELPER): TestAccount(code=bytes.fromhex(config["framesHelperCode"][2:])),
             }
-        ),
+        ).with_genesis_accounts(),
         post={},
         chain_id=L2_CHAIN_ID,
         genesis_environment=Environment(gas_limit=L2_GAS_LIMIT),
@@ -926,7 +928,11 @@ class Node:
 
         source = SimpleNamespace(l1_rpc=self.l1_rpc, beacon=self.beacon, rollup=self.rollup)
         latest = int(json_rpc(self.l1_rpc, "eth_blockNumber"), 16)
-        logs = get_logs(self.l1_rpc, {"address": self.rollup, "topics": [hx(l2_follower.BLOCK_ADDED)]}, 0, latest)
+        # Anchors never move backwards, and a block lands on L1 after its
+        # anchor, so the missing blocks are on L1 from the head's anchor on.
+        anchor = json_rpc(self.l1_rpc, "eth_getBlockByHash", hx(self.head.parent_beacon_block_root), False)
+        first = int(anchor["number"], 16) if anchor else 0
+        logs = get_logs(self.l1_rpc, {"address": self.rollup, "topics": [hx(l2_follower.BLOCK_ADDED)]}, first, latest)
         derived = False
         for log in sorted(logs, key=lambda log: int(log["topics"][1], 16)):
             if int(log["topics"][1], 16) == int(self.head.number) + 1:
@@ -1043,8 +1049,9 @@ class Node:
     def effective_gas_price(self, tx, base_fee: int) -> int:
         if isinstance(tx, (LegacyTransaction, AccessListTransaction)):
             return int(tx.gas_price)
-        fees = tx.fees if isinstance(tx, FrameTransaction) else tx
-        return min(int(fees.max_fee_per_gas), base_fee + int(fees.max_priority_fee_per_gas))
+        if isinstance(tx, FrameTransaction):
+            return frame_fees(tx, base_fee)[1]
+        return min(int(tx.max_fee_per_gas), base_fee + int(tx.max_priority_fee_per_gas))
 
     def rpc_transaction(self, entry: dict, block: dict | None, index: int | None) -> dict:
         tx = entry["tx"]
@@ -1058,7 +1065,7 @@ class Node:
         if isinstance(tx, FrameTransaction):
             out.update({
                 "chainId": hex(int(tx.chain_id)), "sender": hx(tx.sender),
-                "maxFeePerGas": hex(int(tx.fees.max_fee_per_gas)),
+                "maxFee": hex(int(tx.fees.max_fee)),
                 "maxPriorityFeePerGas": hex(int(tx.fees.max_priority_fee_per_gas)),
                 "gas": hex(sum(int(f.gas_limits.execution) + int(f.gas_limits.state) for f in tx.frames)),
                 "value": "0x0", "input": "0x",
@@ -1263,7 +1270,7 @@ class Node:
         anyone else can change: frames that only prove the root and claim
         messages paying the sender itself, which has no code."""
         account = self.chain.state.get_account_optional(sender)
-        max_cost = int(validate_frame_transaction(tx).max_gas) * int(tx.fees.max_fee_per_gas)
+        max_cost = frame_fees(tx, self.next_base_fee())[0]
         if account is not None and int(account.balance) >= max_cost:
             return
         prefix = next((i for i, f in enumerate(tx.frames) if f.mode == FrameMode.VERIFY), len(tx.frames))
@@ -1472,6 +1479,7 @@ class Node:
 
 
 def serve(args: argparse.Namespace) -> None:
+    timestamps.stamp()
     node = Node(args.state, args.l1_rpc, args.rollup, args.beacon)
     threading.Thread(target=node.follow, daemon=True).start()
 
@@ -1480,11 +1488,14 @@ def serve(args: argparse.Namespace) -> None:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             reply = [node.handle(r) for r in body] if isinstance(body, list) else node.handle(body)
             data = json.dumps(reply).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the client stopped waiting
 
         def log_message(self, *_) -> None:
             pass
