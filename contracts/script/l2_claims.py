@@ -152,13 +152,19 @@ class MessageCache:
     their leaves and the tree's root after each, from the cache file and the
     logs after it, and the claimed bits seen set. The file keeps only
     messages `CACHE_MARGIN` blocks below the anchor, which an L1 reorg
-    cannot change, and claimed bits, which never clear."""
+    cannot change, and the claimed bits with the L2 block they were read
+    at. Those come from the L2 head, which can roll back: the node drops
+    preconfirmed blocks that cannot reach L1, and L1 can drop posted ones.
+    So they are kept only while that block is still in the node's chain."""
 
-    def __init__(self, path: str | None, l1_rpc: str, rollup: str, anchor: int):
-        self.path, self.rollup = path, rollup
+    def __init__(self, path: str | None, l1_rpc: str, l2_rpc: str, rollup: str, anchor: int):
+        self.path, self.l2_rpc, self.rollup = path, l2_rpc, rollup
         stored = json.load(open(path)) if path and os.path.exists(path) else None
         if stored is None or stored["rollup"] != rollup or stored["through"] > anchor:
             stored = {"through": -1, "messages": [], "leaves": [], "roots": [], "branch": [hx(bytes(32))] * TREE_DEPTH, "claimed": {}}
+        seen = stored.get("claimedAt")
+        if not seen or (json_rpc(l2_rpc, "eth_getBlockByNumber", hex(seen["number"]), False) or {}).get("hash") != seen["hash"]:
+            stored["claimed"] = {}
         self.claimed_words = {int(i): int(w, 16) for i, w in stored["claimed"].items()}
         cached = stored["messages"]
         new = l1_messages(l1_rpc, rollup, anchor, stored["through"] + 1, len(cached))
@@ -188,8 +194,16 @@ class MessageCache:
         stored = {
             "rollup": self.rollup, "through": self.through, "messages": self.messages[:n],
             "leaves": [hx(x) for x in self.leaves[:n]], "roots": [hx(x) for x in self.roots[:n]],
-            "branch": [hx(x) for x in self.branch], "claimed": {str(i): hex(w) for i, w in self.claimed_words.items()},
+            "branch": [hx(x) for x in self.branch], "claimed": {},
         }
+        # The head after every read, so that a rollback of any block the
+        # bits came from changes the chain at or below it.
+        try:
+            head = json_rpc(self.l2_rpc, "eth_getBlockByNumber", "latest", False)
+            stored["claimed"] = {str(i): hex(w) for i, w in self.claimed_words.items()}
+            stored["claimedAt"] = {"number": int(head["number"], 16), "hash": head["hash"]}
+        except (OSError, RuntimeError):
+            pass  # keep no bits without knowing what they were read against
         with open(self.path + ".tmp", "w") as f:
             json.dump(stored, f)
         os.replace(self.path + ".tmp", self.path)
@@ -219,7 +233,7 @@ def main() -> None:
     if int(head["number"], 16) == 0:
         return
     anchor = int(json_rpc(args.l1_rpc, "eth_getBlockByHash", head["parentBeaconBlockRoot"], False)["number"], 16)
-    cache = MessageCache(args.cache, args.l1_rpc, args.rollup, anchor)
+    cache = MessageCache(args.cache, args.l1_rpc, args.l2_rpc, args.rollup, anchor)
     try:
         claim_messages(args, head, anchor, cache)
     finally:

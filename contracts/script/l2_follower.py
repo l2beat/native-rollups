@@ -102,25 +102,24 @@ def payload_blobs(args: argparse.Namespace, l1_block: dict, versioned_hashes: li
     spec = jsonrpc.get(f"{args.beacon}/eth/v1/config/spec")["data"]
     seconds_per_slot = int(spec["SECONDS_PER_SLOT"])
     slot = (int(l1_block["timestamp"], 16) - genesis_time) // seconds_per_slot
-    # Consensus clients keep blobs only for a window of epochs (EIP-4844).
-    kept = int(spec.get("MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS", spec["MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS"]))
-    if slot < (time.time() - genesis_time) // seconds_per_slot - kept * int(spec["SLOTS_PER_EPOCH"]):
-        raise RuntimeError(f"the consensus layer no longer keeps the blobs of slot {slot}: it keeps {kept} epochs of them")
     # The execution layer can show the block's logs before the consensus
     # layer serves its blobs, so a fresh block's request may fail at first.
     for attempt in range(BLOB_ATTEMPTS):
         try:
-            blobs = jsonrpc.get(f"{args.beacon}/eth/v1/beacon/blobs/{slot}")["data"]
-            break
-        except (RuntimeError, OSError):
-            if attempt == BLOB_ATTEMPTS - 1:
-                raise
-            time.sleep(2)
-    by_hash = {}
-    for blob in blobs:
-        blob = bytes.fromhex(blob[2:])
-        by_hash[bib.versioned_hash(bib.commitment(blob))] = blob
-    return [by_hash[h] for h in versioned_hashes]
+            by_hash = {}
+            for blob in jsonrpc.get(f"{args.beacon}/eth/v1/beacon/blobs/{slot}")["data"]:
+                blob = bytes.fromhex(blob[2:])
+                by_hash[bib.versioned_hash(bib.commitment(blob))] = blob
+            return [by_hash[h] for h in versioned_hashes]
+        except (RuntimeError, OSError, KeyError):
+            if attempt < BLOB_ATTEMPTS - 1:
+                time.sleep(2)
+    # Consensus clients must keep blobs for a window of epochs (EIP-4844),
+    # and may prune them after it.
+    kept = int(spec.get("MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS", spec["MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS"]))
+    if slot < (time.time() - genesis_time) // seconds_per_slot - kept * int(spec["SLOTS_PER_EPOCH"]):
+        raise RuntimeError(f"the consensus layer no longer has the blobs of slot {slot}: it must keep only {kept} epochs of them")
+    raise RuntimeError(f"the consensus layer has no blobs {[l2_node.hx(h) for h in versioned_hashes]} at slot {slot}")
 
 
 def write_record(path: str, entry: dict) -> None:
