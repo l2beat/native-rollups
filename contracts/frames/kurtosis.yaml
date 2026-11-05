@@ -17,6 +17,10 @@ participants:
     # tree at the L1 block an L2 block anchors to, up to 256 blocks back.
     el_extra_params:
       - --rpc.eth-proof-window=256
+      # Tight log limits, so that a log scan which grows with the chain fails
+      # early instead of weeks into the devnet.
+      - --rpc.max-blocks-per-filter=1000
+      - --rpc.max-logs-per-response=200
     cl_type: lighthouse
     cl_image: ethpandaops/lighthouse:unstable-8e0aeef
   - el_type: ethrex
@@ -59,7 +63,7 @@ ethereum_genesis_generator_params:
 port_publisher:
   el:
     enabled: true
-    public_port_start: 30100
+    public_port_start: 30400
   cl:
     enabled: true
-    public_port_start: 31100
+    public_port_start: 31400
