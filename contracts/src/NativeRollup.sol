@@ -48,7 +48,6 @@ abstract contract NativeRollup {
     }
 
     uint8 internal constant LEANSTARK_SCHEME = 0x11; // EIP-8288
-    uint64 internal constant L2_SLOT_NUMBER = 0; // TBD
     // SSZ root of an empty progressive list: sha256 of 64 zero bytes.
     bytes32 internal constant EMPTY_LIST_ROOT = 0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b;
     // Storage slot of `L2Messenger.sentMessages`.
@@ -260,7 +259,7 @@ abstract contract NativeRollup {
         header.blobGasUsed = 0; // fixed for L2
         header.excessBlobGas = 0; // fixed for L2
         header.blockAccessListRoot = params.blockAccessListRoot; // constrained (proven)
-        header.slotNumber = L2_SLOT_NUMBER; // fixed for L2 (value TBD)
+        header.slotNumber = blockNumber + 1; // the L2 block number
         return NativeRollupSsz.newPayloadRequestRoot(
             NativeRollupSsz.executionPayloadRoot(header),
             NativeRollupSsz.versionedHashesRoot(_versionedHashes(params.payloadBlobCount)),

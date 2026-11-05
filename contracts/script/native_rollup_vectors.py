@@ -66,8 +66,9 @@ def build(
         blob_gas_used=spec.Uint64(0),
         excess_blob_gas=spec.Uint64(0),
         block_access_list=spec.BlockAccessList.decode_bytes(rand_bytes(bal_len)),
-        slot_number=spec.Uint64(0),
     )
+    # The rollup contract fixes the slot number to the block number.
+    payload.slot_number = payload.block_number
     versioned_hashes = spec.VersionedHashes(
         data=[spec.VersionedHash(b"\x01" + rand_bytes(31)) for _ in range(n_blobs)]
     )
