@@ -93,7 +93,7 @@ The input carries no fork schedule. The guest reads it as `schema_id || SSZ(Stat
 | `blob_gas_used` | fixed | constant | 0: L2 does not support blob transactions, and any blob transaction would make the computed value mismatch |
 | `excess_blob_gas` | fixed | constant | 0 for L2 |
 | `block_access_list` | yes | calldata + blobs | Canonical RLP bytes defined by [EIP-7928](https://eips.ethereum.org/EIPS/eip-7928). `block_access_list_root` in calldata, full bytes in [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) payload blobs |
-| `slot_number` | fixed | constant | TBD: the L2 value is not defined yet. L2 contracts read it with `SLOTNUM` ([EIP-7843](https://eips.ethereum.org/EIPS/eip-7843)) |
+| `slot_number` | fixed | storage | The L2 block number, since L1 may require it to increase (see [L1 vs L2 differences](./l1_vs_l2_diff.md#slot-number)). L2 contracts read it with `SLOTNUM` ([EIP-7843](https://eips.ethereum.org/EIPS/eip-7843)) |
 | `payload_blob_count` | yes | calldata | Header field added by [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142): the number of payload blobs. The contract reads that many `BLOBHASH` values. It is not yet a leaf of the payload the contract rebuilds, since no consensus-specs type places it. The versioned hashes root already commits to the number of blobs |
 
 The BAL has two distinct commitments. Let `block_access_list = RLP.encode(BAL)`, as defined by EIP-7928:
@@ -140,7 +140,6 @@ The contract has access to every field needed for step 1:
 | `transactions_root` | Operator calldata (constrained: proven by the L2 proof) |
 | `withdrawals_root` | Known constant (empty for L2) |
 | `block_access_list_root` | Operator calldata: `hash_tree_root(ProgressiveByteList(block_access_list))` (constrained by the L2 proof) |
-| `slot_number` | Constant (value TBD) |
 | `versioned_hashes` | `BLOBHASH` from the transaction's blobs |
 | `parent_beacon_block_root` | Computed onchain (L1 anchor) |
 | `execution_requests` | Operator calldata (constrained by the L2 proof; any requests are accepted) |
@@ -182,7 +181,6 @@ contract NativeRollup {
 
     uint8 constant LEANSTARK_SCHEME = 0x11; // EIP-8288
     address constant EVM_VK_REGISTRY = 0x00005e9c1447C1A05A642ec9eB76D9C125468357; // EIP-8357
-    uint64 constant L2_SLOT_NUMBER = 0; // TBD
     // SSZ root of an empty progressive list: sha256 of 64 zero bytes.
     bytes32 constant EMPTY_LIST_ROOT = 0xf5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b;
     uint256 constant STATE_ROOT_HISTORY = 8191;
@@ -276,7 +274,7 @@ contract NativeRollup {
             blobGasUsed:         0,                       // fixed for L2
             excessBlobGas:       0,                       // fixed for L2
             blockAccessListRoot: params.blockAccessListRoot, // constrained (proven)
-            slotNumber:          L2_SLOT_NUMBER,          // fixed for L2 (value TBD)
+            slotNumber:          blockNumber + 1,         // the L2 block number
             // NewPayloadRequest fields
             versionedHashes:     getVersionedHashes(params.payloadBlobCount),
             parentBeaconBlockRoot: anchor(params.anchorBlockNumber), // L1 anchor
