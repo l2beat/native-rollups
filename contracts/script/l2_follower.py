@@ -30,11 +30,13 @@ from ethereum_rlp import rlp
 from ethereum_types.numeric import U64, U256, Uint
 
 from ethereum.crypto.hash import keccak256
-from ethereum.merkle_patricia_trie import root
-from ethereum.state import EMPTY_CODE_HASH, Address
+from ethereum.merkle_patricia_trie import EMPTY_TRIE_ROOT, root
+from ethereum.state import EMPTY_CODE_HASH, Address, BlockDiff
 from ethereum.forks.bogota import fork, vm
+from ethereum.forks.bogota import stateless_host_exec_witness as host_witness
 from ethereum.forks.bogota.block_access_lists import BlockAccessListBuilder
 from ethereum.forks.bogota.blocks import Block, Header
+from ethereum.forks.bogota.incremental_mpt import Witness, build_mpt, mpt_root, mpt_set, mpt_set_storage_slots
 from ethereum.forks.bogota.requests import compute_requests_hash
 from ethereum.forks.bogota.stateless import STATELESS_INPUT_SCHEMA_ID
 from ethereum.forks.bogota.state_tracker import BlockState
@@ -94,6 +96,43 @@ def decode_advance(data: bytes) -> dict:
 
 def genesis(state_file: str) -> fork.BlockChain:
     return l2_node.genesis_chain(json.load(open(state_file)))
+
+
+class StateRoots:
+    """The chain's post-block state roots, on tries kept across blocks, as
+    the L2 node keeps them. execution-specs' `compute_state_root` copies and
+    rehashes every storage trie, so each block cost more as the L2 state
+    grew, until the follower fell behind the chain."""
+
+    def __init__(self, chain: fork.BlockChain) -> None:
+        self.chain = chain
+        self.tries = None
+
+    def __call__(self, diff: BlockDiff) -> bytes:
+        state = self.chain.state
+        if self.tries is None or mpt_root(self.tries[0]) != self.chain.blocks[-1].header.state_root:
+            # The first block, or the last one computed was not applied.
+            storage = host_witness._build_pre_state_storage_mpts(state._storage_tries)
+            self.tries = host_witness._build_pre_state_account_mpt(state._main_trie, storage), storage
+        accounts, storage = self.tries
+        for address in diff.storage_clears:
+            storage.pop(address, None)
+        for address, slots in diff.storage_changes.items():
+            if address not in storage:
+                storage[address] = build_mpt({}, secured=True, default=U256(0))
+            mpt_set_storage_slots(storage[address], slots)
+        for address in {*diff.account_changes, *diff.storage_changes, *diff.storage_clears}:
+            account = diff.account_changes[address] if address in diff.account_changes else state.get_account_optional(address)
+            if account is None:
+                storage.pop(address, None)
+            mpt_set(accounts, address, account, mpt_root(storage[address]) if address in storage else EMPTY_TRIE_ROOT)
+        state_root = mpt_root(accounts)
+        # Clean nodes keep their hashes for the next block, and no block
+        # needs the witness the tries record.
+        for trie in [accounts, *(storage[a] for a in diff.storage_changes if a in storage)]:
+            l2_node.settle(trie.root_node)
+            trie.witness = Witness()
+        return state_root
 
 
 def payload_blobs(args: argparse.Namespace, l1_block: dict, versioned_hashes: list) -> list:
@@ -163,6 +202,7 @@ def follow(args: argparse.Namespace) -> None:
             print(f"L1 no longer has L2 block {latest['number']} where it had it: indexing again from L1 block {from_block}", flush=True)
             explorer.rewind(verified, from_block, chain.state)
             explorer.commit()
+    chain.state.compute_state_root = StateRoots(chain)
     while True:
         try:
             if explorer and rollup_block_number(args) < verified:
