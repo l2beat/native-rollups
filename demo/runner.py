@@ -114,6 +114,8 @@ L1_CLAIM_GAS = 400_000
 # JSON-RPC batch.
 CLAIMED_SELECTOR = "0x9a737a5f"
 CLAIMED_BATCH = 200
+# How many L2 blocks one eth_getLogs call reads when scanning for withdrawals.
+WITHDRAWAL_SCAN_BLOCKS = 5000
 # The gas limit of transactions that send a message. A message tree insert
 # costs more at some indices than at others, so an estimate made before
 # another message lands can fall short.
@@ -180,6 +182,11 @@ class Episode:
         self.record = os.path.join(DATA, "record.json")
         self.session = {"episode": number, "startedAt": int(time.time()), "contracts": {}, "events": []}
         self.claimed = set()  # L2 to L1 messages claimed on L1
+        # The others, by index, as (recipient, fee, gas limit), and the last
+        # L2 block scanned for them.
+        self.unclaimed = {}
+        self.scanned = -1
+        self.scan_lock = threading.Lock()
         self.lock = threading.Lock()
         self.node = None
         self.follower = None
@@ -627,15 +634,28 @@ class Episode:
             self.pay(sender, to, self.spendable(sender) * random.randint(2, 12) // 100 // 10**14 * 10**14)
 
     def withdrawals(self) -> list:
-        """The withdrawals in L2 blocks the rollup has, with their index,
-        recipient, fee and gas limit."""
-        logs = json_rpc(self.l2_rpc, "eth_getLogs", {
-            "address": L2_MESSENGER, "fromBlock": "0x0", "toBlock": "safe", "topics": [L2_MESSAGE_SENT],
-        })
-        return [
-            (int(log["topics"][1], 16), "0x" + log["topics"][3][-40:], int(log["data"][66:130], 16), int(log["data"][130:194], 16))
-            for log in logs
-        ]
+        """The withdrawals in L2 blocks the rollup has that are not known to
+        be claimed, with their index, recipient, fee and gas limit. Each call
+        reads only the blocks after the last one read, a bounded range at a
+        time: reading all of them from genesis on every call grew with the
+        chain's age, until the runner ran out of memory."""
+        with self.scan_lock:
+            safe = int(json_rpc(self.l2_rpc, "eth_getBlockByNumber", "safe", False)["number"], 16)
+            if safe < self.scanned:  # the L2 node rolled back: read them again
+                self.unclaimed, self.scanned = {}, -1
+            while self.scanned < safe:
+                last = min(safe, self.scanned + WITHDRAWAL_SCAN_BLOCKS)
+                for log in json_rpc(self.l2_rpc, "eth_getLogs", {
+                    "address": L2_MESSENGER, "fromBlock": hex(self.scanned + 1), "toBlock": hex(last),
+                    "topics": [L2_MESSAGE_SENT],
+                }):
+                    self.unclaimed[int(log["topics"][1], 16)] = (
+                        "0x" + log["topics"][3][-40:], int(log["data"][66:130], 16), int(log["data"][130:194], 16),
+                    )
+                self.scanned = last
+            for index in self.claimed & self.unclaimed.keys():
+                del self.unclaimed[index]
+            return [(index, *w) for index, w in sorted(self.unclaimed.items())]
 
     def claim(self, index: int, key: str, claimant: str) -> None:
         """Claims an L2 to L1 message, unless anyone already did, such as
