@@ -4,17 +4,14 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 
-import {Ssz} from "../src/libs/Ssz.sol";
 import {NativeRollupSsz} from "../src/NativeRollupSsz.sol";
 
 /// @notice Checks the contract's roots against requests that the EIP-8025
 ///         provers commit to (`script/prover_vectors.py`): a real devnet block
-///         and two edge cases, generated with ere-guests, the guest code the
-///         ethrex and reth provers run.
+///         and two edge cases, with the roots that ere-guests v0.20.0 computes,
+///         the code every EIP-8025 guest runs.
 /// @dev    The contract follows the consensus-specs Gloas types, which
-///         execution-specs #3913 matches. ere-guests hashes the request as a
-///         plain container with a progressive list of versioned hashes, so its
-///         roots differ until the guests adopt the Gloas layout.
+///         execution-specs #3913 and ere-guests (since v0.20.0) match.
 contract ProverRootsTest is Test {
     using stdJson for string;
 
@@ -51,23 +48,6 @@ contract ProverRootsTest is Test {
         p.slotNumber = uint64(json.readUint(string.concat(k, ".slotNumber")));
     }
 
-    /// @dev ere-guests' request root: a plain four-field container whose
-    ///      versioned hashes are a progressive list.
-    function _guestRequestRoot(
-        bytes32 payload,
-        bytes32[] memory hashes,
-        bytes32 parentBeaconBlockRoot,
-        bytes32 requests
-    ) internal view returns (bytes32) {
-        uint256 n = hashes.length;
-        uint256 ptr;
-        assembly ("memory-safe") {
-            ptr := add(hashes, 0x20)
-        }
-        bytes32 vh = Ssz.sha(Ssz.progressiveInPlace(ptr, n), Ssz.le256(n));
-        return Ssz.sha(Ssz.sha(payload, vh), Ssz.sha(parentBeaconBlockRoot, requests));
-    }
-
     function test_zkboostInputIsBlock93354() public view {
         assertTrue(json.readBool(".zkboostRequestMatchesBlock93354"));
         assertEq(json.readBytes(".zkboostSchemaId"), hex"1501");
@@ -101,23 +81,25 @@ contract ProverRootsTest is Test {
         }
     }
 
-    /// @notice The provers' roots follow from the same payload and requests
-    ///         roots, so the request layout is the only difference.
-    function test_proverRootsDifferOnlyInRequestLayout() public view {
+    /// @notice A guest's output for the block is the data hash the contract
+    ///         rebuilds.
+    function test_rootsMatchProvers() public view {
+        uint64 chainId = uint64(json.readUint(".chainId"));
+        uint16 schemaId = uint16(json.readUint(".schemaId"));
         for (uint256 i = 0; json.keyExists(_case(i)); i++) {
             string memory c = _case(i);
-            bytes32 payload = NativeRollupSsz.executionPayloadRoot(_header(c));
-            bytes32[] memory hashes = json.readBytes32Array(string.concat(c, ".versionedHashes"));
-            bytes32 pbbr = json.readBytes32(string.concat(c, ".parentBeaconBlockRoot"));
-            bytes32 requests = json.readBytes32(string.concat(c, ".executionRequestsRoot"));
-            bytes32 guestRoot = json.readBytes32(string.concat(c, ".guestRoot"));
-
-            bytes32 contractRoot = NativeRollupSsz.newPayloadRequestRoot(
-                payload, NativeRollupSsz.versionedHashesRoot(hashes), pbbr, requests
+            bytes32 npRoot = NativeRollupSsz.newPayloadRequestRoot(
+                NativeRollupSsz.executionPayloadRoot(_header(c)),
+                NativeRollupSsz.versionedHashesRoot(json.readBytes32Array(string.concat(c, ".versionedHashes"))),
+                json.readBytes32(string.concat(c, ".parentBeaconBlockRoot")),
+                json.readBytes32(string.concat(c, ".executionRequestsRoot"))
             );
-            assertNotEq(contractRoot, guestRoot, "layouts agree");
-            // Last: the progressive merkleization overwrites `hashes`.
-            assertEq(_guestRequestRoot(payload, hashes, pbbr, requests), guestRoot, "ere-guests root");
+            assertEq(npRoot, json.readBytes32(string.concat(c, ".guestRoot")), "ere-guests request root");
+            assertEq(
+                NativeRollupSsz.publicInputRoot(npRoot, chainId, schemaId),
+                json.readBytes32(string.concat(c, ".guestPublicInputRoot")),
+                "ere-guests public input root"
+            );
         }
     }
 }

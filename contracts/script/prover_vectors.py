@@ -9,8 +9,8 @@ glamsterdam-devnet-8 block 93354, the request inside zkboost's proving input
 
 Decodes each request with the execution-specs projects/zkevm types, which
 match the Gloas consensus types since execution-specs #3913, and prints the
-leaves the rollup contract receives, the execution-specs root, and the root
-ere-guests computed. Run with an environment that has remerkleable:
+leaves the rollup contract receives, the execution-specs roots, and the roots
+ere-guests computes. Run with an environment that has remerkleable:
 
     python -I script/prover_vectors.py <execution-specs projects/zkevm src> \
         <fixtures dir> > test/prover_vectors.json
@@ -30,12 +30,24 @@ from ethereum_types.numeric import U16, U64  # noqa: E402
 
 SCHEMA_ID = 0x1501  # Amsterdam, revision 1
 
-# Roots that ere-guests v0.17.0 computed for each fixture (Lighthouse
-# beacon_node/proof_engine/tests/new_payload_request_vectors.rs).
+# The request root and public input root that ere-guests v0.20.0 computes for
+# each fixture: the `hash_tree_root` of stateless-validator-common's
+# `NewPayloadRequestGloas` decoded from it, and of the `StatelessValidationResult`
+# a guest outputs for it (successful, zkboost's chain id, SCHEMA_ID). Since
+# v0.20.0 (tests-zkevm v21.0.7) the guests hash both as the Gloas types do.
 GUEST_ROOTS = {
-    "block_93354": "8c3a890206a189727e151767653f846ccddbd269eb29fb0a2f97371f23a481c6",
-    "populated": "1e3a96403f54a092c167d2fc3493bb0127dbe1258491a3bd2486206d6cf1324a",
-    "empty_lists": "57a969c82f7f9ae4290a3f5170a255f4e62a1c5ddc4edc5d1d131087fa118e23",
+    "block_93354": (
+        "ae5c1a4a1808f07a248132e44180babaa796b5499b78509b96392cd7709f814e",
+        "eae7be715c2654182983119be8c078b8c703ba2f75844c73424611de0a1d281a",
+    ),
+    "populated": (
+        "a48929ca29922378df229e0a337dd79cfc4de0b07609da1d60dd1c1a9e43fa20",
+        "af7fa69495533099a83be86079a1948ed1167995845ea2fb400f84cd7609fa21",
+    ),
+    "empty_lists": (
+        "d3413c36bd28bf1185e4240249c602d9a316acc194d85c9928f23e7f4e5ac9a5",
+        "cb7fe30e2aa5c60278fb508e8a4bf4171ae00507d3e757e385c2297f2e2455e0",
+    ),
 }
 
 
@@ -83,7 +95,7 @@ def case(name: str, chain_id: int) -> dict:
         "payloadRoot": hx(pv.hash_tree_root()),
         "versionedHashesRoot": hx(view.versioned_hashes.hash_tree_root()),
         "specRoot": hx(view.hash_tree_root()),
-        "guestRoot": "0x" + GUEST_ROOTS[name],
+        "guestRoot": "0x" + GUEST_ROOTS[name][0],
         "publicInputRoot": hx(
             StatelessValidationResult(
                 new_payload_request_root=Hash32(view.hash_tree_root()),
@@ -92,6 +104,7 @@ def case(name: str, chain_id: int) -> dict:
                 schema_id=U16(SCHEMA_ID),
             ).hash_tree_root()
         ),
+        "guestPublicInputRoot": "0x" + GUEST_ROOTS[name][1],
     }
 
 
