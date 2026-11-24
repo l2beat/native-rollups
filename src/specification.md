@@ -339,7 +339,7 @@ contract NativeRollup {
 }
 ```
 
-`verifyEvmProof` runs K\*'s unwrapped PIOP verifier using `MULFIELD`, `XOR`, and `KECCAK256`, and uses the EIP-8141 introspection instructions (`FRAMEPARAM(i, 0x02)` to require `DEP_VERIFY_FRAME_MODE` and `FRAMEDATALOAD` to check the `PCS_SCHEME` byte and each 32-byte `keccak256(PCS_claim)`) to confirm that the transaction declared every opening the PIOP requires (in the `bogota-devnet-2` reference repo, `FramesNativeRollup` currently mocks this by introspecting a 96-byte triple via `FRAMEDATACOPY`). `readRegistry` is a `STATICCALL` to the EIP-8357 registry.
+`verifyEvmProof` runs K\*'s unwrapped PIOP verifier using `MULFIELD`, `XOR`, and `KECCAK256`, and uses the EIP-8141 introspection instructions (`FRAMEPARAM(0x02, i)` to require `DEP_VERIFY_FRAME_MODE` and `FRAMEDATALOAD` to check the `PCS_SCHEME` byte and each 32-byte `keccak256(PCS_claim)`) to confirm that the transaction declared every opening the PIOP requires (in the `bogota-devnet-2` reference repo, `FramesNativeRollup` currently mocks this by introspecting a 96-byte triple via `FRAMEDATACOPY`). `readRegistry` is a `STATICCALL` to the EIP-8357 registry.
 
 Replay is constrained by state: the expected root commits to the parent L2 block hash and number, the L2 chain ID, the schema ID, the L1 anchor, and the blob versioned hashes.
 
