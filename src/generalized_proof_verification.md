@@ -28,9 +28,9 @@ interface ISP1Verifier {
 
 Rollups then build their own stack around these verifiers. Taiko, for example, runs six contracts, each maintained and upgraded through a custom multisig:
 
-- two raw zkVM verifiers, the vendor-provided SP1 Plonk and Risc0 Groth16 contracts;
-- two adapters, one per zkVM, that implement Taiko's `IVerifier` interface and whitelist the trusted program verification keys;
-- an SGX verifier; and
+- two raw zkVM verifiers, the vendor-provided SP1 Plonk and Risc0 Groth16 contracts,
+- two adapters, one per zkVM, that implement Taiko's `IVerifier` interface and whitelist the trusted program verification keys,
+- an SGX verifier, and
 - a `ComposeVerifier` dispatcher that calls several verifiers and requires a sufficient combination: SGX plus either SP1 or Risc0.
 
 Optimistic rollups instead ship their own onchain fraud-proof VMs, such as Arbitrum's WAVM and Optimism's Cannon MIPS machine, plus the dispute logic around them.
@@ -48,15 +48,17 @@ The table below reports Solidity SLOC (non-blank, non-comment source lines) for 
 | Lighter | Validity, no VM (custom circuits) | 5,417 | 1,699 | 31.4% |
 | **Total** | | **60,811** | **23,626** | **38.9%** |
 
-These numbers are rough estimates. They cover only onchain Solidity code and exclude offchain provers, sequencers, and each project's guest program. Governance surfaces (multisigs, timelocks, DAO contracts, proxy admins), partner-specific bridges, and proxy boilerplate are excluded from both columns.
+These numbers are rough estimates. They cover only onchain Solidity code and exclude offchain provers, sequencers, and each project's guest program. Governance surfaces (multisigs, timelocks, DAO contracts, proxy admins), partner-specific bridges, and proxy boilerplate are excluded from both columns. Under `leanPCS`, optimistic rollups still retire their entire fraud-proof VM and dispute stack, while validity rollups replace their bespoke elliptic-curve and PCS verifiers with smaller, shared onchain PIOP verifiers rather than zero Solidity.
 
 ## What L1 must provide
 
-Generalized proof verification needs four things from L1:
+Generalized proof verification under [`leanPCS`](./leanpcs.md) needs four things from L1:
 
-1. **A program-agnostic verifier.** [EIP-8025](https://eips.ethereum.org/EIPS/eip-8025) only proves L1 execution. EIP-8288's recursive circuit verifies a proof of any program against its verification key hash, on the same zkVM that L1 uses for its own execution proofs (see [EIP-8288](./zkzkframes.md#how-a-native-rollup-uses-it)).
-2. **Proof delivery and access from contracts.** [EIP-8288](./zkzkframes.md) lets a transaction declare a proof dependency in a frame, which contracts read through frame introspection.
-3. **Aggregation.** EIP-8288 aggregates proofs recursively in the mempool and in the builder, and the mandatory L1 block proof must cover the result.
-4. **Program identity.** A contract accepts proofs under exact verification key hashes. Applications manage the hashes they accept, as they whitelist programs today. For the EVM, L1 itself publishes the approved hash for each fork in the [EIP-8357 registry](./evm_vk_registry.md).
+1. **A shared post-quantum PCS and field instruction.** Rather than enshrining a single zkVM ISA in consensus, [`leanPCS`](./leanpcs.md) fixes one binary field (`GF(2^128)`) and a versioned multilinear PCS (ZK-WHIR), paired with the `MULFIELD` opcode so any zkVM or circuit can verify its lightweight PIOP directly in the EVM.
+2. **Claim delivery and access from contracts.** Extending [EIP-8288](./leanpcs.md) lets a transaction declare `PCS_SCHEME` opening-claim hashes in a dependency frame, which contracts check via EIP-8141 frame introspection (`FRAMEPARAM`, `FRAMEDATALOAD`).
+3. **Aggregation.** Mempool nodes and the builder aggregate all PCS opening proofs in the block into a single recursive STARK (`DependencyProof`), and K\*'s mandatory L1 block proof must bind and cover the result.
+4. **Program identity.** Contracts verify proofs against exact program hashes (and, under `leanPCS`, through an onchain PIOP verifier contract). For the EVM, L1 publishes the approved program hash and `schema_id` for each fork in the [EIP-8357 registry](./evm_vk_registry.md).
 
-A native rollup is the special case whose verification key hash comes from the EIP-8357 registry, and whose contract reconstructs the proof's public output from L1 state, as described in the [Specification](./specification.md). A rollup with a custom VM follows the same pattern with its own program and verification key.
+**Trade-off compared to protocol-enshrined verifiers.** Under `leanPCS`, custom rollups still retire their heavy elliptic-curve verifiers, PCS/Merkle logic, and optimistic fraud-proof VMs, and can share one lightweight PIOP verifier contract per zkVM. Unlike a consensus-enshrined `ProofEngine` ([Native proof verification](https://ethresear.ch/t/native-proof-verification/24798)), however, PIOP verifier upgrades for custom rollups remain onchain contract updates rather than consensus-client releases.
+
+A native rollup is the special case whose program hash comes from the EIP-8357 registry, verifying K\*'s unwrapped L1 execution PIOP over `leanPCS` against the public output reconstructed from L1 state, as described in the [Specification](./specification.md). A rollup with a custom VM follows the same pattern with its own program and PIOP verifier.

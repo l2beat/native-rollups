@@ -23,7 +23,7 @@ block_output.burned_fees += (
 )
 ```
 
-and to expose the total in the proof's public output. The rollup contract could then act on it; for example, when the gas token is bridged from L1, it could release the burned amount from the L1 escrow to a dedicated address. This is an L1 change: every L1 block proof would expose the value too.
+and to expose the total in the proof's public output. The rollup contract could then act on it. For example, when the gas token is bridged from L1, it could release the burned amount from the L1 escrow to a dedicated address. This is an L1 change: every L1 block proof would expose the value too.
 
 ## Open questions
 

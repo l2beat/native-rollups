@@ -19,25 +19,25 @@
 ## Where things stand
 
 - **Reusing the L1 STF** is largely specified in the [Specification](./specification.md), and ethrex has [merged a proof of concept](https://github.com/lambdaclass/ethrex/pull/6418) of the earlier `EXECUTE` precompile design, already on Glamsterdam. The remaining issues are newer EIPs, such as Block-in-Blobs, and compatibility with future L1 upgrades.
-- **Proof-carrying transactions**, proposed in the [Native proof verification](https://ethresear.ch/t/native-proof-verification/24798) post in May 2026, are the main alternative to EIP-8288. The book follows EIP-8288, as explained in the [introduction](./introduction.md#candidate-designs).
-- **PCS opening aggregation**, [prototyped](https://github.com/TomWambsgans/PCS-openings-aggregation) in November 2026, is an early alternative to EIP-8288's LeanSTARK scheme, with no EIP yet. L1 would fix one field and one polynomial commitment scheme, and each block would aggregate only the proofs' openings, while an ordinary contract verifies the rest of each proof. The prototype verifies a leanVM proof in about 45,000 gas, with the precompile mocked and the opening claims free; their real price depends on the block's aggregator, which is not built yet.
-- **EIP-8288** (zkzkframes) was merged as a Draft on 9 September 2026. See [EIP-8288 (zkzkframes)](./zkzkframes.md).
-- **The reference implementation**: the [NativeRollup contract](https://github.com/l2beat/native-rollups/tree/main/contracts) runs end to end on a local EIP-8141 devnet, with real L2 blocks, mock proofs, and the EIP-8357 registry in its genesis. A [public explorer](https://nativerollups.fyi) shows each L2 block and message, and what is still mocked.
-- **EIP-8357**, the EVM verification key registry, was merged as a [Draft](https://eips.ethereum.org/EIPS/eip-8357) on 14 October 2026, with a reference implementation in [ethereum/sys-asm#56](https://github.com/ethereum/sys-asm/pull/56) and tests in [ethereum/execution-specs#3466](https://github.com/ethereum/execution-specs/pull/3466). See [EIP-8357](./evm_vk_registry.md).
+- **EIP-8288 and `leanPCS`**: [EIP-8288](https://eips.ethereum.org/EIPS/eip-8288) was merged as a Draft on 9 September 2026 and is splitting into `leanSPHINCS`, `leanPCS`, and `leanMempool`, with active PRs moving `DependencyProof` into `ExecutionPayload` ([EIPs#12549](https://github.com/ethereum/EIPs/pull/12549), [consensus-specs#5858](https://github.com/ethereum/consensus-specs/pull/5858)). Because `leanVM`'s RISC-V effort ([leanVM #277](https://github.com/leanEthereum/leanVM/pull/277), [`leanvm-riscv`](https://github.com/leanEthereum/leanvm-riscv)) stalled, [`leanEthereum/leanPCS`](https://github.com/leanEthereum/leanPCS) now drafts [`eip-draft_leanPCS.md`](https://github.com/leanEthereum/leanPCS/blob/main/eip-draft_leanPCS.md) and [`eip-draft-mulfield.md`](https://github.com/leanEthereum/leanPCS/blob/main/eip-draft-mulfield.md) (`MULFIELD` `0x1f` over `GF(2^128)`) instead of aggregating whole `leanVM` STARKs (`LEANSTARK_SCHEME`). The book follows `leanPCS`. See [EIP-8288 and leanPCS](./leanpcs.md).
+- **Proof-carrying transactions**, proposed in [Native proof verification](https://ethresear.ch/t/native-proof-verification/24798) in May 2026, remain the main alternative if mandatory L1 proofs do not become natively `leanPCS`-compatible (since verifying a non-`leanPCS` zkVM on `leanPCS` without a separate wrapper is not possible).
+- **The reference implementation**: the [NativeRollup contract](https://github.com/l2beat/native-rollups/tree/main/contracts) runs end to end on a local EIP-8141 devnet (`bogota-devnet-2`), with real L2 blocks, mock proofs, and the EIP-8357 registry in its genesis. It still mocks EIP-8288's earlier 96-byte `LEANSTARK_SCHEME` triple rather than `leanPCS` claims, until `leanPCS` and K\*'s mandatory proof verifier settle. A [public explorer](https://nativerollups.fyi) shows each L2 block and message, and what is still mocked.
+- **EIP-8357**, the EVM verification key registry, was merged as a [Draft](https://eips.ethereum.org/EIPS/eip-8357) on 14 October 2026, with a reference implementation in [ethereum/sys-asm#56](https://github.com/ethereum/sys-asm/pull/56) and tests in [ethereum/execution-specs#3466](https://github.com/ethereum/execution-specs/pull/3466). See [EIP-8357](./evm_vk_registry.md) for how it may need to adapt once `leanPCS` and K\*'s mandatory proof verifier are specified.
 
 ## L1 dependencies
 
 | Dependency | Needed for | Status |
 |---|---|---|
-| L1 stateless validation program | The program native rollups prove | In development in [execution-specs `projects/zkevm`](https://github.com/ethereum/execution-specs/tree/projects/zkevm) |
-| Mandatory execution proofs | One L1 block proof that covers the L2 proofs | Optional proofs ([EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)) declined for Hegotá on 15 October 2026; mandatory in K\* under the current strawmap ordering |
-| [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions | The transaction envelope for EIP-8288 dependencies | Scheduled for Hegotá |
-| Compact `NewPayloadRequestHeader` | Validation without full payloads, and the contract's root computation | Removed from the optional-proof flow ([consensus-specs#5076](https://github.com/ethereum/consensus-specs/issues/5076)), assumed to return with mandatory proofs |
-| [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) Block-in-Blobs | L2 block data in blobs | Declined for Hegotá on 21 September 2026 |
-| [EIP-7928](https://eips.ethereum.org/EIPS/eip-7928) block-level access lists | Part of every proven payload | Scheduled for Glamsterdam |
-| [EIP-7997](https://eips.ethereum.org/EIPS/eip-7997) deterministic factory | Deploying the EIP-8357 registry | Scheduled for Glamsterdam |
-| [EIP-7805](https://eips.ethereum.org/EIPS/eip-7805) FOCIL | [Forced transactions](./forced_transactions.md) through L2 inclusion lists, once the L1 stateless validation program supports it | Scheduled for Hegotá |
-| [EIP-7864](https://eips.ethereum.org/EIPS/eip-7864) binary state tree | Optional: cheaper storage proofs for [messaging](./messaging.md) | Draft |
+| L1 stateless validation program | The program native rollups prove | In development in [execution-specs `projects/zkevm`](https://github.com/ethereum/execution-specs/tree/projects/zkevm) (now on Bogota). Formal verification for a canonical RV64IM guest explored in `evm-asm` / `stateless-pancaketh` |
+| Mandatory 1-of-1 execution proofs | One L1 block proof that covers L1 execution and `leanPCS` claims | Optional proofs ([EIP-8025](https://eips.ethereum.org/EIPS/eip-8025)) declined as an onchain Hegotá EIP on 15 October 2026 (tracked as offchain in Hegotá). Mandatory 1-of-1 proofs are the **K\*** EL headliner on the November 2026 [strawmap](https://strawmap.org/) |
+| [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions | The transaction envelope for dependency frames | SFI for Hegotá |
+| `leanPCS` frames & `MULFIELD` | Protocol-level PCS opening aggregation and `GF(2^128)` multiplication in the EVM | Draft specs in [`leanEthereum/leanPCS`](https://github.com/leanEthereum/leanPCS). `leanSPHINCS` in **I\***, `leanPCS frames` as the **J\*** EL headliner on the strawmap |
+| Compact `NewPayloadRequestHeader` | Validation without full payloads, and the contract's root computation | Removed from optional EIP-8025 ([consensus-specs#5076](https://github.com/ethereum/consensus-specs/issues/5076)). Payload-decoupling options open in `#5729` / `#5753`, assumed to return with mandatory proofs |
+| [EIP-8142](https://eips.ethereum.org/EIPS/eip-8142) Block-in-Blobs (`payload sampling`) | L2 block data in blobs | Declined for Hegotá on 21 September 2026 (fast payload broadcast split into [EIP-8411](https://eips.ethereum.org/EIPS/eip-8411), CFI for Hegotá, without blobs). `payload sampling` slated for **J\*** on the strawmap |
+| [EIP-7928](https://eips.ethereum.org/EIPS/eip-7928) block-level access lists | Part of every proven payload | Last Call, SFI for Glamsterdam |
+| [EIP-7997](https://eips.ethereum.org/EIPS/eip-7997) deterministic factory | Deploying the EIP-8357 registry | Last Call, scheduled for Glamsterdam |
+| [EIP-7805](https://eips.ethereum.org/EIPS/eip-7805) FOCIL | [Forced transactions](./forced_transactions.md) through L2 inclusion lists, once the L1 stateless validation program supports it | SFI for Hegotá |
+| [EIP-7864](https://eips.ethereum.org/EIPS/eip-7864) binary state tree | Optional: cheaper storage proofs for [messaging](./messaging.md) | Draft (`partitioned binary tree` slated for **I\*** on the strawmap) |
 
 ## The case for native rollups
 
@@ -47,13 +47,13 @@ Top rollups such as Arbitrum and Optimism have instead expressed interest in an 
 
 ## Timeline
 
-Mandatory proofs and a zkzkframes-like feature are both hard requirements. According to the strawmap, zkzkframes can go live in 2028-2029 at the earliest. The Ethereum Foundation's [protocol priorities](https://blog.ethereum.org/2026/09/07/protocol-priorities) post places mandatory proofs in K\* under the current strawmap ordering, and notes that they may move back to L\* if the strawmap swaps the two forks to accelerate post-quantum consensus.
+Both `leanPCS` (or an equivalent proof-delivery layer) and mandatory 1-of-1 proofs are hard requirements. Under the November 2026 [strawmap](https://strawmap.org/), `leanSPHINCS` lands in **I\*** (2028), `leanPCS frames` and `payload sampling` in **J\*** (2028-2029), `mandatory 1-of-1 proofs` in **K\*** (2029), and `native rollups` in **L\*** (2029-2030).
 
 ### Can anything ship earlier?
 
-Probably not. The [original proposal](https://ethresear.ch/t/native-rollups-superpowers-from-l1-execution/21517) suggested shipping native rollups through re-execution instead of ZK proofs. Re-execution, however, only supports optimistic rollups with bisection games, which still require a long challenge period for withdrawals, something all rollups are trying to move away from.
+Probably not without weakening the security model. The [original proposal](https://ethresear.ch/t/native-rollups-superpowers-from-l1-execution/21517) suggested shipping native rollups through re-execution instead of ZK proofs. Re-execution, however, only supports optimistic rollups with bisection games, which still require a long challenge period for withdrawals, something all rollups are trying to move away from.
 
-Another suggested path is to ship native rollups and generalized proof verification before mandatory proofs, as a testing ground: if something fails, only the applications that chose to take that risk fail, not all of L1. Delaying mandatory proofs is not desirable, but this remains an option if there is not enough confidence to ship them at all.
+Once `leanPCS` lands in J\*, rollups could in principle verify proofs onchain before mandatory L1 proofs ship in K\*, as a testing ground where a bug affects only opting-in rollups and not L1. That would still require either a `leanPCS`-native zkVM or a temporary wrapper, and would not yet inherit the guarantee that every L2 proof bug is an L1 bug.
 
 ## Open question: upgrades with the zkEVM
 
@@ -61,9 +61,9 @@ How will upgrades work with the zkEVM? Suppose a bug is found: how do nodes upgr
 
 ## Next steps
 
-1. Make LeanSTARK dependencies work in EIP-8288: give them a place in the dependency digest, which is defined for LeanSPHINCS dependencies only, follow leanVM's move to RISC-V until it can verify proofs of arbitrary programs, and allow more than one per mempool wrapper (see [EIP-8288 open issues](./zkzkframes.md#open-issues)).
-2. Bring [EIP-8357](./evm_vk_registry.md) to clients and a fork: finish its review, tests, and system contract, and propose it together with EIP-8288.
-3. Specify how the mandatory L1 proof binds and absorbs the EIP-8288 aggregate.
-4. Find a path for L2 block data now that EIP-8142 was declined for Hegotá: EIP-8142 in a later fork, or another way to bind the data to blobs.
-5. Replace the reference implementation's mock proofs with zkVM proofs of the same program, once the execution and consensus specifications agree on what the proof commits to.
+1. Follow `leanPCS` and `MULFIELD` ([`leanEthereum/leanPCS`](https://github.com/leanEthereum/leanPCS)) into formal EIPs and confirm whether K\*'s mandatory 1-of-1 zkVM can natively emit `leanPCS` claims (so native rollups can verify its unwrapped PIOP without a π2 wrapper, see [EIP-8288 and leanPCS](./leanpcs.md#open-issues)).
+2. Keep [EIP-8357](./evm_vk_registry.md) moving through review and tests (`sys-asm#56`, `execution-specs#3466`), and revisit how it binds the onchain PIOP verifier once K\*'s 1-of-1 zkVM settles.
+3. Specify how K\*'s mandatory 1-of-1 L1 proof binds and absorbs the block's `leanPCS` aggregate proof (`DependencyProof`).
+4. Track `payload sampling` ([EIP-8142](https://eips.ethereum.org/EIPS/eip-8142)) for **J\*** now that it was declined for Hegotá and [EIP-8411](https://eips.ethereum.org/EIPS/eip-8411) split fast payload broadcast off blobs, or identify another way to bind L2 block data to blobs.
+5. Replace the reference implementation's mock proofs with real zkVM proofs over `leanPCS` once the proof format, verifier interface, and consensus/execution public inputs settle.
 6. Research [native rollups with extensions](./extensions.md).
