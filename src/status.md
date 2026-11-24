@@ -53,7 +53,7 @@ Both `leanPCS` (or an equivalent proof-delivery layer) and mandatory 1-of-1 proo
 
 Probably not without weakening the security model. The [original proposal](https://ethresear.ch/t/native-rollups-superpowers-from-l1-execution/21517) suggested shipping native rollups through re-execution instead of ZK proofs. Re-execution, however, only supports optimistic rollups with bisection games, which still require a long challenge period for withdrawals, something all rollups are trying to move away from.
 
-Once `leanPCS` lands in J\*, rollups could in principle verify proofs onchain before mandatory L1 proofs ship in K\*, as a testing ground where a bug affects only opting-in rollups and not L1. That would still require either a `leanPCS`-native zkVM or a temporary wrapper, and would not yet inherit the guarantee that every L2 proof bug is an L1 bug.
+Once `leanPCS` lands in J\*, rollups could in principle verify proofs onchain before mandatory L1 proofs ship in K\*, as a testing ground where a bug affects only opting-in rollups and not L1. That would still require either a `leanPCS`-native zkVM or a temporary wrapper, and would not yet share L1's mandatory execution prover.
 
 ## Open question: upgrades with the zkEVM
 

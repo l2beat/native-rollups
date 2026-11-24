@@ -70,7 +70,7 @@ The [`leanPCS` prototype](https://github.com/leanEthereum/leanPCS) demonstrates 
 Native rollups **do not want a π2 wrapper**:
 
 - Off-chain L1 validators verify the mandatory 1-of-1 proof's PIOP natively in Rust in milliseconds, so L1 has no reason to pay extra proving latency for π2.
-- A π2 wrapper that L1 itself does not run introduces an L2-only circuit and soundness surface, breaking the core native rollup invariant that every L2 proof bug is also an L1 bug.
+- A π2 wrapper that L1 itself does not run introduces an L2-only recursion circuit and soundness surface. Verifying K\*'s unwrapped PIOP directly keeps the guest program, zkVM proving circuit, and PCS layer identical to L1. Unlike a consensus-enshrined verifier, the onchain Solidity PIOP verifier is still a separate implementation from L1 validators' native verifier (so a bug in that contract would accept an invalid L2 state transition without invalidating the L1 block), making it a small, shared contract surface that should itself be formally verified against K\*'s PIOP spec.
 - Unlike a 21k-gas wallet signature or privacy transfer, a rollup block settlement already spends ~121k execution gas plus blob gas (and ~250k-500k gas today for Groth16/Plonk), so verifying K\*'s unwrapped PIOP directly in Solidity, with `leanPCS` offloading all PCS openings, is acceptable as long as K\*'s zkVM speaks `leanPCS` natively.
 
 If K\*'s mandatory 1-of-1 zkVM ends up using a different field or PCS than `leanPCS`, avoiding π2 would instead require exposing K\*'s verifier directly at the protocol layer (as in [Proof-carrying transactions](https://ethresear.ch/t/native-proof-verification/24798) or EIP-8079), rather than going through `leanPCS`.

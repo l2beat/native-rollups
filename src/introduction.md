@@ -70,7 +70,7 @@ In this world, a native rollup is just the minimal special case that verifies pr
 This book proposes building native rollups on three L1 pieces along Ethereum's [strawmap](https://strawmap.org/) (`leanPCS frames` in J\* → `mandatory 1-of-1 proofs` in K\* → `native rollups` in L\*):
 
 - [EIP-8288 and `leanPCS`](./leanpcs.md): extends [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions with dependency frames declaring `leanPCS` polynomial opening claims, which are aggregated recursively into one block-level STARK, paired with the `MULFIELD` opcode so contracts run the remaining PIOP cheaply in the EVM.
-- **Native `leanPCS` compatibility for L1's mandatory 1-of-1 zkVM**: rollup contracts verify the unwrapped PIOP of L1's execution proof directly in the EVM, with no separate recursion wrapper, preserving the invariant that every L2 bug is an L1 bug.
+- **Native `leanPCS` compatibility for L1's mandatory 1-of-1 zkVM**: rollup contracts verify the unwrapped PIOP of L1's execution proof directly in the EVM, with no separate recursion wrapper, keeping the guest program, zkVM circuit, and PCS openings identical to L1 (leaving only the small shared onchain PIOP verifier contract as an EVM-side implementation surface).
 - [EVM verification key registry (EIP-8357)](./evm_vk_registry.md): a protocol-maintained system contract exposing L1's approved EVM program for the current fork, letting rollup contracts follow L1 hard forks with no governance.
 
 ```text
