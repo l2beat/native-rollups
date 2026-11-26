@@ -9,7 +9,14 @@ contract DepProbe {
     address public immutable helper;
 
     event Dependency(
-        uint256 mode, uint256 dataLength, bool hasStatus, uint256 status, uint256 scheme, bytes32 dataHash, bytes32 vkHash
+        uint256 mode,
+        uint256 dataLength,
+        bool hasStatus,
+        uint256 status,
+        uint256 scheme,
+        bytes32 dataHash,
+        bytes32 vkHash,
+        bytes32 blobHash
     );
 
     constructor() {
@@ -24,6 +31,7 @@ contract DepProbe {
         uint256 status = hasStatus && out.length == 32 ? abi.decode(out, (uint256)) : type(uint256).max;
         (uint256 scheme, bytes32 dataHash, bytes32 vkHash) =
             abi.decode(Frames.data(helper, frameIndex, 0, 96), (uint256, bytes32, bytes32));
-        emit Dependency(mode, dataLength, hasStatus, status, scheme, dataHash, vkHash);
+        // A rollup's post also reads its blobs' versioned hashes.
+        emit Dependency(mode, dataLength, hasStatus, status, scheme, dataHash, vkHash, blobhash(0));
     }
 }

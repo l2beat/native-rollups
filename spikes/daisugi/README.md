@@ -21,7 +21,7 @@ The proofs are real leanVM proofs, but of lean-bindings' test program that accep
    deptx deploy -rpc $EL -initcode probe.hex
    deptx send -rpc $EL -probe $PROBE -witness stark.bin -data 0x<hash>
    ```
-   `send` builds a frame transaction `[VERIFY, DEP_VERIFY, SENDER]`. The `DEP_VERIFY` frame declares `(0x11, hash, key)`, and the `SENDER` frame calls `DepProbe.probe`, which reads the dependency frame the way a rollup contract would. The transaction goes in a mode-0 proof wrapper through `eth_sendProofWrapper`. `-order`, `-declare-data` and `-declare-key` give the variants below.
+   `send -blob` attaches one blob in the EIP-4844 network form, `send -order vs` sends a control with no dependency through `eth_sendRawTransaction`, and `blob` sends a plain EIP-4844 blob transaction. `send` builds a frame transaction `[VERIFY, DEP_VERIFY, SENDER]`. The `DEP_VERIFY` frame declares `(0x11, hash, key)`, and the `SENDER` frame calls `DepProbe.probe`, which reads the dependency frame the way a rollup contract would. The transaction goes in a mode-0 proof wrapper through `eth_sendProofWrapper`. `-order`, `-declare-data` and `-declare-key` give the variants below.
 
 ## Results
 
@@ -40,3 +40,13 @@ The proofs are real leanVM proofs, but of lean-bindings' test program that accep
   - Nethermind proves the block's aggregate in the background on admission: 451 ms the first time, 170 ms after that, on an M4 Pro. It verifies it in 6 to 9 ms.
   - The same dependency set reuses the cached aggregate.
 - **Reuse:** a dependency proof is not bound to its transaction. The same triple was accepted in four transactions. For a rollup this is harmless, since the claim is about a root the contract recomputes.
+
+**Stage 3, a post with a blob.** Native-rollup posts carry their L2 data in blobs, so this decides whether daisugi can host one. It can't: this client pair cannot include a blob at all.
+- **Pool admission works.** With blob support at its default, Nethermind admits a frame transaction carrying a blob and a leanSTARK dependency through `eth_sendProofWrapper`: a 297 kB wrapper, in 464 ms. On a Prague chain the blob must be in the EIP-4844 form, one proof per blob, since Nethermind's pool and block builder require the fork's proof version. spamoor only writes the EIP-7594 form for frame transactions, so `deptx` encodes it itself.
+- **Block publication fails.** Lighthouse rejects every block that carries a blob: `InvalidCellProofLength { expected: 128, actual: 1 }`.
+  - The daisugi Lighthouse (v8.2.2-16a05d1) builds data columns, which need EIP-7594 cell proofs, even with Fulu off and before the Daisugi fork.
+  - Nethermind on Prague gives one EIP-4844 proof per blob and refuses cell proofs.
+  - The pending transaction goes into every new proposal, so a single blob transaction stalls the chain: 2 blocks in 107 slots.
+- **It isn't about frames.** A plain EIP-4844 blob transaction stalls it the same way. The public devnet's `--TxPool.BlobsSupport=Disabled` keeps blob transactions out of its pool, which also keeps it safe from this.
+- **Relay needs cell proofs.** Even with matching proof versions, Nethermind relays a blob-carrying wrapper only in the EIP-7594 form with its blobs elided (EIP-8437), so a multi-node chain needs cell proofs throughout.
+- **Stage 4 is blocked here.** A full `advance` needs blobs, since the contract binds the payload's versioned hashes. It needs an EIP-8288 chain on Fulu or later, such as a Bogota devnet with [execution-specs#4052](https://github.com/ethereum/execution-specs/pull/4052).

@@ -11,8 +11,10 @@ participants:
     el_image: ethpandaops/nethermind:daisugi-devnet-0
     el_extra_params:
       - --TxPool.FrameTxMaxVerifyGas=500000
-      # Without it, post-quantum transactions do not propagate between nodes.
-      - --TxPool.BlobsSupport=Disabled
+      # The devnet also sets --TxPool.BlobsSupport=Disabled, since otherwise
+      # post-quantum transactions do not propagate between nodes. With one
+      # node nothing propagates, and blob-carrying posts need the blob pool
+      # (stage 3), so it stays at the default. Stage 2 ran with it disabled.
     cl_type: lighthouse
     cl_image: ethpandaops/lighthouse:daisugi-devnet-0
 
