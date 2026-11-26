@@ -43,4 +43,4 @@ Alternatives that were considered and dropped:
 
 ## Open questions
 
-- **Claims before EIP-8141**: native rollups only have frame transactions once L1 does. Until then, nobody can pay for the first claim, since all L2 ETH starts in the pre-minted supply. Funding an account at genesis would work around it, but L1 would not back that ETH.
+- **Pre-Hegotá devnets**: EIP-8141 is SFI for Hegotá, well ahead of `leanPCS` and native rollups on mainnet, so native rollups will have frame transactions from day one. On pre-Hegotá devnets without EIP-8141, nobody can pay for the first claim since all L2 ETH starts in the pre-minted supply, requiring a genesis-funded account that L1 does not back.

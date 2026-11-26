@@ -1,12 +1,11 @@
 # Summary
 
 [Introduction](./introduction.md)
-[Status and roadmap](./status.md)
 
 # Proof verification
 
 - [Generalized proof verification](./generalized_proof_verification.md)
-- [EIP-8288 (zkzkframes)](./zkzkframes.md)
+- [EIP-8288 and leanPCS](./leanpcs.md)
 - [EIP-8357: EVM Verification Key Registry](./evm_vk_registry.md)
 
 # Reusing the L1 STF
@@ -23,3 +22,7 @@
 
 - [Native rollups with extensions](./extensions.md)
 - [Execution sharding](./sharding_comparison.md)
+
+---
+
+[Status and roadmap](./status.md)

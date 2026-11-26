@@ -7,11 +7,12 @@
 - [Motivation](#motivation)
 - [How the registry works](#how-the-registry-works)
 - [How native rollups use it](#how-native-rollups-use-it)
+- [Adapting for leanPCS](#adapting-for-leanpcs)
 - [Security considerations](#security-considerations)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
-EIP-8357 is a draft Core EIP that tells contracts which verification key L1 has approved for proving EVM execution in each fork. It is the one piece native rollups need on top of [EIP-8288](./zkzkframes.md). This page summarizes the design; the EIP is authoritative:
+EIP-8357 is a draft Core EIP that tells contracts which verification key L1 has approved for proving EVM execution in each fork. It is the one piece native rollups need on top of [EIP-8288 and leanPCS](./leanpcs.md). This page summarizes the design as currently drafted. The EIP is authoritative:
 
 - EIP: [EIP-8357](https://eips.ethereum.org/EIPS/eip-8357) (Draft)
 - Reference implementation: [ethereum/sys-asm#56](https://github.com/ethereum/sys-asm/pull/56)
@@ -20,9 +21,11 @@ EIP-8357 is a draft Core EIP that tells contracts which verification key L1 has 
 
 ## Motivation
 
-EIP-8288 verifies each proof dependency against an explicitly supplied `verification_key_hash`, a hash of the STARK verification key. It does not tell contracts which hashes L1 recognizes as its own EVM program, which one is current, or which input schema each program accepts. A native rollup that hard-coded these values would have to upgrade through its own governance at every L1 feature fork, or remain on an older EVM: exactly the [governance risk](./introduction.md#governance-risk) native rollups are meant to remove.
+Under [`leanPCS`](./leanpcs.md), a rollup's onchain PIOP verifier checks each proof against an explicitly supplied `verification_key_hash`, which identifies the program being proven. The verifier does not tell contracts which hashes L1 recognizes as its own EVM program, which one is current, or which input schema each program accepts. A native rollup that hard-coded these values would have to upgrade through its own governance at every L1 feature fork, or remain on an older EVM: exactly the [governance risk](./introduction.md#governance-risk) native rollups are meant to remove.
 
 EIP-8357 records these values once, in shared L1 state that every contract can read. Verifiers keep accepting exact hashes, while each rollup chooses whether to follow the current entry or pin a historical one.
+
+*Terminology:* EIP-8357 currently defines `verification_key_hash` as EIP-8288's `LEANSTARK_SCHEME` field, a hash of a STARK verification key. That field does not exist under `leanPCS`. This book uses the same name for the identifier of L1's EVM program that the PIOP verifier checks, such as [EIPs#12667](https://github.com/ethereum/EIPs/pull/12667)'s `keccak256("EIP8288:vk:v1" || program_commitment)`, as opposed to a zkVM's own circuit key. The EIP needs the same change (see [Adapting for leanPCS](#adapting-for-leanpcs)).
 
 ## How the registry works
 
@@ -30,21 +33,21 @@ The registry is an ordinary EVM contract at a fixed address, `0x00005e9c1447c1a0
 
 Its state is:
 
-- a mapping from each registered `verification_key_hash` to the `schema_id` of the stateless input its program accepts, which also selects the fork rules the program executes (see [Specification](./specification.md#statelessinput)); and
+- a mapping from each registered `verification_key_hash` to the `schema_id` of the stateless input its program accepts, which also selects the fork rules the program executes (see [Specification](./specification.md#statelessinput)), and
 - the current `verification_key_hash`.
 
 Entries are append-only: a registered hash is never deleted, overwritten, or revoked.
 
 **Reads.** Any caller sends a single 32-byte word:
 
-- zero requests the current entry;
+- zero requests the current entry,
 - a nonzero value requests that exact registered hash.
 
 The registry returns `verification_key_hash || schema_id`, and reverts if no such entry exists.
 
 **Updates.** Only `SYSTEM_ADDRESS` can update the registry, and only in the first block of a hard fork, before any transactions are processed:
 
-- a 64-byte registration adds a new hash with its `schema_id` and makes it current;
+- a 64-byte registration adds a new hash with its `schema_id` and makes it current,
 - a 32-byte reactivation makes a previously registered hash current again, keeping its `schema_id`.
 
 Each new or reactivated hash is specified by its own Core EIP, which names the L1 feature fork whose EVM semantics it represents and the `schema_id` its program accepts. The fork that activates EIP-8357 also registers the initial hash. The system call's gas does not count toward the block, and the block is invalid if the call fails.
@@ -53,7 +56,7 @@ Each new or reactivated hash is specified by its own Core EIP, which names the L
 
 A native rollup reads the registry when it advances its L2 state and uses the result in two places:
 
-- it requires the EIP-8288 dependency in the transaction to carry the returned `verification_key_hash`; and
+- it passes the returned `verification_key_hash` to the onchain PIOP verifier, and
 - it uses the returned `schema_id` to reconstruct the proof's public output, which commits to it (see [Proof statement](./specification.md#proof-statement)).
 
 Each rollup chooses one of two policies:
@@ -62,6 +65,10 @@ Each rollup chooses one of two policies:
 - **Pin**: query a stored historical hash, and keep that fork's EVM semantics after L1 moves on. This gives the rollup its own upgrade window, at its own risk.
 
 The full contract is shown in the [Specification](./specification.md#nativerollup-contract).
+
+## Adapting for leanPCS
+
+EIP-8357 was drafted against EIP-8288's original `LEANSTARK_SCHEME` (see [From LeanSTARK to leanPCS](./leanpcs.md#from-leanstark-to-leanpcs)), where consensus enshrined the zkVM verifier and a fork only needed to publish `(verification_key_hash, schema_id)`. Under [`leanPCS`](./leanpcs.md), consensus aggregates only the PCS openings and the zkVM's PIOP verifier runs as an EVM contract, so the EIP needs two changes. First, it must define `verification_key_hash` as an identifier of the EVM program rather than as the `LEANSTARK_SCHEME` field. Second, it must bind the verifier too: if a rollup hardcodes the PIOP verifier contract address and a later fork updates the mandatory 1-of-1 zkVM's PIOP or `leanPCS` version, `FollowCurrent` breaks without a governance upgrade. One option is to register a verifier address alongside `verification_key_hash` and `schema_id`. That choice can wait until K\*'s mandatory 1-of-1 zkVM and its PIOP verifier stabilize, rather than enshrining a verifier interface while K\* is still unspecified.
 
 ## Security considerations
 
