@@ -1,0 +1,46 @@
+# A local copy of daisugi-devnet-0 (https://notes.ethereum.org/@pk910/daisugi-devnet-0),
+# the EIP-8288 devnet: Electra, with EIP-8141 frame transactions and EIP-8250
+# keyed nonces from genesis, and EIP-8288 dependency proofs from the Daisugi
+# fork, here at epoch 1. Its only client is Nethermind's feature/eip8288-lean,
+# with a patched Lighthouse. The settings follow the devnet notes' Kurtosis
+# example, with one node instead of four. Run with:
+#   kurtosis run github.com/ethpandaops/ethereum-package@5795b77e65235ad223d4d3b413b2739190bf60cc \
+#       --enclave daisugi --args-file spikes/daisugi/kurtosis.yaml
+participants:
+  - el_type: nethermind
+    el_image: ethpandaops/nethermind:daisugi-devnet-0
+    el_extra_params:
+      - --TxPool.FrameTxMaxVerifyGas=500000
+      # Without it, post-quantum transactions do not propagate between nodes.
+      - --TxPool.BlobsSupport=Disabled
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:daisugi-devnet-0
+
+network_params:
+  preset: mainnet
+  seconds_per_slot: 12
+  genesis_gaslimit: 60000000
+  max_payload_size: 20971520
+  withdrawal_type: "0x02"
+  validator_balance: 2048
+  electra_fork_epoch: 0
+  fulu_fork_epoch: 18446744073709551615
+  gloas_fork_epoch: 18446744073709551615
+  # The package schedules the BPO forks at genesis by default, and they
+  # require Fulu.
+  bpo_1_epoch: 18446744073709551615
+  bpo_2_epoch: 18446744073709551615
+  bpo_3_epoch: 18446744073709551615
+  bpo_4_epoch: 18446744073709551615
+  bpo_5_epoch: 18446744073709551615
+
+# The package uses the generator's built-in consensus config template, which
+# lacks the Daisugi keys, so the notes' example forks only the execution layer.
+# Build genesis-generator/Dockerfile first, which adds them:
+#   docker build -t native-rollups/genesis-generator:daisugi-spike spikes/daisugi/genesis-generator
+# The fork version follows the devnet's: 0xd0 and the genesis version's suffix.
+ethereum_genesis_generator_params:
+  image: native-rollups/genesis-generator:daisugi-spike
+  extra_env:
+    DAISUGI_FORK_EPOCH: "1"
+    DAISUGI_FORK_VERSION: "0xd0000038"
