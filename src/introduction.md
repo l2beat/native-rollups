@@ -61,16 +61,16 @@ This book assumes a future L1 in which block proofs are mandatory and validators
 
 Building this proof infrastructure only for native rollups is not worth it. Native rollups must reuse exactly the same STF as L1: no new transaction types, no precompiles, and no other VM customization. As of today, only Linea is trying to maintain exact L1 semantics in production.
 
-By contrast, Ethereum is already building protocol-level proof aggregation for post-quantum signatures and general STARK verification: [`leanPCS`](./leanpcs.md) aggregates Polynomial Commitment Scheme (PCS) openings across an entire block, letting any smart contract verify a post-quantum STARK's lightweight PIOP directly in the EVM without enshrining a zkVM ISA in consensus. That single primitive serves every ZK application: post-quantum wallets, privacy protocols, ZK coprocessors, and custom rollups alike.
+By contrast, Ethereum plans protocol-level proof aggregation for post-quantum signatures and general STARK verification: [`leanPCS`](./leanpcs.md) aggregates Polynomial Commitment Scheme (PCS) openings across an entire block, letting any smart contract verify a post-quantum STARK's lightweight PIOP directly in the EVM without enshrining a zkVM ISA in consensus. That single primitive serves every ZK application: post-quantum wallets, privacy protocols, ZK coprocessors, and custom rollups alike.
 
-In this world, a native rollup is just the minimal special case that verifies proofs of L1's own execution program under the key L1 approves for the current fork. The native rollups upgrade is massively de-risked, because almost all of its proof infrastructure already exists for Ethereum's post-quantum and general ZK roadmap.
+In this world, a native rollup is just the minimal special case that verifies proofs of L1's own execution program under the key L1 approves for the current fork. The native rollups upgrade is massively de-risked, because almost all of its proof infrastructure is already on Ethereum's post-quantum and general ZK roadmap.
 
 ## Architecture
 
 This book proposes building native rollups on three L1 pieces along Ethereum's [strawmap](https://strawmap.org/) (`leanPCS frames` in J\* → `mandatory 1-of-1 proofs` in K\* → `native rollups` in L\*):
 
 - [EIP-8288 and `leanPCS`](./leanpcs.md): extends [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) frame transactions with dependency frames declaring `leanPCS` polynomial opening claims, which are aggregated recursively into one block-level STARK, paired with the `MULFIELD` opcode so contracts run the remaining PIOP cheaply in the EVM.
-- **Native `leanPCS` compatibility for L1's mandatory 1-of-1 zkVM**: rollup contracts verify the unwrapped PIOP of L1's execution proof directly in the EVM, with no separate recursion wrapper, keeping the guest program, zkVM circuit, and PCS openings identical to L1 (leaving only the small shared onchain PIOP verifier contract as an EVM-side implementation surface).
+- **Native `leanPCS` compatibility for L1's mandatory 1-of-1 zkVM**: rollup contracts verify the unwrapped PIOP of L1's execution proof directly in the EVM, with no separate recursion wrapper, keeping the guest program, zkVM circuit, and PCS openings identical to L1 (leaving only the small shared onchain PIOP verifier contract as an EVM-side implementation surface). This is an assumption, and the main risk of this design: no zkVM does it today, since the EIP-8025 zkVMs prove RISC-V over prime fields, and leanVM, which uses `leanPCS`'s field, does not run RISC-V. Without it, native rollups need a recursion wrapper or a protocol hook for K\*'s verifier (see [open issues](./leanpcs.md#open-issues)).
 - [EVM verification key registry (EIP-8357)](./evm_vk_registry.md): a protocol-maintained system contract exposing L1's approved EVM program for the current fork, letting rollup contracts follow L1 hard forks with no governance.
 
 ```text

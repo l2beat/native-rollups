@@ -155,7 +155,7 @@ The contract does not separately receive EIP-7928's `block_access_list_hash`. Th
 
 The contract implements the [root computation](#root-computation) and checks the proof of that root under the key returned by EIP-8357. Under [`leanPCS`](./leanpcs.md), `advance` will invoke K\*'s onchain PIOP verifier over `(expectedVkHash, publicInputRoot, piopProof)` and assert that its resulting `PCS_SCHEME` opening-claim hashes appear in the transaction's dependency frame.
 
-Because `leanPCS` and K\*'s mandatory 1-of-1 zkVM PIOP verifier are not yet specified, the [reference implementation](https://github.com/l2beat/native-rollups/tree/main/contracts) below (which runs end to end on a local copy of [bogota-devnet-2](https://notes.ethereum.org/@ethpandaops/bogota-devnet-2) with real L2 blocks and EIP-8357 in genesis) still mocks EIP-8288's earlier 96-byte `(LEANSTARK_SCHEME, dataHash, vkHash)` dependency triple. The root computation, anchoring, messaging, and registry interaction are unaffected by that swap.
+The code below sketches the contract under `leanPCS`. It is abridged from the [reference implementation](https://github.com/l2beat/native-rollups/tree/main/contracts), which runs end to end on a local copy of [bogota-devnet-2](https://notes.ethereum.org/@ethpandaops/bogota-devnet-2) with real L2 blocks and EIP-8357 in genesis, and differs from it in one step: since `leanPCS` and K\*'s PIOP verifier are not specified yet, the reference implementation still mocks the proof check with EIP-8288's earlier 96-byte `(LEANSTARK_SCHEME, dataHash, vkHash)` dependency triple, read with `FRAMEDATACOPY`. The root computation, anchoring, messaging, and registry interaction are the same.
 
 ```solidity
 contract NativeRollup {
@@ -279,8 +279,6 @@ contract NativeRollup {
 
         // 4. Hash the EIP-8025 PublicInput and verify K*'s unwrapped PIOP
         //    against the leanPCS claim hashes declared in `dependencyFrameIndex`.
-        //    (The bogota-devnet-2 reference repo mocks this step with EIP-8288's
-        //    earlier 96-byte LEANSTARK_SCHEME triple.)
         bytes32 publicInputRoot = SSZ.hashTreeRootPublicInput(npRoot, true, chainId, schemaId);
         verifyEvmProof(expectedVkHash, publicInputRoot, piopProof, dependencyFrameIndex);
 
@@ -339,7 +337,7 @@ contract NativeRollup {
 }
 ```
 
-`verifyEvmProof` runs K\*'s unwrapped PIOP verifier using `MULFIELD`, `XOR`, and `KECCAK256`, and uses the EIP-8141 introspection instructions (`FRAMEPARAM(0x02, i)` to require `DEP_VERIFY_FRAME_MODE` and `FRAMEDATALOAD` to check the `PCS_SCHEME` byte and each 32-byte `keccak256(PCS_claim)`) to confirm that the transaction declared every opening the PIOP requires (in the `bogota-devnet-2` reference repo, `FramesNativeRollup` currently mocks this by introspecting a 96-byte triple via `FRAMEDATACOPY`). `readRegistry` is a `STATICCALL` to the EIP-8357 registry.
+`verifyEvmProof` runs K\*'s unwrapped PIOP verifier using `MULFIELD`, `XOR`, and `KECCAK256`, and uses the EIP-8141 introspection instructions (`FRAMEPARAM(0x02, i)` to require `DEP_VERIFY_FRAME_MODE` and `FRAMEDATALOAD` to check the `PCS_SCHEME` byte and each 32-byte `keccak256(PCS_claim)`) to confirm that the transaction declared every opening the PIOP requires. Operands are written as in EIP-8288, parameter first; EIP-8141 takes the frame index from the top of the stack, and the `leanPCS` draft writes the same call as `FRAMEPARAM(i, 0x02)`. `readRegistry` is a `STATICCALL` to the EIP-8357 registry.
 
 Replay is constrained by state: the expected root commits to the parent L2 block hash and number, the L2 chain ID, the schema ID, the L1 anchor, and the blob versioned hashes.
 
@@ -367,7 +365,7 @@ L1 data is enough to rebuild the L2 chain. An L2 node finds each block through t
 
 1. **Proof pricing**: covering L2 PCS claims in the block's `leanPCS` aggregate and mandatory L1 proof adds work for the L1 prover. The `leanPCS` draft charges `PCS_TX_GAS = 5000` plus `PCS_CLAIM_GAS = 1000` per claim (on top of the onchain PIOP verification gas, which for an unwrapped L1 zkVM PIOP is not yet measured). Whether those constants are adequate, or a separate proof gas market is needed, depends on the block aggregator and the L1 zkEVM gas model.
 
-2. **One L2 block per transaction, and per slot**: the native program proves one block at a time, and EIP-8141's public mempool keeps one pending frame transaction per sender, so a rollup posting one block per transaction adds at most one per L1 slot. Unlike EIP-8288's earlier `MAX_LEANSTARK_DEPS_PER_WRAPPER = 1`, [`leanPCS`](./leanpcs.md) allows up to `MAX_PCS_CLAIMS_PER_TX = 256` claims per transaction, so a batched `advance` could verify several consecutive L2 block proofs in one transaction without changing the L1 program (subject to gas and blob limits). The mempool relaxations under discussion, concurrent keyed nonces for contract senders ([EIPs#12039](https://github.com/ethereum/EIPs/pull/12039)) and expiring nonces ([EIP-8266](https://eips.ethereum.org/EIPS/eip-8266)), make a sender's transactions independent, while consecutive blocks must still land in order. Proving a range of blocks with a single proof would require L1 to approve a multi-block program.
+2. **One L2 block per transaction, and per slot**: the native program proves one block at a time, and EIP-8141's public mempool keeps one pending frame transaction per sender, so a rollup posting one block per transaction adds at most one per L1 slot. [`leanPCS`](./leanpcs.md) allows many claims per transaction, so a batched `advance` could verify several consecutive L2 block proofs in one transaction without changing the L1 program (subject to gas and blob limits). The mempool relaxations under discussion, concurrent keyed nonces for contract senders ([EIPs#12039](https://github.com/ethereum/EIPs/pull/12039)) and expiring nonces ([EIP-8266](https://eips.ethereum.org/EIPS/eip-8266)), make a sender's transactions independent, while consecutive blocks must still land in order. Proving a range of blocks with a single proof would require L1 to approve a multi-block program.
 
 3. **Sequence-first-prove-later**: the current design requires blobs and proof to be in the same transaction, so the operator must have the proof ready at data posting time. Supporting sequence-first-prove-later (post data first, prove later) would require a mechanism to reference past blobs. `BLOBHASH` only accesses blobs in the current transaction. Possible approaches include a new opcode or precompile that can attest to blob availability from past blocks (within the DAS availability window), or a contract-level registry of blob commitments.
 
